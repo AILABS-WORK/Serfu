@@ -4,8 +4,8 @@ import { createSignal, getSignalByMint } from '../db/signals';
 import { provider } from '../providers';
 import { logger } from '../utils/logger';
 import { prisma } from '../db';
-
 import { notifySignal } from '../bot/notifier';
+import { forwardSignalToDestination } from '../bot/forwarder';
 
 export const processMessage = async (message: RawMessage) => {
   const { rawText, chatId, messageId } = message;
@@ -51,10 +51,35 @@ export const processMessage = async (message: RawMessage) => {
       trackingStatus = 'ENTRY_PENDING';
     }
 
+    // Get group and user IDs from the raw message
+    const rawMsg = await prisma.rawMessage.findUnique({
+      where: { id: message.id },
+      include: { group: true, user: true },
+    });
+
+    // Ensure group exists (should already exist from middleware, but double-check)
+    let groupId = rawMsg?.groupId;
+    if (!groupId && message.chatId) {
+      const { createOrUpdateGroup } = await import('../db/groups');
+      const group = await createOrUpdateGroup(message.chatId, {
+        type: 'source',
+      });
+      groupId = group.id;
+    }
+
+    // Ensure user exists (should already exist from middleware, but double-check)
+    let userId = rawMsg?.userId;
+    if (!userId && message.senderId) {
+      const { createOrUpdateUser } = await import('../db/users');
+      const user = await createOrUpdateUser(message.senderId, {});
+      userId = user.id;
+    }
+
     // Create Signal
     const signal = await createSignal({
       chatId,
       messageId,
+      senderId: message.senderId,
       mint,
       category: 'General', // TODO: Parse category from text
       name: meta.name,
@@ -64,12 +89,17 @@ export const processMessage = async (message: RawMessage) => {
       entryPriceProvider: entryProvider,
       trackingStatus,
       detectedAt: new Date(),
+      groupId: groupId || null,
+      userId: userId || null,
     });
 
-    logger.info(`Signal created: ${signal.id} for ${mint} at ${entryPrice}`);
+    logger.info(`Signal created: ${signal.id} for ${mint} at ${entryPrice} from group ${chatId}`);
 
-    // Send Telegram Notification
+    // Send Telegram Notification (to source group)
     await notifySignal(signal);
+
+    // Forward to destination groups (if configured)
+    await forwardSignalToDestination(signal);
 
   } catch (error) {
     if ((error as any).code === 'P2002') {

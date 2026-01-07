@@ -3,6 +3,19 @@ import { logger } from '../utils/logger';
 import { ingestMiddleware } from './middleware';
 import { setBotInstance } from './instance';
 import { registerActions } from './actions';
+import {
+  handleGroupsCommand,
+  handleSetDestinationCommand,
+  handleRemoveGroupCommand,
+  handleToggleGroupCommand,
+} from './commands/groups';
+import {
+  handleAnalyticsCommand,
+  handleGroupStatsCommand,
+  handleUserStatsCommand,
+  handleGroupLeaderboardCommand,
+  handleUserLeaderboardCommand,
+} from './commands/analytics';
 
 export const setupBot = () => {
   const token = process.env.BOT_TOKEN;
@@ -27,6 +40,8 @@ export const setupBot = () => {
           [{ text: '🟢 Live Signals', callback_data: 'live_signals' }],
           [{ text: '🏆 Leaderboards', callback_data: 'leaderboard' }],
           [{ text: '📊 Distributions', callback_data: 'distributions' }],
+          [{ text: '📈 Analytics', callback_data: 'analytics' }],
+          [{ text: '👥 Groups', callback_data: 'groups_menu' }],
           [{ text: '⭐ Watchlist', callback_data: 'watchlist' }],
         ],
       },
@@ -34,6 +49,60 @@ export const setupBot = () => {
   });
 
   bot.command('ping', (ctx) => ctx.reply('Pong!'));
+
+  // Group Management Commands
+  bot.command('groups', handleGroupsCommand);
+  bot.command('setdestination', (ctx) => {
+    const args = ctx.message.text?.split(' ').slice(1);
+    handleSetDestinationCommand(ctx, args?.[0]);
+  });
+  bot.command('removegroup', (ctx) => {
+    const args = ctx.message.text?.split(' ').slice(1);
+    handleRemoveGroupCommand(ctx, args?.[0]);
+  });
+  bot.command('togglegroup', (ctx) => {
+    const args = ctx.message.text?.split(' ').slice(1);
+    handleToggleGroupCommand(ctx, args?.[0]);
+  });
+
+  // Analytics Commands
+  bot.command('analytics', handleAnalyticsCommand);
+  bot.command('groupstats', (ctx) => {
+    const args = ctx.message.text?.split(' ').slice(1);
+    handleGroupStatsCommand(ctx, args?.[0]);
+  });
+  bot.command('userstats', (ctx) => {
+    const args = ctx.message.text?.split(' ').slice(1);
+    handleUserStatsCommand(ctx, args?.[0]);
+  });
+  bot.command('groupleaderboard', (ctx) => {
+    const args = ctx.message.text?.split(' ').slice(1);
+    handleGroupLeaderboardCommand(ctx, (args?.[0] as '7D' | '30D' | 'ALL') || '30D');
+  });
+  bot.command('userleaderboard', (ctx) => {
+    const args = ctx.message.text?.split(' ').slice(1);
+    handleUserLeaderboardCommand(ctx, (args?.[0] as '7D' | '30D' | 'ALL') || '30D');
+  });
+
+  // Copy Trading Commands
+  bot.command('copytrade', async (ctx) => {
+    const args = ctx.message.text?.split(' ').slice(1);
+    const { handleCopyTradingCommand } = await import('./commands/copyTrading');
+    const window = (args?.[0] as '7D' | '30D' | 'ALL') || '30D';
+    await handleCopyTradingCommand(ctx, window);
+  });
+
+  bot.command('simulate', async (ctx) => {
+    const args = ctx.message.text?.split(' ').slice(1);
+    if (!args || args.length < 2) {
+      return ctx.reply('Usage: /simulate <user|group> <id> [capital]\nExample: /simulate user 123456789 1000');
+    }
+    const { handleSimulateCommand } = await import('./commands/copyTrading');
+    const strategyType = args[0] as 'user' | 'group';
+    const targetId = args[1];
+    const capital = args[2] ? parseFloat(args[2]) : 1000;
+    await handleSimulateCommand(ctx, strategyType, targetId, capital);
+  });
 
   // Error handling
   bot.catch((err, ctx) => {

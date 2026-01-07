@@ -10,49 +10,69 @@ datasource db {
 }
 
 model RawMessage {
-  id              Int      @id @default(autoincrement())
-  chatId          BigInt   @map("chat_id")
-  messageId       Int      @map("message_id")
-  senderId        BigInt?  @map("sender_id")
-  senderUsername  String?  @map("sender_username")
-  sentAt          DateTime @map("sent_at")
-  rawText         String   @map("raw_text")
-  parsedTemplateId String? @map("parsed_template_id")
-  isSignal        Boolean  @default(false) @map("is_signal")
-  parseConfidence Float?   @map("parse_confidence")
-  createdAt       DateTime @default(now()) @map("created_at")
+  id               Int      @id @default(autoincrement())
+  chatId           BigInt   @map("chat_id")
+  messageId        Int      @map("message_id")
+  senderId         BigInt?  @map("sender_id")
+  senderUsername   String?  @map("sender_username")
+  sentAt           DateTime @map("sent_at")
+  rawText          String   @map("raw_text")
+  parsedTemplateId String?  @map("parsed_template_id")
+  isSignal         Boolean  @default(false) @map("is_signal")
+  parseConfidence  Float?   @map("parse_confidence")
+  createdAt        DateTime @default(now()) @map("created_at")
+
+  // Relations (using Int foreign keys)
+  groupId Int?   @map("group_id")
+  userId  Int?   @map("user_id")
+  group   Group? @relation(fields: [groupId], references: [id])
+  user    User?  @relation(fields: [userId], references: [id])
 
   @@unique([chatId, messageId])
+  @@index([chatId])
+  @@index([senderId])
+  @@index([groupId])
+  @@index([userId])
   @@map("raw_messages")
 }
 
 model Signal {
-  id                  Int       @id @default(autoincrement())
-  chatId              BigInt    @map("chat_id")
-  messageId           Int       @map("message_id") // Origin message
-  category            String?
-  mint                String
-  name                String?
-  symbol              String?
-  reportedMcapText    String?   @map("reported_mcap_text")
-  reportedPriceText   String?   @map("reported_price_text")
-  detectedAt          DateTime  @default(now()) @map("detected_at")
-  
-  entryPrice          Float?    @map("entry_price")
-  entryPriceAt        DateTime? @map("entry_price_at")
-  entryPriceProvider  String?   @default("helius") @map("entry_price_provider")
-  
-  trackingStatus      TrackingStatus @default(ACTIVE) @map("tracking_status")
-  trackingEndAt       DateTime? @map("tracking_end_at")
+  id                Int      @id @default(autoincrement())
+  chatId            BigInt   @map("chat_id")
+  messageId         Int      @map("message_id") // Origin message
+  senderId          BigInt?  @map("sender_id") // Telegram user ID
+  category          String?
+  mint              String
+  name              String?
+  symbol            String?
+  reportedMcapText  String?  @map("reported_mcap_text")
+  reportedPriceText String?  @map("reported_price_text")
+  detectedAt        DateTime @default(now()) @map("detected_at")
 
-  // Relations
-  priceSamples        PriceSample[]
-  thresholdEvents     ThresholdEvent[]
-  metrics             SignalMetric?
+  entryPrice         Float?    @map("entry_price")
+  entryPriceAt       DateTime? @map("entry_price_at")
+  entryPriceProvider String?   @default("helius") @map("entry_price_provider")
+
+  trackingStatus TrackingStatus @default(ACTIVE) @map("tracking_status")
+  trackingEndAt  DateTime?      @map("tracking_end_at")
+
+  // Relations (using Int foreign keys)
+  groupId          Int?              @map("group_id")
+  userId           Int?              @map("user_id")
+  group            Group?            @relation(fields: [groupId], references: [id])
+  user             User?             @relation(fields: [userId], references: [id])
+  priceSamples     PriceSample[]
+  thresholdEvents  ThresholdEvent[]
+  metrics          SignalMetric?
+  forwardedSignals ForwardedSignal[]
 
   @@unique([chatId, messageId])
   @@index([mint])
   @@index([trackingStatus])
+  @@index([chatId])
+  @@index([senderId])
+  @@index([groupId])
+  @@index([userId])
   @@map("signals")
 }
 
@@ -63,17 +83,17 @@ enum TrackingStatus {
 }
 
 model PriceSample {
-  id          BigInt   @id @default(autoincrement())
-  signalId    Int      @map("signal_id")
-  mint        String
-  price       Float
-  sampledAt   DateTime @default(now()) @map("sampled_at")
-  provider    String   @default("helius")
-  liquidity   Float?
-  volume      Float?
-  confidence  Float?
+  id         BigInt   @id @default(autoincrement())
+  signalId   Int      @map("signal_id")
+  mint       String
+  price      Float
+  sampledAt  DateTime @default(now()) @map("sampled_at")
+  provider   String   @default("helius")
+  liquidity  Float?
+  volume     Float?
+  confidence Float?
 
-  signal      Signal   @relation(fields: [signalId], references: [id])
+  signal Signal @relation(fields: [signalId], references: [id])
 
   @@index([signalId, sampledAt])
   @@map("price_samples")
@@ -87,7 +107,7 @@ model ThresholdEvent {
   hitAt             DateTime @map("hit_at")
   provider          String   @default("helius")
 
-  signal            Signal   @relation(fields: [signalId], references: [id])
+  signal Signal @relation(fields: [signalId], references: [id])
 
   @@unique([signalId, multipleThreshold])
   @@map("threshold_events")
@@ -103,25 +123,146 @@ model SignalMetric {
   maxDrawdown     Float    @default(0) @map("max_drawdown") // negative %
   updatedAt       DateTime @default(now()) @map("updated_at")
 
-  signal          Signal   @relation(fields: [signalId], references: [id])
+  signal Signal @relation(fields: [signalId], references: [id])
 
   @@map("signal_metrics")
 }
 
 model CategoryMetric {
-  id              Int      @id @default(autoincrement())
-  category        String
-  window          String   // 7D, 30D, ALL
-  signalCount     Int      @map("signal_count")
-  hit2Rate        Float    @map("hit2_rate")
-  hit3Rate        Float    @map("hit3_rate")
-  hit5Rate        Float    @map("hit5_rate")
-  medianAth       Float    @map("median_ath")
-  p75Ath          Float    @map("p75_ath")
-  medianDrawdown  Float    @map("median_drawdown")
-  medianTimeTo2x  Float?   @map("median_time_to_2x") // seconds
-  updatedAt       DateTime @default(now()) @map("updated_at")
+  id             Int      @id @default(autoincrement())
+  category       String
+  window         String // 7D, 30D, ALL
+  signalCount    Int      @map("signal_count")
+  hit2Rate       Float    @map("hit2_rate")
+  hit3Rate       Float    @map("hit3_rate")
+  hit5Rate       Float    @map("hit5_rate")
+  medianAth      Float    @map("median_ath")
+  p75Ath         Float    @map("p75_ath")
+  medianDrawdown Float    @map("median_drawdown")
+  medianTimeTo2x Float?   @map("median_time_to_2x") // seconds
+  updatedAt      DateTime @default(now()) @map("updated_at")
 
   @@unique([category, window])
   @@map("category_metrics")
+}
+
+model Group {
+  id        Int      @id @default(autoincrement())
+  chatId    BigInt   @unique @map("chat_id")
+  name      String?
+  type      String? // "source" or "destination"
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  signals      Signal[]
+  rawMessages  RawMessage[]
+  groupMetrics GroupMetric[]
+
+  @@index([chatId])
+  @@map("groups")
+}
+
+model User {
+  id        Int      @id @default(autoincrement())
+  userId    BigInt   @unique @map("user_id")
+  username  String?
+  firstName String?  @map("first_name")
+  lastName  String?  @map("last_name")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  signals     Signal[]
+  rawMessages RawMessage[]
+  userMetrics UserMetric[]
+
+  @@index([userId])
+  @@map("users")
+}
+
+model GroupMetric {
+  id             Int      @id @default(autoincrement())
+  groupId        Int      @map("group_id")
+  window         String // 7D, 30D, ALL
+  signalCount    Int      @map("signal_count")
+  hit2Rate       Float    @map("hit2_rate")
+  hit3Rate       Float    @map("hit3_rate")
+  hit5Rate       Float    @map("hit5_rate")
+  hit10Rate      Float    @map("hit10_rate")
+  medianAth      Float    @map("median_ath")
+  p75Ath         Float    @map("p75_ath")
+  p90Ath         Float    @map("p90_ath")
+  medianDrawdown Float    @map("median_drawdown")
+  medianTimeTo2x Float?   @map("median_time_to_2x")
+  avgWinRate     Float    @map("avg_win_rate")
+  totalSignals   Int      @map("total_signals")
+  updatedAt      DateTime @default(now()) @map("updated_at")
+
+  group Group @relation(fields: [groupId], references: [id])
+
+  @@unique([groupId, window])
+  @@index([groupId])
+  @@map("group_metrics")
+}
+
+model UserMetric {
+  id               Int      @id @default(autoincrement())
+  userId           Int      @map("user_id")
+  window           String // 7D, 30D, ALL
+  signalCount      Int      @map("signal_count")
+  hit2Rate         Float    @map("hit2_rate")
+  hit3Rate         Float    @map("hit3_rate")
+  hit5Rate         Float    @map("hit5_rate")
+  hit10Rate        Float    @map("hit10_rate")
+  medianAth        Float    @map("median_ath")
+  p75Ath           Float    @map("p75_ath")
+  p90Ath           Float    @map("p90_ath")
+  medianDrawdown   Float    @map("median_drawdown")
+  medianTimeTo2x   Float?   @map("median_time_to_2x")
+  avgWinRate       Float    @map("avg_win_rate")
+  totalSignals     Int      @map("total_signals")
+  consistencyScore Float?   @map("consistency_score") // 0-1
+  riskScore        Float?   @map("risk_score") // 0-1
+  updatedAt        DateTime @default(now()) @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@unique([userId, window])
+  @@index([userId])
+  @@map("user_metrics")
+}
+
+model ForwardedSignal {
+  id            Int      @id @default(autoincrement())
+  signalId      Int      @map("signal_id")
+  sourceGroupId BigInt   @map("source_group_id")
+  destGroupId   BigInt   @map("dest_group_id")
+  forwardedAt   DateTime @default(now()) @map("forwarded_at")
+  forwardedBy   BigInt?  @map("forwarded_by") // User who configured forwarding
+
+  signal Signal @relation(fields: [signalId], references: [id])
+
+  @@unique([signalId, destGroupId])
+  @@index([sourceGroupId])
+  @@index([destGroupId])
+  @@map("forwarded_signals")
+}
+
+model CopyTradingStrategy {
+  id               Int      @id @default(autoincrement())
+  strategyType     String   @map("strategy_type") // "user" or "group"
+  targetId         Int      @map("target_id") // User ID or Group ID
+  window           String // 7D, 30D, ALL
+  expectedReturn   Float    @map("expected_return")
+  winRate          Float    @map("win_rate")
+  riskScore        Float    @map("risk_score")
+  consistencyScore Float    @map("consistency_score")
+  recommendation   String // "STRONG_BUY", "BUY", "NEUTRAL", "AVOID"
+  updatedAt        DateTime @default(now()) @map("updated_at")
+
+  @@unique([strategyType, targetId, window])
+  @@index([strategyType, targetId])
+  @@map("copy_trading_strategies")
 }

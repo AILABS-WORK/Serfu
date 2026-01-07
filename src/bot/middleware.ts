@@ -1,6 +1,8 @@
 import { Context, Middleware } from 'telegraf';
 import { createRawMessage } from '../db/messages';
 import { processMessage } from '../ingest/processor';
+import { createOrUpdateGroup } from '../db/groups';
+import { createOrUpdateUser } from '../db/users';
 import { logger } from '../utils/logger';
 
 export const ingestMiddleware: Middleware<Context> = async (ctx, next) => {
@@ -17,16 +19,38 @@ export const ingestMiddleware: Middleware<Context> = async (ctx, next) => {
       const sentAt = new Date(message.date * 1000);
       const rawText = message.text;
 
+      // Auto-create/update Group and User
+      let groupId: number | null = null;
+      let userId: number | null = null;
+
+      if (message.chat.type === 'group' || message.chat.type === 'supergroup') {
+        const group = await createOrUpdateGroup(BigInt(chatId), {
+          name: message.chat.title || undefined,
+          type: 'source', // Default to source, can be changed via command
+        });
+        groupId = group.id;
+      }
+
+      if (senderId) {
+        const user = await createOrUpdateUser(BigInt(senderId), {
+          username: senderUsername,
+          firstName: message.from?.first_name,
+          lastName: message.from?.last_name,
+        });
+        userId = user.id;
+      }
+
       // Store in DB
       const rawMessage = await createRawMessage({
         chatId: BigInt(chatId),
         messageId,
         senderId: senderId ? BigInt(senderId) : null,
         senderUsername,
-        senderUsername, // intentional duplication fix if needed but here it's fine
         sentAt,
         rawText,
         isSignal: false, // Updated later by signal detector
+        groupId,
+        userId,
       });
 
       logger.debug(`Ingested message ${messageId} from ${chatId}`);
@@ -48,6 +72,27 @@ export const ingestMiddleware: Middleware<Context> = async (ctx, next) => {
         const senderUsername = message.from?.username;
         const sentAt = new Date(message.date * 1000);
         const rawText = message.caption || '';
+
+        // Auto-create/update Group and User
+        let groupId: number | null = null;
+        let userId: number | null = null;
+
+        if (message.chat.type === 'group' || message.chat.type === 'supergroup') {
+          const group = await createOrUpdateGroup(BigInt(chatId), {
+            name: message.chat.title || undefined,
+            type: 'source',
+          });
+          groupId = group.id;
+        }
+
+        if (senderId) {
+          const user = await createOrUpdateUser(BigInt(senderId), {
+            username: senderUsername,
+            firstName: message.from?.first_name,
+            lastName: message.from?.last_name,
+          });
+          userId = user.id;
+        }
   
         // Store in DB
         const rawMessage = await createRawMessage({
@@ -58,6 +103,8 @@ export const ingestMiddleware: Middleware<Context> = async (ctx, next) => {
           sentAt,
           rawText,
           isSignal: false,
+          groupId,
+          userId,
         });
   
         logger.debug(`Ingested media message ${messageId} from ${chatId}`);

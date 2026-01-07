@@ -1,5 +1,7 @@
 import { prisma } from '../db';
 import { logger } from '../utils/logger';
+import { updateAllGroupMetrics } from '../analytics/groupMetrics';
+import { updateAllUserMetrics } from '../analytics/userMetrics';
 
 export const runAggregationCycle = async () => {
   logger.info('Starting aggregation cycle...');
@@ -42,17 +44,17 @@ export const runAggregationCycle = async () => {
         const count = signals.length;
         if (count === 0) continue;
 
-        const hit2 = signals.filter(s => s.thresholdEvents.some(e => e.multipleThreshold >= 2)).length;
-        const hit3 = signals.filter(s => s.thresholdEvents.some(e => e.multipleThreshold >= 3)).length;
-        const hit5 = signals.filter(s => s.thresholdEvents.some(e => e.multipleThreshold >= 5)).length;
+        const hit2 = signals.filter((s: any) => s.thresholdEvents.some((e: any) => e.multipleThreshold >= 2)).length;
+        const hit3 = signals.filter((s: any) => s.thresholdEvents.some((e: any) => e.multipleThreshold >= 3)).length;
+        const hit5 = signals.filter((s: any) => s.thresholdEvents.some((e: any) => e.multipleThreshold >= 5)).length;
 
         // Median ATH
-        const aths = signals.map(s => s.metrics?.athMultiple || 1.0).sort((a, b) => a - b);
+        const aths = signals.map((s: any) => s.metrics?.athMultiple || 1.0).sort((a: number, b: number) => a - b);
         const medianAth = aths[Math.floor(aths.length / 2)] || 1.0;
         const p75Ath = aths[Math.floor(aths.length * 0.75)] || 1.0;
         
         // Median Drawdown
-        const dds = signals.map(s => s.metrics?.maxDrawdown || 0).sort((a, b) => a - b);
+        const dds = signals.map((s: any) => s.metrics?.maxDrawdown || 0).sort((a: number, b: number) => a - b);
         const medianDd = dds[Math.floor(dds.length / 2)] || 0;
 
         // Save
@@ -88,9 +90,24 @@ export const runAggregationCycle = async () => {
       }
 
     } catch (err) {
-      logger.error(`Aggregation failed for window ${window.name}`, err);
-    }
-  }
-  logger.info('Aggregation cycle complete.');
-};
+          logger.error(`Aggregation failed for window ${window.name}`, err);
+        }
+      }
+
+      // Update Group Metrics
+      try {
+        await updateAllGroupMetrics();
+      } catch (err) {
+        logger.error('Group metrics update failed:', err);
+      }
+
+      // Update User Metrics
+      try {
+        await updateAllUserMetrics();
+      } catch (err) {
+        logger.error('User metrics update failed:', err);
+      }
+
+      logger.info('Aggregation cycle complete.');
+    };
 

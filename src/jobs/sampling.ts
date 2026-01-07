@@ -39,7 +39,7 @@ export const runSamplingCycle = async () => {
       }
     });
 
-    const dueSignals = signals.filter(s => {
+            const dueSignals = signals.filter((s: any) => {
       const lastSample = s.priceSamples[0]?.sampledAt || null;
       return isDueForSampling(s, lastSample);
     });
