@@ -1,13 +1,9 @@
 import { MarketDataProvider, PriceQuote, TokenMeta, OHLCV } from './types';
 import { logger } from '../utils/logger';
 
-// Lazy load helius-sdk (ESM module)
-let heliusModule: any = null;
+// Lazy load helius-sdk (ESM module) - use require for type checking
 const getHeliusModule = async () => {
-  if (!heliusModule) {
-    heliusModule = await import('helius-sdk');
-  }
-  return heliusModule;
+  return await import('helius-sdk');
 };
 
 export class HeliusProvider implements MarketDataProvider {

@@ -1,4 +1,4 @@
-import { Signal } from '../generated/client';
+import { Signal } from '../generated/client/client';
 import { getDestinationGroups } from '../db/groups';
 import { prisma } from '../db';
 import { getBotInstance } from './instance';

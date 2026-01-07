@@ -14,7 +14,7 @@ const getChartModules = async () => {
   return { ChartJSNodeCanvas, ChartConfiguration };
 };
 
-import { PriceSample, Signal } from '../generated/client';
+import { PriceSample, Signal } from '../generated/client/client';
 
 const width = 800;
 const height = 400;
@@ -39,7 +39,7 @@ export const renderChart = async (signal: Signal, samples: PriceSample[]): Promi
   const dataPoints = sortedSamples.map(s => s.price);
   const entryPrice = signal.entryPrice || dataPoints[0];
 
-  const configuration: ChartConfiguration = {
+  const configuration: any = {
     type: 'line',
     data: {
       labels,

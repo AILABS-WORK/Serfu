@@ -1,4 +1,4 @@
-import { RawMessage } from '../generated/client';
+import { RawMessage } from '../generated/client/client';
 import { detectSignal } from './classifier';
 import { createSignal, getSignalByMint } from '../db/signals';
 import { provider } from '../providers';
