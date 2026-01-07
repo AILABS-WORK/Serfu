@@ -1,0 +1,610 @@
+# AlphaColor Signal Analytics Bot – Product Requirements Document (PRD)
+
+## 1. Product Overview
+
+**Product Name (Working):** AlphaColor Signal Analytics Bot
+**Platform:** Telegram (Group Bot + optional DM companion)
+**Version:** v1 (Solana-only)
+**Primary Use Case:** Passively ingest AlphaColor signals posted in a Telegram group, track Solana token performance (short + long horizons), compute objective outcomes (2x/3x/5x hit rates, run-up, drawdown, time-to-hit), and present leaderboards + charts inside Telegram.
+
+**What it is:**
+
+* A **signal intelligence + performance analytics** bot.
+* A **shared, auditable ledger** of signal outcomes.
+
+**What it is NOT (v1):**
+
+* Not a trading bot (no wallet, no execution).
+* Not multi-chain.
+* Not financial advice.
+
+---
+
+## 2. Goals, Success Criteria, and Constraints
+
+### 2.1 Primary Goals
+
+1. Ingest signals reliably from the AlphaColor group (Option A).
+2. Fetch and store a trustworthy **entry price** for each signal.
+3. Track price over time with adaptive sampling to capture both fast pumps and slow grinds.
+4. Compute per-signal outcomes + aggregated category analytics.
+5. Deliver a professional Telegram UX (buttons, charts, minimal spam).
+
+### 2.2 Success Criteria (Definition of “Working”)
+
+* **Signal detection accuracy:** ≥ 98% of true AlphaColor signals stored as Signal records.
+* **Mint extraction accuracy:** ≥ 99% for supported AlphaColor templates.
+* **Entry price integrity:** entry price always sourced from the configured Solana pricing provider (not text).
+* **Trigger correctness:** 2x/3x/5x events fire once (no duplicates), with logged trigger price/time.
+* **Long-horizon coverage:** tracking continues for at least **30 days** by default (configurable), capturing late ATHs.
+* **Usability:** users can open a signal card and view chart/stats with ≤ 2 taps.
+
+### 2.3 Hard Constraints
+
+* Telegram callback_data length limits → wizard state must be stored server-side (Redis/DB) and referenced by a short key.
+* Rate limits from price APIs → sampling must be dynamic and batched.
+* Meme token data quality varies → implement provider fallback + confidence indicators.
+
+---
+
+## 3. Operating Model (Option A: Bot in AlphaColor Group)
+
+### 3.1 Setup Requirements
+
+* Bot is added to the AlphaColor group.
+* BotFather → **Group Privacy: OFF** (required to read non-command messages).
+* Recommended: bot promoted to **admin** in the group (improves reliability of message access and reduces edge-case limitations).
+
+### 3.2 Data Flow (High-Level)
+
+1. **Telegram message received** (any message in group)
+2. Store raw message (always)
+3. Run signal classifier + parser
+4. If signal: create Signal record + fetch entry price
+5. Start tracking job for that signal (dynamic sampling)
+6. Continuously update derived metrics (ATH, drawdown, threshold hits)
+7. Provide user-facing views: signal cards, stats, leaderboards, distributions, charts
+
+---
+
+## 4. Functional Requirements (What the Bot Must Do)
+
+### 4.1 Ingest and Store Messages (Always-On)
+
+**Requirement:** For every message in the group, store at minimum:
+
+* telegram_chat_id
+* telegram_message_id
+* timestamp (UTC)
+* sender_user_id + username (if available)
+* raw_text (or raw_caption if media)
+* message_link (if available)
+
+**Purpose:** auditing, backfilling parsers, replaying ingestion, explaining results.
+
+### 4.2 Detect AlphaColor Signals
+
+**Requirement:** Identify signals using:
+
+* **Template matchers** (regex patterns for known AlphaColor formats)
+* **Fallback heuristic**: presence of a valid Solana mint + one or more keywords (e.g., “Signal”, “Buy”, “Entry”, “MC”, etc.)
+
+**Output:**
+
+* is_signal boolean
+* detected_template_id
+* parse_confidence (0–1)
+
+### 4.3 Parse Signal Fields
+
+**Minimum required field for a Signal record:**
+
+* **Solana mint address** (base58, 32–44 chars typical)
+
+**Optional fields (parsed if present):**
+
+* token name
+* token symbol
+* market cap (as number + unit)
+* liquidity
+* initial price (TEXT only; stored but not used for analytics)
+* AlphaColor category/type (e.g., “Type A / Color / Strategy Bucket”)
+* any additional metadata present in message (dex, pair, LP lock mentions)
+
+**Failure handling:**
+
+* If mint missing → do not create Signal; store message as non-signal.
+* If mint present but other fields missing → create Signal anyway.
+
+### 4.4 Create a Signal Record (Immutable)
+
+When a signal is detected:
+
+* create Signal
+* create SignalEvent: `DETECTED`
+* fetch **entry price** immediately (see section 5)
+* store entry price source + timestamp
+
+### 4.5 Price Tracking + Threshold Alerts
+
+For each Signal:
+
+* periodically fetch price according to dynamic schedule
+* append PriceSample rows
+* update derived metrics:
+
+  * ATH price/time/multiple
+  * max drawdown
+  * current multiple
+* detect threshold hits (2x/3x/4x/5x/10x) and store ThresholdEvent records (once)
+
+### 4.6 Telegram UX: Signal Cards + Buttons
+
+On signal creation, post a compact card (or reply in-thread if available):
+
+* token name/symbol (if known) + mint (copyable)
+* AlphaColor category
+* entry price
+* time
+  Buttons:
+* 📈 Chart
+* 📊 Stats
+* ⭐ Watchlist
+* 🔔 Alerts (optional toggle UI)
+
+### 4.7 Views: Leaderboards + Distributions
+
+Provide:
+
+* Category leaderboards (7D/30D/All)
+* Distribution summaries (hit rates + percentiles + histograms (text-based) + key stats)
+* Token search by mint/symbol
+
+### 4.8 Optional (Still v1): DM Companion Mode
+
+Users can opt-in to receive:
+
+* threshold alerts (2x/3x/5x)
+* daily summaries
+  via DM to reduce group noise.
+
+---
+
+## 5. Market Data & Price Sources (Solana v1)
+
+### 5.1 Primary Data Provider: Helius (Solana)
+
+**Helius** is the **primary and authoritative data provider** for Solana in v1.
+
+The system MUST be built assuming a valid **Helius API key** is available via environment variables.
+
+Helius is used for:
+
+* Real-time and near-real-time **token price discovery**
+* Token metadata (name, symbol, decimals where available)
+* Transaction-aware price context (where applicable)
+* High-reliability Solana RPC + indexed data access
+
+This choice is intentional to:
+
+* Avoid unreliable scraped price sources
+* Ensure Solana-native accuracy (especially for new meme tokens)
+* Enable future extensions (wallet tracking, liquidity analysis) without re-architecting
+
+---
+
+### 5.2 Helius Usage Scope (v1)
+
+In v1, Helius will be used for:
+
+* **Entry price fetch** at signal detection time
+* **Ongoing price sampling** for active signals
+* **Metadata enrichment** (token name/symbol if not parsed from message)
+
+The bot MUST NOT trust prices reported in Telegram messages for any calculations.
+
+---
+
+### 5.3 Provider Interface (Implementation Contract)
+
+The application must define an internal provider abstraction with Helius as the primary implementation:
+
+* `getQuote(mint) -> { price, timestamp, confidence?, source: 'helius' }`
+* `getTokenMeta(mint) -> { name, symbol, decimals?, image? }`
+* `getOHLCV(mint, timeframe, start, end) -> candles[] | null`
+
+Notes:
+
+* If Helius does not natively support OHLCV for a token/timeframe, charts MUST fall back to sampled price series.
+* All returned data must include timestamps and source attribution.
+
+---
+
+### 5.4 Fallback & Redundancy Strategy
+
+Although Helius is the primary provider, the system should be architected to allow **future fallback providers**.
+
+Design requirements:
+
+* Provider selection logic must be abstracted (do not hardcode Helius throughout the codebase)
+* If Helius fails temporarily:
+
+  * retry with exponential backoff
+  * mark samples as missing rather than fabricating data
+
+Fallback providers are **out of scope for v1**, but the interface must allow them.
+
+---
+
+### 5.5 Entry Price Rule (Critical)
+
+The **entry price** for a signal is defined as:
+
+> The price returned by Helius at the time the signal is detected (or the nearest sample immediately after detection).
+
+Implementation rules:
+
+* Fetch entry price immediately after Signal creation
+* Store:
+
+  * entry_price
+  * entry_price_timestamp
+  * entry_price_provider = 'helius'
+* If entry price cannot be fetched within a short retry window:
+
+  * mark signal as `ENTRY_PENDING`
+  * retry until successful
+
+Telegram-reported prices are stored only as raw text for reference and are **never used** in analytics.
+
+---
+
+### 5.6 Data Confidence & Quality Flags
+
+Each price sample may optionally include:
+
+* confidence score (if available)
+* liquidity proxy (if exposed by provider)
+
+If confidence is low or data is sparse:
+
+* flag the signal internally
+* still track it, but allow UI to indicate reduced confidence (future feature)
+
+---
+
+## 6. Price Sampling & Long-Horizon Tracking
+
+### 6.1 Dynamic Sampling Schedule
+
+Each signal uses adaptive frequency:
+
+| Signal Age | Sampling Interval | Goal                                |
+| ---------- | ----------------: | ----------------------------------- |
+| 0–2h       |             1 min | catch fast pumps + early thresholds |
+| 2–12h      |             5 min | monitor continuation                |
+| 12–72h     |            15 min | track larger move + late thresholds |
+| 3–14d      |            60 min | capture slow grinds                 |
+| 14–60d     |           6 hours | long-tail ATHs                      |
+| 60–180d    |          24 hours | archive monitoring                  |
+
+Schedule is configurable per group (admin). Default tracking horizon: **30 days**.
+
+### 6.2 Batching & Cost Control
+
+To reduce API calls:
+
+* group active signals by mint
+* fetch quotes in batches where provider allows
+* cache last quote per mint for short periods (e.g., 10–30s) to dedupe burst checks
+
+### 6.3 Downtime & Backfill
+
+If the bot was offline:
+
+* on restart, identify “missed window” for active signals
+* backfill with provider OHLCV if available, else resume sampling and mark data gaps
+
+---
+
+## 7. Metrics & Computation Details
+
+### 7.1 Per-Signal Derived Metrics
+
+Given entry price `P0` and sampled prices `Pt`:
+
+* **Current multiple:** `Pt / P0`
+* **ATH price:** `max(Pt)`
+* **ATH multiple:** `max(Pt)/P0`
+* **Time to ATH:** `t_ath - t_entry`
+* **Max drawdown from entry:** `min(Pt)/P0 - 1` (negative %)
+
+### 7.2 Threshold Events
+
+Thresholds: 2x, 3x, 4x, 5x, 10x.
+
+* A threshold is “hit” when the sampled price first satisfies `Pt >= k * P0`.
+* Store:
+
+  * k
+  * hit_time
+  * hit_price
+  * provider
+
+### 7.3 Horizon Snapshots
+
+Compute multiples at fixed horizons to compare signals fairly:
+
+* 15m, 1h, 4h, 24h, 3d, 7d, 14d
+  Store the closest sample after each horizon time.
+
+### 7.4 Aggregated Category Metrics
+
+Group signals by AlphaColor category and compute:
+
+* count signals
+* hit rates: % hit 2x/3x/4x/5x/10x
+* median ATH multiple, mean ATH multiple
+* median max drawdown
+* median time-to-2x and time-to-ATH
+* percentiles for ATH multiple (p50/p75/p90)
+* outlier handling: use median as primary
+
+### 7.5 Distribution Outputs (Telegram-Friendly)
+
+Telegram does not easily embed full charts. Provide:
+
+* compact text histograms (bin counts)
+* key percentiles
+* top/bottom examples
+
+Example bins for ATH multiple:
+
+* <1x, 1–2x, 2–3x, 3–5x, 5–10x, 10x+
+
+---
+
+## 8. Telegram UX Requirements (Professional Button-Driven)
+
+### 8.1 Minimal-Spam Policy
+
+* On new signal: 1 message card
+* On threshold hits: 1 short alert message
+* Avoid repeated updates; prefer “View Stats/Chart” buttons
+
+### 8.2 Commands (Optional, v1)
+
+* `/menu` → main menu
+* `/leaderboard` → leaderboard
+* `/stats <mint|symbol>` → stats
+* `/chart <mint|symbol>` → chart
+
+Buttons should be the primary path.
+
+### 8.3 Main Menu (Inline Keyboard)
+
+* 🟢 Live Signals
+* 🏆 Leaderboards
+* 📊 Distributions
+* ⭐ Watchlist
+* ⚙️ Settings (admin)
+
+### 8.4 Signal Card Details
+
+Include:
+
+* Name/Symbol (if available) + mint (copy)
+* Category
+* Entry price + time
+* Current multiple (optional; fetched at render time)
+  Buttons:
+* 📈 Chart
+* 📊 Stats
+* ⭐ Watchlist
+
+### 8.5 Pagination & Search
+
+* Lists must paginate (Telegram message buttons: Next/Prev)
+* Search supports mint paste; optionally symbol if metadata exists
+
+---
+
+## 9. Charts (PNG Rendering) – Requirements
+
+### 9.1 Minimum Viable Chart (Always Available)
+
+If OHLCV not available:
+
+* Use sampled price series (line chart)
+* Overlay:
+
+  * entry marker
+  * threshold lines
+  * ATH marker
+  * current marker
+
+### 9.2 Enhanced Candlestick (If Provider Supports OHLCV)
+
+If OHLCV is available:
+
+* render candlesticks for chosen timeframe
+* overlay same markers/lines
+
+### 9.3 Timeframes
+
+Buttons to switch timeframe:
+
+* 5m, 15m, 1h, 4h, 1d
+  Default: 15m or 1h depending on age.
+
+---
+
+## 10. Data Model (Implementation-Level Requirements)
+
+### 10.1 Core Tables
+
+**raw_messages**
+
+* id
+* chat_id
+* message_id
+* sender_id
+* sender_username
+* sent_at
+* raw_text
+* parsed_template_id
+* is_signal
+* parse_confidence
+
+**signals**
+
+* id
+* chat_id
+* message_id (origin)
+* category
+* mint
+* name
+* symbol
+* reported_mcap_text
+* reported_price_text
+* detected_at
+* entry_price
+* entry_price_at
+* entry_price_provider
+* tracking_status (ACTIVE/ARCHIVED)
+* tracking_end_at
+
+**price_samples**
+
+* id
+* signal_id
+* mint
+* price
+* sampled_at
+* provider
+* liquidity (nullable)
+* volume (nullable)
+
+**threshold_events**
+
+* id
+* signal_id
+* multiple_threshold (2,3,4,5,10)
+* hit_price
+* hit_at
+* provider
+
+**signal_metrics** (denormalized rollup for fast reads)
+
+* signal_id
+* current_price
+* current_multiple
+* ath_price
+* ath_multiple
+* ath_at
+* max_drawdown
+* updated_at
+
+**category_metrics** (materialized summaries)
+
+* chat_id
+* category
+* window (7D/30D/ALL)
+* signal_count
+* hit2_rate
+* hit3_rate
+* hit5_rate
+* median_ath
+* p75_ath
+* median_drawdown
+* median_time_to_2x
+* updated_at
+
+### 10.2 Event Logging (Optional but Recommended)
+
+A general `events` table to log:
+
+* ingestion errors
+* provider failures
+* backfills
+* threshold triggers
+
+---
+
+## 11. Jobs & Scheduling
+
+### 11.1 Ingestion (Realtime)
+
+* Telegram update handler stores raw messages and (if signal) creates signal.
+
+### 11.2 Price Sampling Jobs
+
+* Scheduler runs every minute:
+
+  * find all ACTIVE signals due for sampling based on age bucket
+  * batch by mint
+  * write samples
+  * update metrics
+  * emit threshold events + notifications
+
+### 11.3 Aggregation Jobs
+
+* Every hour: refresh category_metrics for 7D and 30D
+* Daily: refresh ALL window and distributions
+
+---
+
+## 12. Reliability, Integrity, and Abuse Controls
+
+### 12.1 Determinism
+
+* All threshold triggers are based on recorded sampled prices.
+* Each trigger logs price + provider + timestamp.
+
+### 12.2 Deduplication
+
+Prevent duplicates:
+
+* unique constraint on (chat_id, message_id)
+* for signals: unique on (chat_id, mint, detected_at rounded?) is NOT safe; signals can repeat; instead store each signal instance but link duplicates via a `similar_signal_group_id` optionally.
+
+### 12.3 Rate Limits & Backoff
+
+* exponential backoff on provider errors
+* fallback provider after N failures
+
+### 12.4 Data Retention
+
+* full resolution samples for first 72h
+* downsample older data (e.g., keep hourly after 7d)
+* keep derived metrics forever
+
+---
+
+## 13. Admin Settings (Group-Level)
+
+Admin-only UI:
+
+* Enable/disable bot auto-posting cards (some groups may want silent mode)
+* Sampling intensity (conservative/standard/aggressive)
+* Tracking horizon (e.g., 7/30/90 days)
+* Enable threshold alerts in group vs DM
+* Default chart timeframe
+
+---
+
+## 14. Disclaimer
+
+The bot provides analytics only. No execution. Not financial advice.
+
+---
+
+## 15. Post-v1 Roadmap (Explicitly Out of Scope)
+
+* Copy-trading / wallet integration
+* Multi-chain support
+* Strategy auto-execution
+
+---
+
+**End of PRD**

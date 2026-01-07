@@ -1,0 +1,66 @@
+import { ChartJSNodeCanvas } from 'chartjs-node-canvas';
+import { ChartConfiguration } from 'chart.js';
+import { PriceSample, Signal } from '../generated/client';
+
+const width = 800;
+const height = 400;
+const chartCallback = (ChartJS: any) => {
+    // Optional: Global config
+};
+
+const chartJSNodeCanvas = new ChartJSNodeCanvas({ width, height, chartCallback });
+
+export const renderChart = async (signal: Signal, samples: PriceSample[]): Promise<Buffer> => {
+  if (samples.length === 0) {
+    throw new Error('No samples to chart');
+  }
+
+  const sortedSamples = [...samples].sort((a, b) => a.sampledAt.getTime() - b.sampledAt.getTime());
+  
+  const labels = sortedSamples.map(s => {
+    // Simple time label HH:MM
+    return s.sampledAt.toISOString().substring(11, 16);
+  });
+  
+  const dataPoints = sortedSamples.map(s => s.price);
+  const entryPrice = signal.entryPrice || dataPoints[0];
+
+  const configuration: ChartConfiguration = {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [
+        {
+          label: `${signal.symbol || 'Token'} Price`,
+          data: dataPoints,
+          borderColor: 'rgb(75, 192, 192)',
+          tension: 0.1,
+          pointRadius: 0
+        },
+        {
+            label: 'Entry',
+            data: Array(labels.length).fill(entryPrice),
+            borderColor: 'rgb(54, 162, 235)',
+            borderDash: [5, 5],
+            pointRadius: 0
+        }
+      ]
+    },
+    options: {
+      plugins: {
+        title: {
+          display: true,
+          text: `${signal.name} (${signal.mint}) - ${signal.category || 'General'}`
+        }
+      },
+      scales: {
+        y: {
+            beginAtZero: false
+        }
+      }
+    }
+  };
+
+  return chartJSNodeCanvas.renderToBuffer(configuration);
+};
+

@@ -1,0 +1,127 @@
+// This is your Prisma schema file
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/client"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model RawMessage {
+  id              Int      @id @default(autoincrement())
+  chatId          BigInt   @map("chat_id")
+  messageId       Int      @map("message_id")
+  senderId        BigInt?  @map("sender_id")
+  senderUsername  String?  @map("sender_username")
+  sentAt          DateTime @map("sent_at")
+  rawText         String   @map("raw_text")
+  parsedTemplateId String? @map("parsed_template_id")
+  isSignal        Boolean  @default(false) @map("is_signal")
+  parseConfidence Float?   @map("parse_confidence")
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  @@unique([chatId, messageId])
+  @@map("raw_messages")
+}
+
+model Signal {
+  id                  Int       @id @default(autoincrement())
+  chatId              BigInt    @map("chat_id")
+  messageId           Int       @map("message_id") // Origin message
+  category            String?
+  mint                String
+  name                String?
+  symbol              String?
+  reportedMcapText    String?   @map("reported_mcap_text")
+  reportedPriceText   String?   @map("reported_price_text")
+  detectedAt          DateTime  @default(now()) @map("detected_at")
+  
+  entryPrice          Float?    @map("entry_price")
+  entryPriceAt        DateTime? @map("entry_price_at")
+  entryPriceProvider  String?   @default("helius") @map("entry_price_provider")
+  
+  trackingStatus      TrackingStatus @default(ACTIVE) @map("tracking_status")
+  trackingEndAt       DateTime? @map("tracking_end_at")
+
+  // Relations
+  priceSamples        PriceSample[]
+  thresholdEvents     ThresholdEvent[]
+  metrics             SignalMetric?
+
+  @@unique([chatId, messageId])
+  @@index([mint])
+  @@index([trackingStatus])
+  @@map("signals")
+}
+
+enum TrackingStatus {
+  ACTIVE
+  ARCHIVED
+  ENTRY_PENDING
+}
+
+model PriceSample {
+  id          BigInt   @id @default(autoincrement())
+  signalId    Int      @map("signal_id")
+  mint        String
+  price       Float
+  sampledAt   DateTime @default(now()) @map("sampled_at")
+  provider    String   @default("helius")
+  liquidity   Float?
+  volume      Float?
+  confidence  Float?
+
+  signal      Signal   @relation(fields: [signalId], references: [id])
+
+  @@index([signalId, sampledAt])
+  @@map("price_samples")
+}
+
+model ThresholdEvent {
+  id                Int      @id @default(autoincrement())
+  signalId          Int      @map("signal_id")
+  multipleThreshold Int      @map("multiple_threshold") // 2, 3, 4, 5, 10
+  hitPrice          Float    @map("hit_price")
+  hitAt             DateTime @map("hit_at")
+  provider          String   @default("helius")
+
+  signal            Signal   @relation(fields: [signalId], references: [id])
+
+  @@unique([signalId, multipleThreshold])
+  @@map("threshold_events")
+}
+
+model SignalMetric {
+  signalId        Int      @id @map("signal_id")
+  currentPrice    Float    @map("current_price")
+  currentMultiple Float    @map("current_multiple")
+  athPrice        Float    @map("ath_price")
+  athMultiple     Float    @map("ath_multiple")
+  athAt           DateTime @map("ath_at")
+  maxDrawdown     Float    @default(0) @map("max_drawdown") // negative %
+  updatedAt       DateTime @default(now()) @map("updated_at")
+
+  signal          Signal   @relation(fields: [signalId], references: [id])
+
+  @@map("signal_metrics")
+}
+
+model CategoryMetric {
+  id              Int      @id @default(autoincrement())
+  category        String
+  window          String   // 7D, 30D, ALL
+  signalCount     Int      @map("signal_count")
+  hit2Rate        Float    @map("hit2_rate")
+  hit3Rate        Float    @map("hit3_rate")
+  hit5Rate        Float    @map("hit5_rate")
+  medianAth       Float    @map("median_ath")
+  p75Ath          Float    @map("p75_ath")
+  medianDrawdown  Float    @map("median_drawdown")
+  medianTimeTo2x  Float?   @map("median_time_to_2x") // seconds
+  updatedAt       DateTime @default(now()) @map("updated_at")
+
+  @@unique([category, window])
+  @@map("category_metrics")
+}
