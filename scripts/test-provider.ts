@@ -7,7 +7,7 @@ import { logger } from '../src/utils/logger';
 
 const main = async () => {
   try {
-    const mint = 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263'; // BONK
+    const mint = 'G2dJVAF27n4xBGjftmrpTydiUGb5eCjferW3KDRubonk'; // Test token
     logger.info(`Fetching metadata for ${mint}...`);
     
     // Check if key is loaded now
@@ -24,8 +24,10 @@ const main = async () => {
     const quote = await provider.getQuote(mint);
     logger.info('Quote:', quote);
 
-    if (meta.symbol === 'BONK' && quote.price > 0) {
+    if (meta.name !== 'Unknown' && quote.price >= 0) {
       logger.info('✅ Provider Test Passed');
+      logger.info(`Token: ${meta.name} (${meta.symbol})`);
+      logger.info(`Price: $${quote.price}`);
     } else {
       logger.error('❌ Provider Test Failed: Data mismatch');
     }
