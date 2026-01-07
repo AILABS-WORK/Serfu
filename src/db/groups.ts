@@ -30,6 +30,11 @@ export const getGroupByChatId = async (chatId: bigint) => {
 export const getAllGroups = async (activeOnly: boolean = false) => {
   return prisma.group.findMany({
     where: activeOnly ? { isActive: true } : undefined,
+    include: {
+      signals: {
+        select: { id: true },
+      },
+    },
     orderBy: { createdAt: 'desc' },
   });
 };

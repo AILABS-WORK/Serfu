@@ -7,11 +7,7 @@ const getChartModules = async () => {
     const chartjsNodeCanvas = await import('chartjs-node-canvas');
     ChartJSNodeCanvas = chartjsNodeCanvas.ChartJSNodeCanvas;
   }
-  if (!ChartConfiguration) {
-    const chartJs = await import('chart.js');
-    ChartConfiguration = chartJs.ChartConfiguration;
-  }
-  return { ChartJSNodeCanvas, ChartConfiguration };
+  return { ChartJSNodeCanvas };
 };
 
 import { PriceSample, Signal } from '../generated/client/client';

@@ -49,8 +49,8 @@ export const ingestMiddleware: Middleware<Context> = async (ctx, next) => {
         sentAt,
         rawText,
         isSignal: false, // Updated later by signal detector
-        groupId,
-        userId,
+        ...(groupId ? { group: { connect: { id: groupId } } } : {}),
+        ...(userId ? { user: { connect: { id: userId } } } : {}),
       });
 
       logger.debug(`Ingested message ${messageId} from ${chatId}`);
@@ -103,8 +103,8 @@ export const ingestMiddleware: Middleware<Context> = async (ctx, next) => {
           sentAt,
           rawText,
           isSignal: false,
-          groupId,
-          userId,
+          ...(groupId ? { group: { connect: { id: groupId } } } : {}),
+          ...(userId ? { user: { connect: { id: userId } } } : {}),
         });
   
         logger.debug(`Ingested media message ${messageId} from ${chatId}`);

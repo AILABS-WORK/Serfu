@@ -89,8 +89,8 @@ export const processMessage = async (message: RawMessage) => {
       entryPriceProvider: entryProvider,
       trackingStatus,
       detectedAt: new Date(),
-      groupId: groupId || null,
-      userId: userId || null,
+      ...(groupId ? { group: { connect: { id: groupId } } } : {}),
+      ...(userId ? { user: { connect: { id: userId } } } : {}),
     });
 
     logger.info(`Signal created: ${signal.id} for ${mint} at ${entryPrice} from group ${chatId}`);
