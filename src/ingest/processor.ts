@@ -10,7 +10,7 @@ import { forwardSignalToDestination } from '../bot/forwarder';
 export const processMessage = async (message: RawMessage) => {
   const { rawText, chatId, messageId } = message;
   
-  const detection = detectSignal(rawText);
+  const detection = await detectSignal(rawText);
   
   // Update raw message with detection result
   await prisma.rawMessage.update({

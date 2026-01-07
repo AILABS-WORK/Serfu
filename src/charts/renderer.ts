@@ -1,5 +1,19 @@
-import { ChartJSNodeCanvas } from 'chartjs-node-canvas';
-import { ChartConfiguration } from 'chart.js';
+// Dynamic imports for ESM modules
+let ChartJSNodeCanvas: any;
+let ChartConfiguration: any;
+
+const getChartModules = async () => {
+  if (!ChartJSNodeCanvas) {
+    const chartjsNodeCanvas = await import('chartjs-node-canvas');
+    ChartJSNodeCanvas = chartjsNodeCanvas.ChartJSNodeCanvas;
+  }
+  if (!ChartConfiguration) {
+    const chartJs = await import('chart.js');
+    ChartConfiguration = chartJs.ChartConfiguration;
+  }
+  return { ChartJSNodeCanvas, ChartConfiguration };
+};
+
 import { PriceSample, Signal } from '../generated/client';
 
 const width = 800;
@@ -8,17 +22,17 @@ const chartCallback = (ChartJS: any) => {
     // Optional: Global config
 };
 
-const chartJSNodeCanvas = new ChartJSNodeCanvas({ width, height, chartCallback });
-
 export const renderChart = async (signal: Signal, samples: PriceSample[]): Promise<Buffer> => {
   if (samples.length === 0) {
     throw new Error('No samples to chart');
   }
 
+  const { ChartJSNodeCanvas, ChartConfiguration } = await getChartModules();
+  const chartJSNodeCanvas = new ChartJSNodeCanvas({ width, height, chartCallback });
+
   const sortedSamples = [...samples].sort((a, b) => a.sampledAt.getTime() - b.sampledAt.getTime());
   
   const labels = sortedSamples.map(s => {
-    // Simple time label HH:MM
     return s.sampledAt.toISOString().substring(11, 16);
   });
   
@@ -63,4 +77,3 @@ export const renderChart = async (signal: Signal, samples: PriceSample[]): Promi
 
   return chartJSNodeCanvas.renderToBuffer(configuration);
 };
-

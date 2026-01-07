@@ -9,8 +9,8 @@ interface SignalDetectionResult {
 
 const SIGNAL_KEYWORDS = ['signal', 'buy', 'entry', 'mc', 'market cap', 'lfg', 'ape', 'calls', 'setup'];
 
-export const detectSignal = (text: string): SignalDetectionResult => {
-  const mints = extractMints(text);
+export const detectSignal = async (text: string): Promise<SignalDetectionResult> => {
+  const mints = await extractMints(text);
   
   if (mints.length === 0) {
     return { isSignal: false, mints: [], confidence: 0 };
@@ -42,4 +42,3 @@ export const detectSignal = (text: string): SignalDetectionResult => {
     confidence: 0.2
   };
 };
-
