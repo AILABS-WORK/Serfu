@@ -14,6 +14,8 @@ const main = async () => {
     if (!process.env.HELIUS_API_KEY) {
         throw new Error('HELIUS_API_KEY is missing in process.env');
     }
+    
+    logger.info(`✅ HELIUS_API_KEY loaded (length: ${process.env.HELIUS_API_KEY.length}, starts with: ${process.env.HELIUS_API_KEY.substring(0, 8)}...)`);
 
     const meta = await provider.getTokenMeta(mint);
     logger.info('Metadata:', meta);

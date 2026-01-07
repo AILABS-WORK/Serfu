@@ -23,6 +23,7 @@
     "chartjs-node-canvas": "^5.0.0",
     "date-fns": "^4.1.0",
     "dotenv": "^17.2.3",
+    "helius-sdk": "^2.0.5",
     "ioredis": "^5.9.0",
     "pg": "^8.16.3",
     "telegraf": "^4.16.3",
