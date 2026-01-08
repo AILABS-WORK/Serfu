@@ -49,6 +49,35 @@ export const setupBot = () => {
   });
 
   bot.command('ping', (ctx) => ctx.reply('Pong!'));
+  
+  bot.command('help', (ctx) => {
+    ctx.reply(
+      `📚 *AlphaColor Bot Help*\n\n` +
+      `*Quick Setup:*\n` +
+      `1. Add bot to your destination group\n` +
+      `2. Run /setdestination in that group\n` +
+      `3. Add bot to source groups to monitor\n` +
+      `4. Bot will auto-track and forward signals\n\n` +
+      `*Main Commands:*\n` +
+      `/menu - Open main menu\n` +
+      `/groups - Manage monitored groups\n` +
+      `/analytics - View analytics dashboard\n` +
+      `/groupstats - View group performance\n` +
+      `/userstats <id> - View user performance\n` +
+      `/groupleaderboard - Group rankings\n` +
+      `/userleaderboard - User rankings\n` +
+      `/copytrade - Strategy recommendations\n` +
+      `/simulate - Simulate following a strategy\n\n` +
+      `*Group Management:*\n` +
+      `/setdestination - Set destination group\n` +
+      `/removegroup - Remove a group\n` +
+      `/togglegroup - Enable/disable group\n\n` +
+      `*Need More Help?*\n` +
+      `See README.md for complete documentation\n` +
+      `Or check /groups to verify your setup`,
+      { parse_mode: 'Markdown' }
+    );
+  });
 
   // Group Management Commands
   bot.command('groups', handleGroupsCommand);
