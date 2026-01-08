@@ -67,11 +67,12 @@ export const generateFirstSignalCard = (
   userName: string
 ): string => {
   const age = formatAge(meta.createdAt);
-  const mc = formatNumber(meta.marketCap);
+  const mc = formatNumber(meta.liveMarketCap ?? meta.marketCap);
   const volume = formatNumber(meta.volume24h);
   const lp = formatNumber(meta.liquidity);
   const supply = meta.supply ? `${(meta.supply / 1e9).toFixed(2)}B` : 'N/A';
   const change1h = formatPercent(meta.priceChange1h);
+  const livePrice = meta.livePrice ? `$${meta.livePrice.toFixed(6)}` : undefined;
   const ath = formatNumber(meta.ath);
   const entryPrice = signal.entryPrice ? `$${signal.entryPrice.toFixed(6)}` : 'Pending';
 
@@ -97,6 +98,7 @@ export const generateFirstSignalCard = (
 *Chain:* ${meta.chain || 'Solana'}
 ${meta.launchpad ? `*Launchpad:* ${meta.launchpad}\n` : ''}*Age:* ${age}
 *Entry Price:* ${entryPrice}
+${livePrice ? `*Current Price:* ${livePrice}\n` : ''}
 
 *Market Data:*
 • *MC:* ${mc}

@@ -21,6 +21,9 @@ export interface TokenMeta {
   launchpad?: string;
   createdAt?: Date; // Token creation date
   chain?: string;
+  // Live overrides (fresh quote for notifications)
+  livePrice?: number | null;
+  liveMarketCap?: number | null;
 }
 
 export interface PriceQuote {

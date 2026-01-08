@@ -77,18 +77,25 @@ export const processMessage = async (message: RawMessage) => {
     let groupId = rawMsg?.groupId;
     let ownerForDuplicate: number | undefined = rawMsg?.group?.ownerId || undefined;
     if (!groupId && message.chatId) {
-      const { createOrUpdateGroup } = await import('../db/groups');
+      const { createOrUpdateGroup, getAnyGroupByChatId } = await import('../db/groups');
       try {
-        // Use senderId if available, otherwise use chatId as owner (for channels)
-        const ownerId = message.senderId || message.chatId;
-        const group = await createOrUpdateGroup(message.chatId, ownerId, {
-          type: 'source',
-          chatType: (message as any).chatType || undefined,
-        });
-        groupId = group.id;
-        ownerForDuplicate = group.ownerId || ownerForDuplicate;
+        // Try to find existing group by chatId (channel/group already claimed)
+        const existing = await getAnyGroupByChatId(message.chatId);
+        if (existing) {
+          groupId = existing.id;
+          ownerForDuplicate = existing.ownerId || ownerForDuplicate;
+        } else {
+          // Use senderId if available, otherwise use chatId as owner (for channels)
+          const ownerId = message.senderId || message.chatId;
+          const group = await createOrUpdateGroup(message.chatId, ownerId, {
+            type: 'source',
+            chatType: (message as any).chatType || undefined,
+          });
+          groupId = group.id;
+          ownerForDuplicate = group.ownerId || ownerForDuplicate;
+        }
       } catch (error) {
-        logger.warn(`Could not create group/channel for signal: ${error}`);
+        logger.warn(`Could not create or find group/channel for signal: ${error}`);
       }
     }
     if (rawMsg?.group?.ownerId) {
@@ -117,9 +124,22 @@ export const processMessage = async (message: RawMessage) => {
 
     // Check if this is a duplicate CA
     const duplicateCheck = await checkDuplicateCA(mint, ownerForDuplicate);
+
+    // Fetch a fresh quote for current stats (for notification only)
+    let livePrice: number | null = null;
+    let liveMarketCap: number | null = null;
+    try {
+      const freshQuote = await provider.getQuote(mint);
+      livePrice = freshQuote.price;
+      if (meta.supply) {
+        liveMarketCap = freshQuote.price * meta.supply;
+      }
+    } catch (err) {
+      logger.debug(`Could not fetch live price for ${mint}:`, err);
+    }
     
     // Send Telegram Notification (to source group) with enhanced card
-    await notifySignal(signal, meta, duplicateCheck);
+    await notifySignal(signal, { ...meta, livePrice, liveMarketCap }, duplicateCheck);
 
     // Forward to destination groups (if configured)
     await forwardSignalToDestination(signal);
