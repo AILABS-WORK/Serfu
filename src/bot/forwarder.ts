@@ -4,6 +4,7 @@ import { prisma } from '../db';
 import { getBotInstance } from './instance';
 import { logger } from '../utils/logger';
 import { scheduleAutoDelete } from '../utils/messageCleanup';
+import { checkDuplicateCA } from './signalCard';
 
 export const forwardSignalToDestination = async (signal: Signal) => {
   try {
@@ -30,6 +31,7 @@ export const forwardSignalToDestination = async (signal: Signal) => {
     }
     
     const ownerTelegramId = sourceGroup.owner.userId; // Owner's Telegram ID
+    const ownerId = sourceGroup.ownerId;
     
     // Get destination groups for the owner of the source group
     const destinationGroups = await getDestinationGroups(ownerTelegramId);
@@ -40,6 +42,7 @@ export const forwardSignalToDestination = async (signal: Signal) => {
 
     const bot = getBotInstance();
     const groupName = sourceGroup.name || 'Unknown Group';
+    const originType = sourceGroup.chatType === 'channel' ? 'Channel' : 'Group';
     const userName = signalWithRelations.user?.username || signalWithRelations.user?.firstName || 'Unknown User';
 
     for (const destGroup of destinationGroups) {
@@ -62,15 +65,29 @@ export const forwardSignalToDestination = async (signal: Signal) => {
         continue; // Already forwarded
       }
 
-      // Format forwarded message
-      const message = `
-🚨 *SIGNAL FROM ${groupName}*
+      // Check duplicate across this owner
+      const duplicateCheck = await checkDuplicateCA(signal.mint, destGroup.chatId, ownerId || undefined);
+      const isDup = duplicateCheck.isDuplicate;
 
-*Token:* ${signal.name} (${signal.symbol})
-*Mint:* \`${signal.mint}\`
-*Entry:* $${signal.entryPrice?.toFixed(6) || 'Pending'}
-*Source Group:* ${groupName}
-*From:* @${userName}
+      // Format forwarded message
+      const header = isDup ? '🔄 CA POSTED AGAIN' : `🚨 SIGNAL FROM ${originType}`;
+      const originLine = `*Source ${originType}:* ${groupName}`;
+      const userLine = `*From:* @${userName}`;
+      const entryLine = `*Entry:* $${signal.entryPrice?.toFixed(6) || 'Pending'}`;
+      const mintLine = `*Mint:* \`${signal.mint}\``;
+      const tokenLine = `*Token:* ${signal.name} (${signal.symbol})`;
+      const duplicateExtra = isDup
+        ? `\n*First mention:* ${duplicateCheck.firstGroupName || 'Unknown'}`
+        : '';
+
+      const message = `
+${header}
+
+${tokenLine}
+${mintLine}
+${entryLine}
+${originLine}
+${userLine}${duplicateExtra}
 
 [View on Solscan](https://solscan.io/token/${signal.mint})
       `;
