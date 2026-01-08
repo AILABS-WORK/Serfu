@@ -11,7 +11,11 @@ import { checkDuplicateCA } from '../bot/signalCard';
 export const processMessage = async (message: RawMessage) => {
   const { rawText, chatId, messageId } = message;
   
+  logger.debug(`Processing message ${messageId} from chat ${chatId}: ${rawText?.substring(0, 50)}...`);
+  
   const detection = await detectSignal(rawText);
+  
+  logger.debug(`Signal detection result: isSignal=${detection.isSignal}, mints=${detection.mints.length}, confidence=${detection.confidence}`);
   
   // Update raw message with detection result
   await prisma.rawMessage.update({
@@ -24,8 +28,11 @@ export const processMessage = async (message: RawMessage) => {
   });
 
   if (!detection.isSignal || detection.mints.length === 0) {
+    logger.debug(`Message ${messageId} is not a signal or has no mints`);
     return;
   }
+  
+  logger.info(`Signal detected in message ${messageId}: ${detection.mints[0]}`);
 
   // Handle first mint found (simplification for v1, usually 1 mint per signal)
   const mint = detection.mints[0];
@@ -111,9 +118,16 @@ export const processMessage = async (message: RawMessage) => {
 
   } catch (error) {
     if ((error as any).code === 'P2002') {
-      logger.debug('Signal already exists for this message');
+      logger.debug(`Signal already exists for message ${messageId}`);
     } else {
-      logger.error('Error creating signal:', error);
+      logger.error(`Error creating signal for message ${messageId}:`, error);
+      logger.error('Error details:', {
+        messageId,
+        chatId,
+        mint: detection.mints[0],
+        error: (error as Error).message,
+        stack: (error as Error).stack,
+      });
     }
   }
 };

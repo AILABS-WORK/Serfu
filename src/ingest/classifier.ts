@@ -16,29 +16,40 @@ export const detectSignal = async (text: string): Promise<SignalDetectionResult>
     return { isSignal: false, mints: [], confidence: 0 };
   }
 
-  const lowerText = text.toLowerCase();
+  const lowerText = text.toLowerCase().trim();
   
-  // Heuristic: Mint + Keywords
+  // Heuristic: Mint + Keywords (high confidence)
   const hasKeyword = SIGNAL_KEYWORDS.some(kw => lowerText.includes(kw));
   
   if (hasKeyword) {
     return {
       isSignal: true,
       mints,
-      confidence: 0.8,
-      templateId: 'heuristic_v1'
+      confidence: 0.9,
+      templateId: 'heuristic_keyword'
     };
   }
 
-  // If just a mint is posted, it might be a signal or just discussion.
-  // For AlphaColor (Group), usually a mint post IS a signal if it's from the admin/channel.
-  // Assuming "Bot is added to the AlphaColor group" implies broadly treating mints as potential signals.
-  // Let's be slightly conservative: if it's JUST a mint (or short text), maybe yes?
-  // PRD 4.2 says: "Fallback heuristic: presence of a valid Solana mint + one or more keywords"
+  // If text is just a mint address (or very short), treat it as a signal
+  // This is common in signal groups where people just post CAs
+  const textWithoutMints = text.replace(new RegExp(mints.join('|'), 'gi'), '').trim();
+  const isJustMint = textWithoutMints.length < 20; // Allow some whitespace/formatting
   
+  if (isJustMint) {
+    return {
+      isSignal: true,
+      mints,
+      confidence: 0.7,
+      templateId: 'standalone_mint'
+    };
+  }
+
+  // If mint is present but with longer text, still treat as potential signal
+  // (might be a signal with description)
   return {
-    isSignal: false, // Strict per PRD fallback rule
+    isSignal: true,
     mints,
-    confidence: 0.2
+    confidence: 0.6,
+    templateId: 'mint_with_text'
   };
 };
