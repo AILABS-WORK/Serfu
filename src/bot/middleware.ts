@@ -1,7 +1,7 @@
 import { Context, Middleware } from 'telegraf';
 import { createRawMessage } from '../db/messages';
 import { processMessage } from '../ingest/processor';
-import { createOrUpdateGroup, getAnyGroupByChatId } from '../db/groups';
+import { createOrUpdateGroup } from '../db/groups';
 import { createOrUpdateUser } from '../db/users';
 import { logger } from '../utils/logger';
 
@@ -26,6 +26,7 @@ export const ingestMiddleware: Middleware<Context> = async (ctx, next) => {
       }
       
       // Find existing claimed channel (any owner)
+      const { getAnyGroupByChatId } = await import('../db/groups');
       const existing = await getAnyGroupByChatId(BigInt(chatId));
 
       // Create user if sender exists
