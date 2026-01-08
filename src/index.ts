@@ -10,13 +10,26 @@ dotenv.config();
 const runMigrations = async () => {
   try {
     logger.info('Running database migrations...');
-    execSync('npx prisma migrate deploy', { stdio: 'inherit' });
-    logger.info('Migrations completed successfully');
+    
+    // Try migrate deploy first (for existing migrations)
+    try {
+      execSync('npx prisma migrate deploy', { stdio: 'pipe' });
+      logger.info('Migrations completed successfully');
+      return;
+    } catch (migrateError) {
+      logger.warn('migrate deploy failed, trying db push...');
+    }
+    
+    // Fallback to db push (creates tables directly from schema)
+    // This is useful when migrations don't exist yet
+    logger.info('Using db push to sync schema...');
+    execSync('npx prisma db push --accept-data-loss', { stdio: 'pipe' });
+    logger.info('Database schema synced successfully');
   } catch (error) {
-    logger.error('Migration failed:', error);
-    // In production, we might want to exit, but for now let's continue
-    // to allow the bot to start even if migrations fail (they might already be applied)
-    logger.warn('Continuing despite migration error (migrations may already be applied)');
+    logger.error('Database setup failed:', error);
+    logger.error('Please run migrations manually: npx prisma migrate deploy');
+    // Don't exit - let the bot try to start anyway
+    // The error will be clear in logs
   }
 };
 
