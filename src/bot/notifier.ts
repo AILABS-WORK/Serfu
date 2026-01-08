@@ -2,8 +2,20 @@ import { Signal } from '../generated/client/client';
 import { getBotInstance } from './instance';
 import { logger } from '../utils/logger';
 import { prisma } from '../db';
+import { TokenMeta } from '../providers/types';
+import { generateFirstSignalCard, generateDuplicateSignalCard } from './signalCard';
 
-export const notifySignal = async (signal: Signal) => {
+interface DuplicateCheck {
+  isDuplicate: boolean;
+  firstSignal?: Signal;
+  firstGroupName?: string;
+}
+
+export const notifySignal = async (
+  signal: Signal, 
+  meta?: TokenMeta,
+  duplicateCheck?: DuplicateCheck
+) => {
   try {
     const bot = getBotInstance();
     const chatId = signal.chatId;
@@ -17,7 +29,50 @@ export const notifySignal = async (signal: Signal) => {
     const groupName = signalWithGroup?.group?.name || 'Unknown Group';
     const userName = signalWithGroup?.user?.username || signalWithGroup?.user?.firstName || 'Unknown User';
 
-    const message = `
+    let message: string;
+    let keyboard: any;
+
+    // Check if this is a duplicate
+    if (duplicateCheck?.isDuplicate && duplicateCheck.firstSignal && meta) {
+      // Generate duplicate card
+      message = generateDuplicateSignalCard(
+        signal,
+        meta,
+        duplicateCheck.firstSignal,
+        duplicateCheck.firstGroupName || 'Unknown Group',
+        groupName,
+        userName
+      );
+      keyboard = {
+        inline_keyboard: [
+          [
+            { text: '📈 Chart', callback_data: `chart:${signal.id}` },
+            { text: '📊 Stats', callback_data: `stats:${signal.id}` },
+          ],
+          [
+            { text: '🔍 View First Call', callback_data: `signal:${duplicateCheck.firstSignal.id}` },
+            { text: '⭐ Watchlist', callback_data: `watchlist:${signal.id}` },
+          ],
+        ],
+      };
+    } else if (meta) {
+      // Generate rich first signal card
+      message = generateFirstSignalCard(signal, meta, groupName, userName);
+      keyboard = {
+        inline_keyboard: [
+          [
+            { text: '📈 Chart', callback_data: `chart:${signal.id}` },
+            { text: '📊 Stats', callback_data: `stats:${signal.id}` },
+          ],
+          [
+            { text: '⭐ Watchlist', callback_data: `watchlist:${signal.id}` },
+            { text: '🔔 Alerts', callback_data: `alerts:${signal.id}` },
+          ],
+        ],
+      };
+    } else {
+      // Fallback to basic message
+      message = `
 🚨 *ALPHA SIGNAL DETECTED* 🚨
 
 *Token:* ${signal.name} (${signal.symbol})
@@ -25,25 +80,25 @@ export const notifySignal = async (signal: Signal) => {
 *Entry:* $${signal.entryPrice?.toFixed(6) || 'Pending'}
 *Group:* ${groupName}
 *From:* @${userName}
-*Category:* ${signal.category || 'Uncategorized'}
-*Time:* ${new Date().toUTCString()}
 
 [View on Solscan](https://solscan.io/token/${signal.mint})
-`;
-
-    await bot.telegram.sendMessage(Number(chatId), message, {
-      parse_mode: 'Markdown',
-      reply_markup: {
+      `.trim();
+      keyboard = {
         inline_keyboard: [
           [
             { text: '📈 Chart', callback_data: `chart:${signal.id}` },
             { text: '📊 Stats', callback_data: `stats:${signal.id}` },
           ],
           [
-             { text: '⭐ Watchlist', callback_data: `watchlist:${signal.id}` }
-          ]
+            { text: '⭐ Watchlist', callback_data: `watchlist:${signal.id}` },
+          ],
         ],
-      },
+      };
+    }
+
+    await bot.telegram.sendMessage(Number(chatId), message, {
+      parse_mode: 'Markdown',
+      reply_markup: keyboard,
     });
     
     logger.info(`Notification sent for signal ${signal.id}`);

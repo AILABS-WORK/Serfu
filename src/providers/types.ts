@@ -4,6 +4,23 @@ export interface TokenMeta {
   symbol: string;
   decimals?: number;
   image?: string;
+  // Enhanced metadata
+  marketCap?: number;
+  volume24h?: number;
+  liquidity?: number;
+  supply?: number;
+  priceChange1h?: number;
+  ath?: number;
+  athDate?: Date;
+  socialLinks?: {
+    website?: string;
+    twitter?: string;
+    telegram?: string;
+    discord?: string;
+  };
+  launchpad?: string;
+  createdAt?: Date; // Token creation date
+  chain?: string;
 }
 
 export interface PriceQuote {

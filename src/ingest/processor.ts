@@ -6,6 +6,7 @@ import { logger } from '../utils/logger';
 import { prisma } from '../db';
 import { notifySignal } from '../bot/notifier';
 import { forwardSignalToDestination } from '../bot/forwarder';
+import { checkDuplicateCA } from '../bot/signalCard';
 
 export const processMessage = async (message: RawMessage) => {
   const { rawText, chatId, messageId } = message;
@@ -99,8 +100,11 @@ export const processMessage = async (message: RawMessage) => {
 
     logger.info(`Signal created: ${signal.id} for ${mint} at ${entryPrice} from group ${chatId}`);
 
-    // Send Telegram Notification (to source group)
-    await notifySignal(signal);
+    // Check if this is a duplicate CA
+    const duplicateCheck = await checkDuplicateCA(mint, chatId);
+    
+    // Send Telegram Notification (to source group) with enhanced card
+    await notifySignal(signal, meta, duplicateCheck);
 
     // Forward to destination groups (if configured)
     await forwardSignalToDestination(signal);
