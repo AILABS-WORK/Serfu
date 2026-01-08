@@ -72,29 +72,100 @@ Entry: $${signal.entryPrice?.toFixed(6)}
     }
   });
 
+  // Group Management Actions
+  bot.action('group_add', async (ctx) => {
+    await ctx.answerCbQuery();
+    const bot = ctx.telegram;
+    const botInfo = await bot.getMe();
+    const inviteLink = `https://t.me/${botInfo.username}?startgroup`;
+    
+    await ctx.reply(
+      `➕ *Add Bot to Group*\n\n` +
+      `*Method 1: Invite Link*\n` +
+      `Click the link below to add the bot to a group:\n` +
+      `${inviteLink}\n\n` +
+      `*Method 2: Manual*\n` +
+      `1. Go to your group\n` +
+      `2. Add @${botInfo.username} as member\n` +
+      `3. Run /setdestination (for destination)\n` +
+      `4. Or bot will auto-track as source\n\n` +
+      `*Note:* Each user has their own groups. Other users won't see your groups.`,
+      {
+        parse_mode: 'Markdown',
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '🔗 Copy Invite Link', url: inviteLink }],
+            [{ text: '📋 My Groups', callback_data: 'groups_menu' }],
+          ],
+        },
+      }
+    );
+  });
+
+  bot.action('group_invite', async (ctx) => {
+    await ctx.answerCbQuery();
+    const bot = ctx.telegram;
+    const botInfo = await bot.getMe();
+    const inviteLink = `https://t.me/${botInfo.username}?startgroup`;
+    
+    await ctx.reply(
+      `🔗 *Bot Invite Link*\n\n` +
+      `${inviteLink}\n\n` +
+      `Share this link to easily add the bot to groups!\n` +
+      `After adding, run /setdestination in that group.`,
+      {
+        parse_mode: 'Markdown',
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '🔗 Open Link', url: inviteLink }],
+            [{ text: '⬅️ Back', callback_data: 'groups_menu' }],
+          ],
+        },
+      }
+    );
+  });
+
+  bot.action('groups_menu', async (ctx) => {
+    await ctx.answerCbQuery();
+    await handleGroupsCommand(ctx);
+  });
+
   // Analytics Actions
   bot.action('analytics', handleAnalyticsCommand);
   bot.action('analytics_groups', async (ctx) => {
     await ctx.answerCbQuery();
-    const groups = await prisma.group.findMany({
-      where: { isActive: true },
-      include: {
-        groupMetrics: {
-          where: { window: '30D' },
-          take: 1,
-        },
-      },
-      take: 10,
-    });
-
-    if (groups.length === 0) {
-      return ctx.reply('No active groups found.');
+    const userId = ctx.from?.id ? BigInt(ctx.from.id) : null;
+    if (!userId) {
+      return ctx.reply('❌ Unable to identify user.');
+    }
+    
+    const { getAllGroups } = require('../db/groups');
+    const groups = await getAllGroups(userId);
+    
+    // Filter to active groups and get metrics
+    const activeGroups = groups.filter((g: any) => g.isActive);
+    
+    if (activeGroups.length === 0) {
+      return ctx.reply('No active groups found. Add the bot to a group first!');
     }
 
-    let message = '👥 *Groups Overview*\n\n';
-    groups.forEach((group: any, index: number) => {
-      const metric = group.groupMetrics[0];
-      message += `${index + 1}. *${group.name || group.chatId}*\n`;
+    const groupsWithMetrics = await Promise.all(
+      activeGroups.slice(0, 10).map(async (group: any) => {
+        const metrics = await prisma.groupMetric.findFirst({
+          where: { groupId: group.id, window: '30D' },
+        });
+        return { ...group, metric: metrics };
+      })
+    );
+
+    if (groupsWithMetrics.length === 0) {
+      return ctx.reply('No active groups found. Add the bot to a group first!');
+    }
+
+    let message = '👥 *Your Groups Overview*\n\n';
+    groupsWithMetrics.forEach((group: any, index: number) => {
+      const metric = group.metric;
+      message += `${index + 1}. *${group.name || `Group ${group.chatId}`}*\n`;
       if (metric) {
         message += `   Win Rate: ${(metric.hit2Rate * 100).toFixed(1)}% | `;
         message += `Signals: ${metric.totalSignals}\n\n`;

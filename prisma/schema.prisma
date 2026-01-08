@@ -148,19 +148,25 @@ model CategoryMetric {
 
 model Group {
   id        Int      @id @default(autoincrement())
-  chatId    BigInt   @unique @map("chat_id")
+  chatId    BigInt   @map("chat_id")
   name      String?
   type      String? // "source" or "destination"
   isActive  Boolean  @default(true) @map("is_active")
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
+  
+  // User ownership - each group belongs to a user
+  ownerId   Int      @map("owner_id")
+  owner     User     @relation("OwnedGroups", fields: [ownerId], references: [id])
 
   // Relations
   signals      Signal[]
   rawMessages  RawMessage[]
   groupMetrics GroupMetric[]
 
+  @@unique([chatId, ownerId]) // Same group can be added by multiple users, but each user has their own record
   @@index([chatId])
+  @@index([ownerId])
   @@map("groups")
 }
 
@@ -174,9 +180,10 @@ model User {
   updatedAt DateTime @updatedAt @map("updated_at")
 
   // Relations
-  signals     Signal[]
-  rawMessages RawMessage[]
-  userMetrics UserMetric[]
+  signals       Signal[]
+  rawMessages   RawMessage[]
+  userMetrics   UserMetric[]
+  ownedGroups   Group[]      @relation("OwnedGroups") // Groups this user owns/manages
 
   @@index([userId])
   @@map("users")

@@ -2,6 +2,7 @@ import { Context } from 'telegraf';
 import { getTopStrategies, simulateCopyTrading, computeGroupStrategy, computeUserStrategy } from '../../analytics/copyTrading';
 import { logger } from '../../utils/logger';
 import { prisma } from '../../db';
+import { getGroupByChatId } from '../../db/groups';
 
 export const handleCopyTradingCommand = async (ctx: Context, window: '7D' | '30D' | 'ALL' = '30D') => {
   try {
@@ -69,11 +70,13 @@ export const handleSimulateCommand = async (
       targetId = user.id;
       targetName = user.username || user.firstName || user.userId.toString();
     } else {
-      const group = await prisma.group.findUnique({
-        where: { chatId: BigInt(targetIdStr) },
-      });
+      const userId = ctx.from?.id ? BigInt(ctx.from.id) : null;
+      if (!userId) {
+        return ctx.reply('❌ Unable to identify user.');
+      }
+      const group = await getGroupByChatId(BigInt(targetIdStr), userId);
       if (!group) {
-        return ctx.reply('Group not found.');
+        return ctx.reply('❌ Group not found. Make sure you own this group.');
       }
       targetId = group.id;
       targetName = group.name || group.chatId.toString();

@@ -1,7 +1,7 @@
 import { Context } from 'telegraf';
 import { prisma } from '../../db';
 import { logger } from '../../utils/logger';
-import { getAllGroups } from '../../db/groups';
+import { getAllGroups, getGroupByChatId } from '../../db/groups';
 import { getAllUsers } from '../../db/users';
 
 export const handleAnalyticsCommand = async (ctx: Context) => {
@@ -32,6 +32,11 @@ export const handleAnalyticsCommand = async (ctx: Context) => {
 
 export const handleGroupStatsCommand = async (ctx: Context, groupIdStr?: string) => {
   try {
+    const userId = ctx.from?.id ? BigInt(ctx.from.id) : null;
+    if (!userId) {
+      return ctx.reply('❌ Unable to identify user.');
+    }
+
     const chatId = ctx.chat?.id;
     const targetChatId = groupIdStr ? BigInt(groupIdStr) : (chatId ? BigInt(chatId) : null);
 
@@ -39,8 +44,14 @@ export const handleGroupStatsCommand = async (ctx: Context, groupIdStr?: string)
       return ctx.reply('Please specify a group ID or use this command in a group.');
     }
 
-    const group = await prisma.group.findUnique({
-      where: { chatId: targetChatId },
+    const group = await getGroupByChatId(targetChatId, userId);
+    
+    if (!group) {
+      return ctx.reply('❌ Group not found. Make sure you own this group or the bot is in it.');
+    }
+
+    const groupWithMetrics = await prisma.group.findUnique({
+      where: { id: group.id },
       include: {
         groupMetrics: {
           orderBy: { window: 'asc' },
@@ -55,15 +66,15 @@ export const handleGroupStatsCommand = async (ctx: Context, groupIdStr?: string)
       },
     });
 
-    if (!group) {
+    if (!groupWithMetrics) {
       return ctx.reply('Group not found.');
     }
 
-    const allTime = group.groupMetrics.find((m: any) => m.window === 'ALL');
-    const last30d = group.groupMetrics.find((m: any) => m.window === '30D');
-    const last7d = group.groupMetrics.find((m: any) => m.window === '7D');
+    const allTime = groupWithMetrics.groupMetrics.find((m: any) => m.window === 'ALL');
+    const last30d = groupWithMetrics.groupMetrics.find((m: any) => m.window === '30D');
+    const last7d = groupWithMetrics.groupMetrics.find((m: any) => m.window === '7D');
 
-    let message = `📊 *Group Analytics: ${group.name || group.chatId}*\n\n`;
+    let message = `📊 *Your Group Analytics: ${groupWithMetrics.name || groupWithMetrics.chatId}*\n\n`;
     
     if (allTime) {
       message += `*All Time Stats:*\n`;
@@ -93,8 +104,8 @@ export const handleGroupStatsCommand = async (ctx: Context, groupIdStr?: string)
       reply_markup: {
         inline_keyboard: [
           [
-            { text: '📈 View Signals', callback_data: `group_signals:${group.id}` },
-            { text: '📊 Compare', callback_data: `group_compare:${group.id}` },
+            { text: '📈 View Signals', callback_data: `group_signals:${groupWithMetrics.id}` },
+            { text: '📊 Compare', callback_data: `group_compare:${groupWithMetrics.id}` },
           ],
           [
             { text: '🔙 Back', callback_data: 'analytics_groups' },
@@ -194,18 +205,34 @@ export const handleUserStatsCommand = async (ctx: Context, userIdStr?: string) =
 
 export const handleGroupLeaderboardCommand = async (ctx: Context, window: '7D' | '30D' | 'ALL' = '30D') => {
   try {
+    const userId = ctx.from?.id ? BigInt(ctx.from.id) : null;
+    if (!userId) {
+      return ctx.reply('❌ Unable to identify user.');
+    }
+
+    // Get user's groups first
+    const userGroups = await getAllGroups(userId);
+    const userGroupIds = userGroups.map((g: any) => g.id);
+
+    if (userGroupIds.length === 0) {
+      return ctx.reply('No groups found. Add the bot to a group first!');
+    }
+
     const metrics = await prisma.groupMetric.findMany({
-      where: { window },
+      where: { 
+        window,
+        groupId: { in: userGroupIds }, // Only user's groups
+      },
       include: { group: true },
       orderBy: { hit2Rate: 'desc' },
       take: 20,
     });
 
     if (metrics.length === 0) {
-      return ctx.reply(`No group metrics available for ${window} window.`);
+      return ctx.reply(`No group metrics available for ${window} window. Add groups and wait for signals!`);
     }
 
-    let message = `🏆 *Group Leaderboard (${window})*\n\n`;
+    let message = `🏆 *Your Group Leaderboard (${window})*\n\n`;
     
     metrics.forEach((metric: any, index: number) => {
       const rank = index + 1;

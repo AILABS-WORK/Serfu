@@ -57,22 +57,26 @@ export const processMessage = async (message: RawMessage) => {
       include: { group: true, user: true },
     });
 
-    // Ensure group exists (should already exist from middleware, but double-check)
-    let groupId = rawMsg?.groupId;
-    if (!groupId && message.chatId) {
-      const { createOrUpdateGroup } = await import('../db/groups');
-      const group = await createOrUpdateGroup(message.chatId, {
-        type: 'source',
-      });
-      groupId = group.id;
-    }
-
     // Ensure user exists (should already exist from middleware, but double-check)
     let userId = rawMsg?.userId;
     if (!userId && message.senderId) {
       const { createOrUpdateUser } = await import('../db/users');
       const user = await createOrUpdateUser(message.senderId, {});
       userId = user.id;
+    }
+
+    // Ensure group exists for this user (should already exist from middleware, but double-check)
+    let groupId = rawMsg?.groupId;
+    if (!groupId && message.chatId && message.senderId) {
+      const { createOrUpdateGroup } = await import('../db/groups');
+      try {
+        const group = await createOrUpdateGroup(message.chatId, message.senderId, {
+          type: 'source',
+        });
+        groupId = group.id;
+      } catch (error) {
+        logger.warn(`Could not create group for signal: ${error}`);
+      }
     }
 
     // Create Signal

@@ -6,24 +6,35 @@ import { logger } from '../utils/logger';
 
 export const forwardSignalToDestination = async (signal: Signal) => {
   try {
-    const destinationGroups = await getDestinationGroups();
-    
-    if (destinationGroups.length === 0) {
-      return; // No destination groups configured
-    }
-
-    // Load signal with relations
+    // Load signal with relations to get the source group owner
     const signalWithRelations = await prisma.signal.findUnique({
       where: { id: signal.id },
-      include: { group: true, user: true },
+      include: { 
+        group: {
+          include: {
+            owner: true, // Get the owner of the source group
+          },
+        },
+        user: true,
+      },
     });
 
-    if (!signalWithRelations) {
-      return;
+    if (!signalWithRelations || !signalWithRelations.group) {
+      return; // No group info, can't forward
+    }
+
+    const sourceGroup = signalWithRelations.group;
+    const ownerTelegramId = sourceGroup.owner.userId; // Owner's Telegram ID
+    
+    // Get destination groups for the owner of the source group
+    const destinationGroups = await getDestinationGroups(ownerTelegramId);
+    
+    if (destinationGroups.length === 0) {
+      return; // No destination groups configured for this user
     }
 
     const bot = getBotInstance();
-    const groupName = signalWithRelations.group?.name || 'Unknown Group';
+    const groupName = sourceGroup.name || 'Unknown Group';
     const userName = signalWithRelations.user?.username || signalWithRelations.user?.firstName || 'Unknown User';
 
     for (const destGroup of destinationGroups) {
@@ -84,7 +95,7 @@ export const forwardSignalToDestination = async (signal: Signal) => {
         },
       });
 
-      logger.info(`Signal ${signal.id} forwarded to group ${destGroup.chatId}`);
+      logger.info(`Signal ${signal.id} forwarded to group ${destGroup.chatId} (owner: ${ownerTelegramId})`);
     }
   } catch (error) {
     logger.error(`Error forwarding signal ${signal.id}:`, error);

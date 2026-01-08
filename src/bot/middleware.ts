@@ -19,17 +19,9 @@ export const ingestMiddleware: Middleware<Context> = async (ctx, next) => {
       const sentAt = new Date(message.date * 1000);
       const rawText = message.text;
 
-      // Auto-create/update Group and User
-      let groupId: number | null = null;
+      // Auto-create/update User
       let userId: number | null = null;
-
-      if (message.chat.type === 'group' || message.chat.type === 'supergroup') {
-        const group = await createOrUpdateGroup(BigInt(chatId), {
-          name: message.chat.title || undefined,
-          type: 'source', // Default to source, can be changed via command
-        });
-        groupId = group.id;
-      }
+      let groupId: number | null = null;
 
       if (senderId) {
         const user = await createOrUpdateUser(BigInt(senderId), {
@@ -38,6 +30,23 @@ export const ingestMiddleware: Middleware<Context> = async (ctx, next) => {
           lastName: message.from?.last_name,
         });
         userId = user.id;
+      }
+
+      // For groups: Only create if user exists and this is their group
+      // Groups are user-specific, so we create them when a user interacts
+      // For now, we'll try to find existing group for this user, or create if sender is interacting
+      if ((message.chat.type === 'group' || message.chat.type === 'supergroup') && senderId) {
+        try {
+          // Try to find or create group for this user
+          const group = await createOrUpdateGroup(BigInt(chatId), BigInt(senderId), {
+            name: message.chat.title || undefined,
+            type: 'source', // Default to source, can be changed via command
+          });
+          groupId = group.id;
+        } catch (error) {
+          // If group creation fails (e.g., user doesn't exist yet), just log and continue
+          logger.debug(`Could not create group for user ${senderId}:`, error);
+        }
       }
 
       // Store in DB
@@ -73,17 +82,9 @@ export const ingestMiddleware: Middleware<Context> = async (ctx, next) => {
         const sentAt = new Date(message.date * 1000);
         const rawText = message.caption || '';
 
-        // Auto-create/update Group and User
-        let groupId: number | null = null;
+        // Auto-create/update User
         let userId: number | null = null;
-
-        if (message.chat.type === 'group' || message.chat.type === 'supergroup') {
-          const group = await createOrUpdateGroup(BigInt(chatId), {
-            name: message.chat.title || undefined,
-            type: 'source',
-          });
-          groupId = group.id;
-        }
+        let groupId: number | null = null;
 
         if (senderId) {
           const user = await createOrUpdateUser(BigInt(senderId), {
@@ -92,6 +93,19 @@ export const ingestMiddleware: Middleware<Context> = async (ctx, next) => {
             lastName: message.from?.last_name,
           });
           userId = user.id;
+        }
+
+        // For groups: Create for the sender (they're interacting with the group)
+        if ((message.chat.type === 'group' || message.chat.type === 'supergroup') && senderId) {
+          try {
+            const group = await createOrUpdateGroup(BigInt(chatId), BigInt(senderId), {
+              name: message.chat.title || undefined,
+              type: 'source',
+            });
+            groupId = group.id;
+          } catch (error) {
+            logger.debug(`Could not create group for user ${senderId}:`, error);
+          }
         }
   
         // Store in DB
