@@ -62,7 +62,7 @@ export const processMessage = async (message: RawMessage) => {
     // Get group and user IDs from the raw message
     const rawMsg = await prisma.rawMessage.findUnique({
       where: { id: message.id },
-      include: { group: true, user: true },
+      include: { group: { include: { owner: true } }, user: true },
     });
 
     // Ensure user exists (should already exist from middleware, but double-check)
