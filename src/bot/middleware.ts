@@ -10,47 +10,46 @@ export const ingestMiddleware: Middleware<Context> = async (ctx, next) => {
   // We process messages from groups, supergroups, and channels
   // PRD says: "For every message in the group, store at minimum..."
   
-  // Guided channel claim flow (only in private chats)
-  if (ctx.chat?.type === 'private' && ctx.from?.id && isAwaitChannelClaim(ctx.from.id)) {
-    try {
-      const text = (ctx.message as any)?.text || '';
-      const fwdChat = (ctx.message as any)?.forward_from_chat;
-      let channelId: bigint | null = null;
-      let channelTitle: string | undefined;
+  // Guided channel claim flow (only in private chats). Also auto-claim if a forwarded channel message is sent.
+  if (ctx.chat?.type === 'private' && ctx.from?.id) {
+    const awaiting = isAwaitChannelClaim(ctx.from.id);
+    const text = (ctx.message as any)?.text || '';
+    const fwdChat = (ctx.message as any)?.forward_from_chat;
+    let channelId: bigint | null = null;
+    let channelTitle: string | undefined;
 
-      if (fwdChat?.type === 'channel' && fwdChat?.id) {
-        channelId = BigInt(fwdChat.id);
-        channelTitle = fwdChat.title;
-      } else if (text.startsWith('@')) {
-        try {
-          const chat = await ctx.telegram.getChat(text);
-          if ((chat as any).type === 'channel' && (chat as any).id) {
-            channelId = BigInt((chat as any).id);
-            channelTitle = (chat as any).title;
-          }
-        } catch (err) {
-          logger.debug('Failed to resolve channel username:', err);
+    if (fwdChat?.type === 'channel' && fwdChat?.id) {
+      channelId = BigInt(fwdChat.id);
+      channelTitle = fwdChat.title;
+    } else if (text && text.startsWith('@')) {
+      try {
+        const chat = await ctx.telegram.getChat(text);
+        if ((chat as any).type === 'channel' && (chat as any).id) {
+          channelId = BigInt((chat as any).id);
+          channelTitle = (chat as any).title;
         }
+      } catch (err) {
+        if (awaiting) logger.debug('Failed to resolve channel username:', err);
       }
+    }
 
+    if (awaiting || channelId) {
       if (!channelId) {
         await ctx.reply('❌ Please forward a message from the channel or send its @username.');
         return next();
       }
-
-      // Claim channel for this user
-      await createOrUpdateGroup(channelId, BigInt(ctx.from.id), {
-        name: channelTitle || `Channel ${channelId}`,
-        type: 'source',
-        chatType: 'channel',
-      });
-
-      clearAwaitChannelClaim(ctx.from.id);
-      await ctx.reply(`✅ Channel claimed: \`${channelId}\`\nRun /groups to verify.`, { parse_mode: 'Markdown' });
-      return next();
-    } catch (err) {
-      logger.error('Error during channel claim flow:', err);
-      await ctx.reply('❌ Could not claim channel. Make sure the bot is admin, then try again.');
+      try {
+        await createOrUpdateGroup(channelId, BigInt(ctx.from.id), {
+          name: channelTitle || `Channel ${channelId}`,
+          type: 'source',
+          chatType: 'channel',
+        });
+        clearAwaitChannelClaim(ctx.from.id);
+        await ctx.reply(`✅ Channel claimed: \`${channelId}\`\nRun /groups to verify.`, { parse_mode: 'Markdown' });
+      } catch (err) {
+        logger.error('Error during channel claim flow:', err);
+        await ctx.reply('❌ Could not claim channel. Make sure the bot is admin, then try again.');
+      }
       return next();
     }
   }
