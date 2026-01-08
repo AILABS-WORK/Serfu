@@ -116,7 +116,7 @@ export const processMessage = async (message: RawMessage) => {
     logger.info(`Signal created: ${signal.id} for ${mint} at ${entryPrice} from group ${chatId}`);
 
     // Check if this is a duplicate CA
-    const duplicateCheck = await checkDuplicateCA(mint, chatId, ownerForDuplicate);
+    const duplicateCheck = await checkDuplicateCA(mint, ownerForDuplicate);
     
     // Send Telegram Notification (to source group) with enhanced card
     await notifySignal(signal, meta, duplicateCheck);

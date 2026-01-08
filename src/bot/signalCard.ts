@@ -29,8 +29,8 @@ const formatPercent = (num: number | undefined | null): string => {
   return `${sign}${num.toFixed(2)}%`;
 };
 
-// Check if this is a duplicate CA
-export const checkDuplicateCA = async (mint: string, currentChatId: bigint, ownerId?: number): Promise<{
+// Check if this is a duplicate CA for an owner
+export const checkDuplicateCA = async (mint: string, ownerId?: number): Promise<{
   isDuplicate: boolean;
   firstSignal?: Signal;
   firstGroupName?: string;
@@ -47,7 +47,7 @@ export const checkDuplicateCA = async (mint: string, currentChatId: bigint, owne
 
   if (existingSignals.length > 0) {
     const firstSignal = existingSignals[0];
-    const isDuplicate = firstSignal.chatId !== currentChatId;
+    const isDuplicate = true;
     
     return {
       isDuplicate,
