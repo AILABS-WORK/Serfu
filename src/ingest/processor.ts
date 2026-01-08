@@ -82,6 +82,7 @@ export const processMessage = async (message: RawMessage) => {
         const ownerId = message.senderId || message.chatId;
         const group = await createOrUpdateGroup(message.chatId, ownerId, {
           type: 'source',
+          chatType: (message as any).chatType || undefined,
         });
         groupId = group.id;
       } catch (error) {

@@ -42,12 +42,14 @@ export const createOrUpdateGroup = async (
       ownerId: ownerId!,
       name: data.name,
       type: data.type || 'source',
+      chatType: (data as any).chatType,
       isActive: data.isActive ?? true,
     },
     update: {
       name: data.name,
       type: data.type,
       isActive: data.isActive,
+      chatType: (data as any).chatType ?? undefined,
       ownerId: ownerId, // Update owner if it was null
       updatedAt: new Date(),
     },

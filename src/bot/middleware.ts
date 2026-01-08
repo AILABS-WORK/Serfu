@@ -42,6 +42,7 @@ export const ingestMiddleware: Middleware<Context> = async (ctx, next) => {
         const group = await createOrUpdateGroup(BigInt(chatId), BigInt(senderId), {
           name: message.chat?.title || `Channel ${chatId}`,
           type: 'source',
+          chatType: 'channel',
         });
         groupId = group.id;
       } catch (error) {
@@ -108,6 +109,7 @@ export const ingestMiddleware: Middleware<Context> = async (ctx, next) => {
           const group = await createOrUpdateGroup(BigInt(chatId), BigInt(senderId), {
             name: chatTitle || undefined,
             type: 'source', // Default to source, can be changed via command
+            chatType: message.chat.type,
           });
           groupId = group.id;
         } catch (error) {
