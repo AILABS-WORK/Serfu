@@ -34,7 +34,26 @@ This plan ties together the PRD, BUILD_PLAN.md, and current implementation. It l
 - **Signal card actions**: Add quick “Stats”/“Chart” buttons (already present) and ensure they respect ownership.
 - **Testing**: Multi-owner scenarios to confirm isolation in commands, callbacks, and forwarded alerts.
 
-## 5) Implementation Tasks (Step-by-Step)
+## 5) Additional UX & Settings Coverage
+- **Monitored Channels section**: In `/groups` (or main menu), show monitored channels separately from monitored groups; include status and counts.
+- **Settings coverage**: Each major section (groups/channels, alerts, anti-spam, destinations, home chat) must expose settings via buttons/commands and persist per owner/chat.
+- **Home chat selection**: Allow user to designate a “home” chat (group/channel/DM) where their own alerts are routed; default to the owner’s private workspace if set.
+- **Group vs home bots**: If a bot is added directly to a group, that group is owned by the user who added it; if used as a private home, mark it as such and keep it isolated.
+- **Destination-as-monitored**: When a destination is set, also list it in monitored items for that owner (but never leak to other owners).
+
+## 6) Alerts & Signals (Expanded)
+- **Threshold alerts**: 2x, 3x, 4x, 5x, 10x, 15x, 20x, 30x, 50x, 100x from entry; route per owner settings (group, destination, home).
+- **Event alerts**: bonding, migrating, new signal, CA repost; include group and user origin.
+- **Cross-group awareness**: On reposts, include source group/user and price delta vs first call; log for analytics.
+
+## 7) Analytics Depth
+- Track which groups/users call first across multiple groups; earliest-call scoring.
+- Cross-group confirmation: identify signals echoed across multiple groups and compare performance.
+- Per-user performance across groups: where they post first, win rates, ATH multiples, time-to-2x.
+- Group-level “earliest callers” and “best confirmations.”
+- Ensure all analytics remain owner-scoped.
+
+## 8) Implementation Tasks (Step-by-Step)
 1) **Anti-Spam**
    - Add auto-delete scheduler per sent bot message (stores chatId, messageId, expiry).
    - Add inline “Hide” button to signal/alert cards; on press, delete the bot message.
@@ -57,6 +76,7 @@ This plan ties together the PRD, BUILD_PLAN.md, and current implementation. It l
      - hide button
      - home alerts (first/repost)
    - Persist per chat/owner.
+   - Add “Set Home Chat” control; add monitored channels listing; ensure destinations appear in monitored list for the owning user only.
 
 5) **Testing Plan**
    - Groups: Post CA in source group → card shows, auto-deletes in ~60s, hide works.
@@ -64,19 +84,22 @@ This plan ties together the PRD, BUILD_PLAN.md, and current implementation. It l
    - Repost: Post same CA in another group/channel → “CA posted again” card with delta.
    - Isolation: Two different users, each with their own source/destination; verify no cross-visibility in `/groups`, leaderboards, analytics.
    - Permissions: Bot without delete rights should not crash; logs warning.
+   - Home chat: Set a home chat; verify alerts route there; change home and re-verify.
+   - Monitored channels: Ensure channels appear in monitored list and respect ownership.
 
 6) **Docs & Ops**
    - Update COMMANDS_REFERENCE with settings toggles.
    - Update SETUP_GUIDE with required bot permissions (delete messages in groups/channels).
    - Note auto-delete defaults and how to override per chat.
+   - Document home chat setup and monitored channels behavior; clarify ownership rules.
 
-## 6) Mapping to BUILD_PLAN.md / PRD
+## 9) Mapping to BUILD_PLAN.md / PRD
 - BUILD_PLAN Phase 3/4: Ingestion + detection done; extending UX (cards) and adding anti-spam.
 - PRD 4.1/4.2/4.4: Ingestion + signal detection covered; adding UX polish (spam control).
 - PRD 3.1/2.3 constraints: Respect group privacy off; admin rights needed for deletion.
 - PRD 4.5: Threshold alerts already implemented; routing respects ownership.
 
-## 7) Rollout Steps
+## 10) Rollout Steps
 - Implement anti-spam + hide and owner-alert routing.
 - Deploy to Railway.
 - Test in:
