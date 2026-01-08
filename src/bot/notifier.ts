@@ -4,6 +4,7 @@ import { logger } from '../utils/logger';
 import { prisma } from '../db';
 import { TokenMeta } from '../providers/types';
 import { generateFirstSignalCard, generateDuplicateSignalCard } from './signalCard';
+import { scheduleAutoDelete } from '../utils/messageCleanup';
 
 interface DuplicateCheck {
   isDuplicate: boolean;
@@ -52,6 +53,7 @@ export const notifySignal = async (
           [
             { text: '🔍 View First Call', callback_data: `signal:${duplicateCheck.firstSignal.id}` },
             { text: '⭐ Watchlist', callback_data: `watchlist:${signal.id}` },
+            { text: '🙈 Hide', callback_data: 'hide' },
           ],
         ],
       };
@@ -67,6 +69,7 @@ export const notifySignal = async (
           [
             { text: '⭐ Watchlist', callback_data: `watchlist:${signal.id}` },
             { text: '🔔 Alerts', callback_data: `alerts:${signal.id}` },
+            { text: '🙈 Hide', callback_data: 'hide' },
           ],
         ],
       };
@@ -91,15 +94,18 @@ export const notifySignal = async (
           ],
           [
             { text: '⭐ Watchlist', callback_data: `watchlist:${signal.id}` },
+            { text: '🙈 Hide', callback_data: 'hide' },
           ],
         ],
       };
     }
 
-    await bot.telegram.sendMessage(Number(chatId), message, {
+    const sent = await bot.telegram.sendMessage(Number(chatId), message, {
       parse_mode: 'Markdown',
       reply_markup: keyboard,
     });
+    // Auto-delete after TTL (configurable via env)
+    scheduleAutoDelete(bot, chatId, sent.message_id);
     
     logger.info(`Notification sent for signal ${signal.id}`);
   } catch (error) {

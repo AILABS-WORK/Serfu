@@ -3,6 +3,7 @@ import { getDestinationGroups } from '../db/groups';
 import { prisma } from '../db';
 import { getBotInstance } from './instance';
 import { logger } from '../utils/logger';
+import { scheduleAutoDelete } from '../utils/messageCleanup';
 
 export const forwardSignalToDestination = async (signal: Signal) => {
   try {
@@ -75,7 +76,7 @@ export const forwardSignalToDestination = async (signal: Signal) => {
       `;
 
       // Forward to destination group
-      await bot.telegram.sendMessage(Number(destGroup.chatId), message, {
+      const sent = await bot.telegram.sendMessage(Number(destGroup.chatId), message, {
         parse_mode: 'Markdown',
         reply_markup: {
           inline_keyboard: [
@@ -85,10 +86,12 @@ export const forwardSignalToDestination = async (signal: Signal) => {
             ],
             [
               { text: '🔍 View Source', callback_data: `source:${signal.id}` },
+              { text: '🙈 Hide', callback_data: 'hide' },
             ],
           ],
         },
       });
+      scheduleAutoDelete(bot, destGroup.chatId, sent.message_id);
 
       // Record forwarding
       await prisma.forwardedSignal.create({

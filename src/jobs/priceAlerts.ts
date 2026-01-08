@@ -1,8 +1,8 @@
 import { prisma } from '../db';
 import { provider } from '../providers';
 import { logger } from '../utils/logger';
-import { getNotificationSettings } from '../db/notifications';
 import { getBotInstance } from '../bot/instance';
+import { scheduleAutoDelete } from '../utils/messageCleanup';
 
 // Price multipliers to check
 const PRICE_MULTIPLIERS = [2, 3, 4, 5, 10, 15, 20, 30, 50, 100];
@@ -141,24 +141,27 @@ const sendPriceAlert = async (
       const ownerTelegramId = signal.group.owner.userId;
       const destinations = await getDestinationGroups(ownerTelegramId);
       for (const dest of destinations) {
-        await bot.telegram.sendMessage(Number(dest.chatId), message, {
+      const sent = await bot.telegram.sendMessage(Number(dest.chatId), message, {
           parse_mode: 'Markdown',
         });
+      scheduleAutoDelete(bot, dest.chatId, sent.message_id);
       }
     }
 
     // Send DM if enabled
     if (settings.notifyInDM && signal.user?.userId) {
-      await bot.telegram.sendMessage(Number(signal.user.userId), message, {
+    const sent = await bot.telegram.sendMessage(Number(signal.user.userId), message, {
         parse_mode: 'Markdown',
       });
+    scheduleAutoDelete(bot, signal.user.userId, sent.message_id);
     }
 
     // Send in group if enabled
     if (settings.notifyInGroup && signal.chatId) {
-      await bot.telegram.sendMessage(Number(signal.chatId), message, {
+    const sent = await bot.telegram.sendMessage(Number(signal.chatId), message, {
         parse_mode: 'Markdown',
       });
+    scheduleAutoDelete(bot, signal.chatId, sent.message_id);
     }
 
     logger.info(`Sent ${threshold}x alert for signal ${signal.id}`);

@@ -12,6 +12,16 @@ import {
 import { handleGroupsCommand } from './commands/groups';
 
 export const registerActions = (bot: Telegraf) => {
+  // Hide action: delete the bot message if possible
+  bot.action('hide', async (ctx) => {
+    try {
+      await ctx.answerCbQuery();
+      await ctx.deleteMessage();
+    } catch (err) {
+      logger.debug('Hide action failed:', err);
+    }
+  });
+
   bot.action(/^chart:(\d+)$/, async (ctx) => {
     const signalId = parseInt(ctx.match[1]);
     try {
