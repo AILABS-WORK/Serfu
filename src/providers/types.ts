@@ -28,3 +28,4 @@ export interface MarketDataProvider {
   getOHLCV(mint: string, timeframe: string, start: number, end: number): Promise<OHLCV[] | null>;
 }
 
+

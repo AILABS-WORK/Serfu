@@ -1,6 +1,5 @@
 // Dynamic imports for ESM modules
 let ChartJSNodeCanvas: any;
-let ChartConfiguration: any;
 
 const getChartModules = async () => {
   if (!ChartJSNodeCanvas) {
@@ -23,7 +22,7 @@ export const renderChart = async (signal: Signal, samples: PriceSample[]): Promi
     throw new Error('No samples to chart');
   }
 
-  const { ChartJSNodeCanvas, ChartConfiguration } = await getChartModules();
+  const { ChartJSNodeCanvas } = await getChartModules();
   const chartJSNodeCanvas = new ChartJSNodeCanvas({ width, height, chartCallback });
 
   const sortedSamples = [...samples].sort((a, b) => a.sampledAt.getTime() - b.sampledAt.getTime());
