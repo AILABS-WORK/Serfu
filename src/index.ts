@@ -9,25 +9,54 @@ dotenv.config();
 
 const runMigrations = async () => {
   try {
-    logger.info('Running database migrations...');
+    logger.info('Setting up database schema...');
     
-    // Try migrate deploy first (for existing migrations)
+    // Check if migrations directory exists and has migrations
+    const fs = require('fs');
+    const path = require('path');
+    const migrationsPath = path.join(process.cwd(), 'prisma', 'migrations');
+    
+    let hasMigrations = false;
     try {
-      execSync('npx prisma migrate deploy', { stdio: 'pipe' });
-      logger.info('Migrations completed successfully');
-      return;
-    } catch (migrateError) {
-      logger.warn('migrate deploy failed, trying db push...');
+      if (fs.existsSync(migrationsPath)) {
+        const migrationDirs = fs.readdirSync(migrationsPath);
+        hasMigrations = migrationDirs.some((dir: string) => {
+          const dirPath = path.join(migrationsPath, dir);
+          return fs.statSync(dirPath).isDirectory() && 
+                 fs.existsSync(path.join(dirPath, 'migration.sql'));
+        });
+      }
+    } catch (e) {
+      // If we can't check, assume no migrations
+      hasMigrations = false;
     }
     
-    // Fallback to db push (creates tables directly from schema)
-    // This is useful when migrations don't exist yet
-    logger.info('Using db push to sync schema...');
-    execSync('npx prisma db push --accept-data-loss', { stdio: 'pipe' });
-    logger.info('Database schema synced successfully');
-  } catch (error) {
-    logger.error('Database setup failed:', error);
-    logger.error('Please run migrations manually: npx prisma migrate deploy');
+    if (hasMigrations) {
+      // Use migrate deploy if migrations exist
+      logger.info('Found migrations, running migrate deploy...');
+      try {
+        execSync('npx prisma migrate deploy', { stdio: 'pipe' });
+        logger.info('Migrations completed successfully');
+        return;
+      } catch (migrateError: any) {
+        logger.warn('migrate deploy failed, falling back to db push...');
+        logger.warn('Error:', migrateError.message);
+      }
+    } else {
+      logger.info('No migrations found, using db push to create schema...');
+    }
+    
+    // Use db push to create tables directly from schema
+    // This is necessary when migrations don't exist yet
+    logger.info('Syncing database schema with db push...');
+    execSync('npx prisma db push --accept-data-loss', { 
+      stdio: 'inherit', // Show output so we can see what's happening
+      env: { ...process.env }
+    });
+    logger.info('✅ Database schema synced successfully - all tables created!');
+  } catch (error: any) {
+    logger.error('❌ Database setup failed:', error.message);
+    logger.error('Please run manually: npx prisma db push --accept-data-loss');
     // Don't exit - let the bot try to start anyway
     // The error will be clear in logs
   }
