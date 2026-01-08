@@ -73,17 +73,19 @@ export const processMessage = async (message: RawMessage) => {
       userId = user.id;
     }
 
-    // Ensure group exists for this user (should already exist from middleware, but double-check)
+    // Ensure group/channel exists (should already exist from middleware, but double-check)
     let groupId = rawMsg?.groupId;
-    if (!groupId && message.chatId && message.senderId) {
+    if (!groupId && message.chatId) {
       const { createOrUpdateGroup } = await import('../db/groups');
       try {
-        const group = await createOrUpdateGroup(message.chatId, message.senderId, {
+        // Use senderId if available, otherwise use chatId as owner (for channels)
+        const ownerId = message.senderId || message.chatId;
+        const group = await createOrUpdateGroup(message.chatId, ownerId, {
           type: 'source',
         });
         groupId = group.id;
       } catch (error) {
-        logger.warn(`Could not create group for signal: ${error}`);
+        logger.warn(`Could not create group/channel for signal: ${error}`);
       }
     }
 
