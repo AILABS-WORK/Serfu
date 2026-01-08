@@ -4,10 +4,56 @@ import { processMessage } from '../ingest/processor';
 import { createOrUpdateGroup, getAnyGroupByChatId } from '../db/groups';
 import { createOrUpdateUser } from '../db/users';
 import { logger } from '../utils/logger';
+import { isAwaitChannelClaim, clearAwaitChannelClaim } from './state/channelClaimState';
 
 export const ingestMiddleware: Middleware<Context> = async (ctx, next) => {
   // We process messages from groups, supergroups, and channels
   // PRD says: "For every message in the group, store at minimum..."
+  
+  // Guided channel claim flow (only in private chats)
+  if (ctx.chat?.type === 'private' && ctx.from?.id && isAwaitChannelClaim(ctx.from.id)) {
+    try {
+      const text = (ctx.message as any)?.text || '';
+      const fwdChat = (ctx.message as any)?.forward_from_chat;
+      let channelId: bigint | null = null;
+      let channelTitle: string | undefined;
+
+      if (fwdChat?.type === 'channel' && fwdChat?.id) {
+        channelId = BigInt(fwdChat.id);
+        channelTitle = fwdChat.title;
+      } else if (text.startsWith('@')) {
+        try {
+          const chat = await ctx.telegram.getChat(text);
+          if ((chat as any).type === 'channel' && (chat as any).id) {
+            channelId = BigInt((chat as any).id);
+            channelTitle = (chat as any).title;
+          }
+        } catch (err) {
+          logger.debug('Failed to resolve channel username:', err);
+        }
+      }
+
+      if (!channelId) {
+        await ctx.reply('❌ Please forward a message from the channel or send its @username.');
+        return next();
+      }
+
+      // Claim channel for this user
+      await createOrUpdateGroup(channelId, BigInt(ctx.from.id), {
+        name: channelTitle || `Channel ${channelId}`,
+        type: 'source',
+        chatType: 'channel',
+      });
+
+      clearAwaitChannelClaim(ctx.from.id);
+      await ctx.reply(`✅ Channel claimed: \`${channelId}\`\nRun /groups to verify.`, { parse_mode: 'Markdown' });
+      return next();
+    } catch (err) {
+      logger.error('Error during channel claim flow:', err);
+      await ctx.reply('❌ Could not claim channel. Make sure the bot is admin, then try again.');
+      return next();
+    }
+  }
   
   // Handle channel posts separately (channels have different structure in Telegraf)
   const channelPost = (ctx as any).channelPost;

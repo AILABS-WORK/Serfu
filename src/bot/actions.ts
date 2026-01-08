@@ -24,17 +24,17 @@ export const registerActions = (bot: Telegraf) => {
 
   bot.action('channel_add', async (ctx) => {
     await ctx.answerCbQuery();
-    const bot = ctx.telegram;
-    const botInfo = await bot.getMe();
-    const inviteLink = `https://t.me/${botInfo.username}`;
     await ctx.reply(
-      `📡 *Add Channel*\n\n` +
-      `1) Add this bot as an admin to your channel\n` +
-      `2) Run /addchannel <channel_id> here to claim it\n\n` +
-      `Tip: You can get the channel id via @RawDataBot or by forwarding a message to @userinfobot.\n` +
-      `Bot link (for convenience): ${inviteLink}`,
+      `📡 *Add Channel (guided)*\n\n` +
+      `1) Add this bot as an admin to your channel (read access).\n` +
+      `2) *Send me a forwarded message* from that channel here, OR type its @username.\n\n` +
+      `I'll auto-claim it for you.`,
       { parse_mode: 'Markdown' }
     );
+    if (ctx.from?.id) {
+      const { setAwaitChannelClaim } = await import('./state/channelClaimState');
+      setAwaitChannelClaim(ctx.from.id);
+    }
   });
 
   bot.action(/^chart:(\d+)$/, async (ctx) => {
