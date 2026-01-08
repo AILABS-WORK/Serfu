@@ -35,10 +35,14 @@ export const checkDuplicateCA = async (mint: string, ownerId?: number): Promise<
   firstSignal?: Signal;
   firstGroupName?: string;
 }> => {
+  if (!ownerId) {
+    return { isDuplicate: false };
+  }
+
   const existingSignals = await prisma.signal.findMany({
     where: { 
       mint,
-      ...(ownerId ? { group: { ownerId } } : {}),
+      group: { ownerId },
     },
     orderBy: { detectedAt: 'asc' },
     take: 1,
