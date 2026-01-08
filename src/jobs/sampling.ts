@@ -5,6 +5,7 @@ import { logger } from '../utils/logger';
 import { differenceInMinutes, differenceInHours } from 'date-fns';
 import { notifySignal } from '../bot/notifier'; // For alerts later
 import { updateSignalMetrics } from '../analytics/metrics';
+import { checkPriceAlerts } from './priceAlerts';
 
 // Determine if signal is due for sampling
 const isDueForSampling = (signal: any, lastSampleAt: Date | null): boolean => {
@@ -70,6 +71,9 @@ export const runSamplingCycle = async () => {
     }
     
     logger.info('Sampling cycle complete.');
+    
+    // Check price alerts after sampling
+    await checkPriceAlerts();
   } catch (error) {
     logger.error('Error in sampling cycle:', error);
   }

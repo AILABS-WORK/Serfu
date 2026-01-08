@@ -49,11 +49,37 @@ const runMigrations = async () => {
     // Use db push to create tables directly from schema
     // This is necessary when migrations don't exist yet
     logger.info('Syncing database schema with db push...');
-    execSync('npx prisma db push --accept-data-loss', { 
-      stdio: 'inherit', // Show output so we can see what's happening
-      env: { ...process.env }
-    });
-    logger.info('✅ Database schema synced successfully - all tables created!');
+    
+    // Try with --accept-data-loss first
+    try {
+      execSync('npx prisma db push --accept-data-loss', { 
+        stdio: 'pipe',
+        env: { ...process.env }
+      });
+      logger.info('✅ Database schema synced successfully - all tables created!');
+    } catch (pushError: any) {
+      const errorMessage = pushError.message || '';
+      
+      // If that fails due to existing data requiring default value
+      if (errorMessage.includes('default value') || errorMessage.includes('owner_id')) {
+        logger.warn('⚠️  Migration issue detected. Using --force-reset (data will be lost)...');
+        logger.warn('This will reset the database. In production, consider manual migration.');
+        
+        if (process.env.NODE_ENV === 'production' && process.env.FORCE_RESET_DB !== 'true') {
+          logger.error('❌ Cannot auto-reset in production without FORCE_RESET_DB=true');
+          logger.error('Please run manually: npx prisma db push --force-reset --accept-data-loss');
+          throw pushError;
+        }
+        
+        execSync('npx prisma db push --force-reset --accept-data-loss', {
+          stdio: 'inherit',
+          env: { ...process.env }
+        });
+        logger.info('✅ Database reset and schema synced!');
+      } else {
+        throw pushError;
+      }
+    }
   } catch (error: any) {
     logger.error('❌ Database setup failed:', error.message);
     logger.error('Please run manually: npx prisma db push --accept-data-loss');

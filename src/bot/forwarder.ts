@@ -24,6 +24,10 @@ export const forwardSignalToDestination = async (signal: Signal) => {
     }
 
     const sourceGroup = signalWithRelations.group;
+    if (!sourceGroup?.owner) {
+      return; // No owner, can't forward
+    }
+    
     const ownerTelegramId = sourceGroup.owner.userId; // Owner's Telegram ID
     
     // Get destination groups for the owner of the source group

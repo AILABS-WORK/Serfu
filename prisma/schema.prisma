@@ -155,9 +155,9 @@ model Group {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
   
-  // User ownership - each group belongs to a user
-  ownerId   Int      @map("owner_id")
-  owner     User     @relation("OwnedGroups", fields: [ownerId], references: [id])
+  // User ownership - each group belongs to a user (nullable for migration compatibility)
+  ownerId   Int?     @map("owner_id")
+  owner     User?    @relation("OwnedGroups", fields: [ownerId], references: [id])
 
   // Relations
   signals      Signal[]
@@ -180,10 +180,11 @@ model User {
   updatedAt DateTime @updatedAt @map("updated_at")
 
   // Relations
-  signals       Signal[]
-  rawMessages   RawMessage[]
-  userMetrics   UserMetric[]
-  ownedGroups   Group[]      @relation("OwnedGroups") // Groups this user owns/manages
+  signals              Signal[]
+  rawMessages          RawMessage[]
+  userMetrics          UserMetric[]
+  ownedGroups          Group[]                    @relation("OwnedGroups") // Groups this user owns/manages
+  notificationSettings UserNotificationSettings?  @relation("NotificationSettings")
 
   @@index([userId])
   @@map("users")
@@ -272,4 +273,39 @@ model CopyTradingStrategy {
   @@unique([strategyType, targetId, window])
   @@index([strategyType, targetId])
   @@map("copy_trading_strategies")
+}
+
+model UserNotificationSettings {
+  id                Int      @id @default(autoincrement())
+  userId            Int      @unique @map("user_id")
+  user              User     @relation("NotificationSettings", fields: [userId], references: [id])
+  
+  // Threshold alerts (multiples of entry price/mcap)
+  alert2x            Boolean  @default(true) @map("alert_2x")
+  alert3x            Boolean  @default(true) @map("alert_3x")
+  alert4x            Boolean  @default(true) @map("alert_4x")
+  alert5x            Boolean  @default(true) @map("alert_5x")
+  alert10x           Boolean  @default(true) @map("alert_10x")
+  alert15x           Boolean  @default(false) @map("alert_15x")
+  alert20x           Boolean  @default(false) @map("alert_20x")
+  alert30x           Boolean  @default(false) @map("alert_30x")
+  alert50x           Boolean  @default(false) @map("alert_50x")
+  alert100x          Boolean  @default(false) @map("alert_100x")
+  
+  // Event alerts
+  alertDexPayment    Boolean  @default(true) @map("alert_dex_payment")
+  alertBonding       Boolean  @default(true) @map("alert_bonding")
+  alertMigrating      Boolean  @default(true) @map("alert_migrating")
+  alertNewSignal      Boolean  @default(true) @map("alert_new_signal")
+  
+  // Notification channels
+  notifyInGroup      Boolean  @default(true) @map("notify_in_group")
+  notifyInDM         Boolean  @default(false) @map("notify_in_dm")
+  notifyDestination  Boolean  @default(true) @map("notify_destination")
+  
+  createdAt          DateTime @default(now()) @map("created_at")
+  updatedAt          DateTime @updatedAt @map("updated_at")
+
+  @@index([userId])
+  @@map("user_notification_settings")
 }

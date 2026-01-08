@@ -19,18 +19,27 @@ export const createOrUpdateGroup = async (
   ownerTelegramId: bigint,
   data: Partial<GroupCreateInput>
 ) => {
-  const ownerId = await getUserIdFromTelegramId(ownerTelegramId);
+  let ownerId: number | null = null;
+  
+  try {
+    ownerId = await getUserIdFromTelegramId(ownerTelegramId);
+  } catch (error) {
+    // If user doesn't exist yet, create them first
+    const { createOrUpdateUser } = await import('./users');
+    const user = await createOrUpdateUser(ownerTelegramId, {});
+    ownerId = user.id;
+  }
+  
+  // Handle nullable ownerId for migration compatibility
+  const whereClause = ownerId 
+    ? { chatId_ownerId: { chatId, ownerId } }
+    : { id: -1 }; // Fallback, should not happen
   
   return prisma.group.upsert({
-    where: {
-      chatId_ownerId: {
-        chatId,
-        ownerId,
-      },
-    },
+    where: whereClause as any,
     create: {
       chatId,
-      ownerId,
+      ownerId: ownerId!,
       name: data.name,
       type: data.type || 'source',
       isActive: data.isActive ?? true,
@@ -39,49 +48,65 @@ export const createOrUpdateGroup = async (
       name: data.name,
       type: data.type,
       isActive: data.isActive,
+      ownerId: ownerId, // Update owner if it was null
       updatedAt: new Date(),
     },
   });
 };
 
 export const getGroupByChatId = async (chatId: bigint, ownerTelegramId: bigint) => {
-  const ownerId = await getUserIdFromTelegramId(ownerTelegramId);
-  return prisma.group.findUnique({
-    where: {
-      chatId_ownerId: {
-        chatId,
-        ownerId,
+  try {
+    const ownerId = await getUserIdFromTelegramId(ownerTelegramId);
+    return prisma.group.findUnique({
+      where: {
+        chatId_ownerId: {
+          chatId,
+          ownerId,
+        },
       },
-    },
-  });
+    });
+  } catch (error) {
+    // If user doesn't exist, return null
+    return null;
+  }
 };
 
 export const getAllGroups = async (ownerTelegramId: bigint, activeOnly: boolean = false) => {
-  const ownerId = await getUserIdFromTelegramId(ownerTelegramId);
-  return prisma.group.findMany({
-    where: {
-      ownerId,
-      ...(activeOnly ? { isActive: true } : {}),
-    },
-    include: {
-      signals: {
-        select: { id: true },
+  try {
+    const ownerId = await getUserIdFromTelegramId(ownerTelegramId);
+    return prisma.group.findMany({
+      where: {
+        ownerId,
+        ...(activeOnly ? { isActive: true } : {}),
       },
-    },
-    orderBy: { createdAt: 'desc' },
-  });
+      include: {
+        signals: {
+          select: { id: true },
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+  } catch (error) {
+    // If user doesn't exist, return empty array
+    return [];
+  }
 };
 
 export const getDestinationGroups = async (ownerTelegramId: bigint) => {
-  const ownerId = await getUserIdFromTelegramId(ownerTelegramId);
-  return prisma.group.findMany({
-    where: { 
-      ownerId,
-      type: 'destination', 
-      isActive: true 
-    },
-    orderBy: { createdAt: 'desc' },
-  });
+  try {
+    const ownerId = await getUserIdFromTelegramId(ownerTelegramId);
+    return prisma.group.findMany({
+      where: { 
+        ownerId,
+        type: 'destination', 
+        isActive: true 
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+  } catch (error) {
+    // If user doesn't exist, return empty array
+    return [];
+  }
 };
 
 export const setGroupType = async (
@@ -89,16 +114,20 @@ export const setGroupType = async (
   ownerTelegramId: bigint,
   type: 'source' | 'destination'
 ) => {
-  const ownerId = await getUserIdFromTelegramId(ownerTelegramId);
-  return prisma.group.update({
-    where: {
-      chatId_ownerId: {
-        chatId,
-        ownerId,
+  try {
+    const ownerId = await getUserIdFromTelegramId(ownerTelegramId);
+    return prisma.group.update({
+      where: {
+        chatId_ownerId: {
+          chatId,
+          ownerId,
+        },
       },
-    },
-    data: { type, updatedAt: new Date() },
-  });
+      data: { type, updatedAt: new Date() },
+    });
+  } catch (error) {
+    throw new Error(`Group not found or user not found: ${error}`);
+  }
 };
 
 export const toggleGroupActive = async (
@@ -106,28 +135,36 @@ export const toggleGroupActive = async (
   ownerTelegramId: bigint,
   isActive: boolean
 ) => {
-  const ownerId = await getUserIdFromTelegramId(ownerTelegramId);
-  return prisma.group.update({
-    where: {
-      chatId_ownerId: {
-        chatId,
-        ownerId,
+  try {
+    const ownerId = await getUserIdFromTelegramId(ownerTelegramId);
+    return prisma.group.update({
+      where: {
+        chatId_ownerId: {
+          chatId,
+          ownerId,
+        },
       },
-    },
-    data: { isActive, updatedAt: new Date() },
-  });
+      data: { isActive, updatedAt: new Date() },
+    });
+  } catch (error) {
+    throw new Error(`Group not found or user not found: ${error}`);
+  }
 };
 
 export const deleteGroup = async (chatId: bigint, ownerTelegramId: bigint) => {
-  const ownerId = await getUserIdFromTelegramId(ownerTelegramId);
-  return prisma.group.delete({
-    where: {
-      chatId_ownerId: {
-        chatId,
-        ownerId,
+  try {
+    const ownerId = await getUserIdFromTelegramId(ownerTelegramId);
+    return prisma.group.delete({
+      where: {
+        chatId_ownerId: {
+          chatId,
+          ownerId,
+        },
       },
-    },
-  });
+    });
+  } catch (error) {
+    throw new Error(`Group not found or user not found: ${error}`);
+  }
 };
 
 // Get bot invite link for adding to groups
