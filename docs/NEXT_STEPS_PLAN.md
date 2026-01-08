@@ -40,11 +40,14 @@ This plan ties together the PRD, BUILD_PLAN.md, and current implementation. It l
 - **Home chat selection**: Allow user to designate a “home” chat (group/channel/DM) where their own alerts are routed; default to the owner’s private workspace if set.
 - **Group vs home bots**: If a bot is added directly to a group, that group is owned by the user who added it; if used as a private home, mark it as such and keep it isolated.
 - **Destination-as-monitored**: When a destination is set, also list it in monitored items for that owner (but never leak to other owners).
+- **Channel add UX**: Provide an explicit “Add Channel” path (instructions + buttons) so channels can be added, tracked, and listed just like groups.
 
 ## 6) Alerts & Signals (Expanded)
 - **Threshold alerts**: 2x, 3x, 4x, 5x, 10x, 15x, 20x, 30x, 50x, 100x from entry; route per owner settings (group, destination, home).
 - **Event alerts**: bonding, migrating, new signal, CA repost; include group and user origin.
 - **Cross-group awareness**: On reposts, include source group/user and price delta vs first call; log for analytics.
+- **Destination alerts**: Ensure destinations receive “CA posted” (first) and “CA posted again” with origin (group/channel) and user.
+- **Persisted duplicate tracking**: Track first-call per mint per owner in DB (not just in-memory) so repost detection survives message deletion and restarts.
 
 ## 7) Analytics Depth
 - Track which groups/users call first across multiple groups; earliest-call scoring.
@@ -52,6 +55,12 @@ This plan ties together the PRD, BUILD_PLAN.md, and current implementation. It l
 - Per-user performance across groups: where they post first, win rates, ATH multiples, time-to-2x.
 - Group-level “earliest callers” and “best confirmations.”
 - Ensure all analytics remain owner-scoped.
+
+## 8) Data Freshness & Token Data Quality
+- **Price freshness**: Implement re-fetch/refresh for price when rendering cards; consider short-term cache with expiry; note Helius 600s cache—force a fresh call where possible or retry.
+- **ATH/volume/supply/MC accuracy**: Normalize supply with decimals; recompute MC = price_per_token * adjusted_supply; if missing, retry/backoff and flag low confidence.
+- **Event detection**: Add bonding/migration/dex-paid parsing and alerting hooks; log events for analytics.
+- **Threshold monitoring**: Ensure sampling loop continues after message deletion and uses persisted signals to trigger 2x–100x alerts.
 
 ## 8) Implementation Tasks (Step-by-Step)
 1) **Anti-Spam**
@@ -77,6 +86,7 @@ This plan ties together the PRD, BUILD_PLAN.md, and current implementation. It l
      - home alerts (first/repost)
    - Persist per chat/owner.
    - Add “Set Home Chat” control; add monitored channels listing; ensure destinations appear in monitored list for the owning user only.
+   - Add explicit “Add Channel” flow; show monitored channels section.
 
 5) **Testing Plan**
    - Groups: Post CA in source group → card shows, auto-deletes in ~60s, hide works.
@@ -86,12 +96,16 @@ This plan ties together the PRD, BUILD_PLAN.md, and current implementation. It l
    - Permissions: Bot without delete rights should not crash; logs warning.
    - Home chat: Set a home chat; verify alerts route there; change home and re-verify.
    - Monitored channels: Ensure channels appear in monitored list and respect ownership.
+   - Destination alerts: Verify first/repost alerts arrive in destination groups with origin info (group/channel, user).
+   - Duplicate persistence: Delete messages and repost CA; verify repost still detected as duplicate.
+   - Price freshness: Re-query CA and confirm updated price; threshold alerts fire off persisted signals.
 
 6) **Docs & Ops**
    - Update COMMANDS_REFERENCE with settings toggles.
    - Update SETUP_GUIDE with required bot permissions (delete messages in groups/channels).
    - Note auto-delete defaults and how to override per chat.
    - Document home chat setup and monitored channels behavior; clarify ownership rules.
+   - Document channel add flow and destination alert expectations.
 
 ## 9) Mapping to BUILD_PLAN.md / PRD
 - BUILD_PLAN Phase 3/4: Ingestion + detection done; extending UX (cards) and adding anti-spam.
