@@ -16,7 +16,7 @@ export const ingestMiddleware: Middleware<Context> = async (ctx, next) => {
       const message = channelPost as any;
       const chatId = message.chat?.id;
       const messageId = message.message_id;
-      const senderId = message.from?.id || chatId; // Channels might not have senderId
+      const senderId = message.from?.id || null; // Channels might not have senderId
       const senderUsername = message.from?.username;
       const sentAt = new Date(message.date * 1000);
       const rawText = message.text;
@@ -25,6 +25,10 @@ export const ingestMiddleware: Middleware<Context> = async (ctx, next) => {
         return next();
       }
       
+      // Find existing claimed channel (any owner)
+      const { getAnyGroupByChatId } = await import('../db/groups');
+      const existing = await getAnyGroupByChatId(BigInt(chatId));
+
       // Create user if sender exists
       let userId: number | null = null;
       if (message.from?.id) {
@@ -36,17 +40,26 @@ export const ingestMiddleware: Middleware<Context> = async (ctx, next) => {
         userId = user.id;
       }
       
-      // Create channel record (use chatId as owner if no sender)
-      let groupId: number | null = null;
-      try {
-        const group = await createOrUpdateGroup(BigInt(chatId), BigInt(senderId), {
-          name: message.chat?.title || `Channel ${chatId}`,
-          type: 'source',
-          chatType: 'channel',
-        });
-        groupId = group.id;
-      } catch (error) {
-        logger.debug(`Could not create channel for chat ${chatId}:`, error);
+      // Create or reuse channel record:
+      // - If existing claimed channel, reuse it
+      // - Else if sender exists, claim for sender
+      // - Else skip creation (needs /addchannel)
+      let groupId: number | null = existing?.id || null;
+      if (!groupId) {
+        if (senderId) {
+          try {
+            const group = await createOrUpdateGroup(BigInt(chatId), BigInt(senderId), {
+              name: message.chat?.title || `Channel ${chatId}`,
+              type: 'source',
+              chatType: 'channel',
+            });
+            groupId = group.id;
+          } catch (error) {
+            logger.debug(`Could not create channel for chat ${chatId}:`, error);
+          }
+        } else {
+          logger.debug(`Channel ${chatId} not claimed and no senderId; skipping group creation. Use /addchannel <id> to claim.`);
+        }
       }
       
       // Store message
