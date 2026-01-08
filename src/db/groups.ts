@@ -73,6 +73,13 @@ export const getGroupByChatId = async (chatId: bigint, ownerTelegramId: bigint) 
   }
 };
 
+// Find any group (any owner) by chatId (useful for channels where owner is established via /addchannel)
+export const getAnyGroupByChatId = async (chatId: bigint) => {
+  return prisma.group.findFirst({
+    where: { chatId },
+  });
+};
+
 export const getAllGroups = async (ownerTelegramId: bigint, activeOnly: boolean = false) => {
   try {
     const ownerId = await getUserIdFromTelegramId(ownerTelegramId);
