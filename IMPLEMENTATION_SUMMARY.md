@@ -192,3 +192,4 @@ npx prisma migrate deploy
 All core features have been implemented according to the roadmap. The system is ready for deployment and testing once the database migration is applied.
 
 
+

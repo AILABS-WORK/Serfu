@@ -115,3 +115,4 @@ Return: ${simulation.returnPercent > 0 ? '+' : ''}${simulation.returnPercent.toF
 };
 
 
+

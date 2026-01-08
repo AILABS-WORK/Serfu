@@ -8,3 +8,4 @@ console.log('REDIS_URL present:', !!process.env.REDIS_URL);
 console.log('BOT_TOKEN present:', !!process.env.BOT_TOKEN);
 
 
+
