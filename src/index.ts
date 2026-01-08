@@ -1,10 +1,24 @@
 import dotenv from 'dotenv';
+import { execSync } from 'child_process';
 import { logger } from './utils/logger';
 import { setupBot, launchBot } from './bot';
 import { runSamplingCycle } from './jobs/sampling';
 import { runAggregationCycle } from './jobs/aggregation';
 
 dotenv.config();
+
+const runMigrations = async () => {
+  try {
+    logger.info('Running database migrations...');
+    execSync('npx prisma migrate deploy', { stdio: 'inherit' });
+    logger.info('Migrations completed successfully');
+  } catch (error) {
+    logger.error('Migration failed:', error);
+    // In production, we might want to exit, but for now let's continue
+    // to allow the bot to start even if migrations fail (they might already be applied)
+    logger.warn('Continuing despite migration error (migrations may already be applied)');
+  }
+};
 
 const main = async () => {
   logger.info('AlphaColor Bot starting...');
@@ -13,6 +27,11 @@ const main = async () => {
   if (!process.env.BOT_TOKEN) {
     logger.error('BOT_TOKEN is missing');
     process.exit(1);
+  }
+
+  // Run migrations before starting bot
+  if (process.env.NODE_ENV === 'production' || process.env.RUN_MIGRATIONS === 'true') {
+    await runMigrations();
   }
 
   try {

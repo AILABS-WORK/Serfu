@@ -5,7 +5,9 @@
   "scripts": {
     "dev": "nodemon",
     "build": "prisma generate && tsc",
-    "start": "node dist/index.js",
+    "start": "prisma migrate deploy && node dist/index.js",
+    "start:no-migrate": "node dist/index.js",
+    "migrate": "prisma migrate deploy",
     "lint": "eslint src/**/*.ts",
     "format": "prettier --write src/**/*.ts",
     "test": "jest",
