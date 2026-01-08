@@ -8,6 +8,7 @@ import {
   handleSetDestinationCommand,
   handleRemoveGroupCommand,
   handleToggleGroupCommand,
+  handleAddChannelCommand,
 } from './commands/groups';
 import {
   handleAnalyticsCommand,
@@ -92,6 +93,10 @@ export const setupBot = () => {
   bot.command('togglegroup', (ctx) => {
     const args = ctx.message.text?.split(' ').slice(1);
     handleToggleGroupCommand(ctx, args?.[0]);
+  });
+  bot.command('addchannel', (ctx) => {
+    const args = ctx.message.text?.split(' ').slice(1);
+    handleAddChannelCommand(ctx, args?.[0]);
   });
 
   // Analytics Commands

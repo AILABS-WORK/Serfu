@@ -75,6 +75,7 @@ export const processMessage = async (message: RawMessage) => {
 
     // Ensure group/channel exists (should already exist from middleware, but double-check)
     let groupId = rawMsg?.groupId;
+    let ownerForDuplicate: number | undefined = rawMsg?.group?.ownerId || undefined;
     if (!groupId && message.chatId) {
       const { createOrUpdateGroup } = await import('../db/groups');
       try {
@@ -85,9 +86,13 @@ export const processMessage = async (message: RawMessage) => {
           chatType: (message as any).chatType || undefined,
         });
         groupId = group.id;
+        ownerForDuplicate = group.ownerId || ownerForDuplicate;
       } catch (error) {
         logger.warn(`Could not create group/channel for signal: ${error}`);
       }
+    }
+    if (rawMsg?.group?.ownerId) {
+      ownerForDuplicate = rawMsg.group.ownerId;
     }
 
     // Create Signal
@@ -111,7 +116,7 @@ export const processMessage = async (message: RawMessage) => {
     logger.info(`Signal created: ${signal.id} for ${mint} at ${entryPrice} from group ${chatId}`);
 
     // Check if this is a duplicate CA
-    const duplicateCheck = await checkDuplicateCA(mint, chatId);
+    const duplicateCheck = await checkDuplicateCA(mint, chatId, ownerForDuplicate);
     
     // Send Telegram Notification (to source group) with enhanced card
     await notifySignal(signal, meta, duplicateCheck);

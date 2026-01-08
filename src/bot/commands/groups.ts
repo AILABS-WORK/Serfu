@@ -45,6 +45,9 @@ export const handleGroupsCommand = async (ctx: Context) => {
         `1. Add bot to a group\n` +
         `2. Run /setdestination in that group (for destination)\n` +
         `3. Or the bot will auto-track groups it's added to\n\n` +
+        `*To add channels:*\n` +
+        `1. Add the bot as admin to your channel\n` +
+        `2. Run /addchannel <channel_id> here to claim ownership\n\n` +
         `*Bot Invite Link:*\n` +
         `${inviteLink}\n\n` +
         `Share this link to add the bot to groups easily!`,
@@ -55,6 +58,9 @@ export const handleGroupsCommand = async (ctx: Context) => {
               [
                 { text: '➕ Add Group', callback_data: 'group_add' },
                 { text: '🔗 Get Invite Link', callback_data: 'group_invite' },
+              ],
+              [
+                { text: '📡 Add Channel', callback_data: 'channel_add' },
               ],
             ],
           },
@@ -97,6 +103,9 @@ export const handleGroupsCommand = async (ctx: Context) => {
             { text: '🔗 Invite Link', callback_data: 'group_invite' },
           ],
           [
+            { text: '📡 Add Channel', callback_data: 'channel_add' },
+          ],
+          [
             { text: '⚙️ Settings', callback_data: 'group_settings' },
           ],
         ],
@@ -137,6 +146,7 @@ export const handleSetDestinationCommand = async (ctx: Context, groupIdStr?: str
       await createOrUpdateGroup(targetChatId, userId, {
         name: (ctx.chat as any)?.title || undefined,
         type: 'destination',
+        chatType: (ctx.chat as any)?.type || undefined,
       });
       return ctx.reply(`✅ This group is now set as YOUR destination for forwarded signals.\n\nOnly you will receive signals forwarded to this group.`);
     }
@@ -146,6 +156,50 @@ export const handleSetDestinationCommand = async (ctx: Context, groupIdStr?: str
   } catch (error) {
     logger.error('Error in /setdestination command:', error);
     ctx.reply('Error setting destination group.');
+  }
+};
+
+// Claim a channel as owned by the current user
+export const handleAddChannelCommand = async (ctx: Context, channelIdStr?: string) => {
+  try {
+    const userId = getCurrentUserId(ctx);
+    if (!userId) {
+      return ctx.reply('❌ Unable to identify user.');
+    }
+
+    if (!channelIdStr) {
+      return ctx.reply('Usage: /addchannel <channel_id>\n\nAdd the bot as admin to the channel, then run this command with the channel id.');
+    }
+
+    const channelId = BigInt(channelIdStr);
+
+    // Ensure user exists
+    await createOrUpdateUser(userId, {
+      username: ctx.from?.username,
+      firstName: ctx.from?.first_name,
+      lastName: ctx.from?.last_name,
+    });
+
+    // Try to read channel title if we have it cached (optional)
+    let channelTitle: string | undefined;
+    try {
+      const chat = await ctx.telegram.getChat(Number(channelId));
+      channelTitle = (chat as any).title;
+    } catch {
+      channelTitle = undefined;
+    }
+
+    // Upsert the channel under this owner
+    await createOrUpdateGroup(channelId, userId, {
+      name: channelTitle || `Channel ${channelId}`,
+      type: 'source',
+      chatType: 'channel',
+    });
+
+    await ctx.reply(`✅ Channel \`${channelId}\` claimed and added to your monitored list.`, { parse_mode: 'Markdown' });
+  } catch (error) {
+    logger.error('Error in /addchannel command:', error);
+    ctx.reply('Error adding channel. Make sure the bot is an admin in the channel and the ID is correct.');
   }
 };
 

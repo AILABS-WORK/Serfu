@@ -22,6 +22,21 @@ export const registerActions = (bot: Telegraf) => {
     }
   });
 
+  bot.action('channel_add', async (ctx) => {
+    await ctx.answerCbQuery();
+    const bot = ctx.telegram;
+    const botInfo = await bot.getMe();
+    const inviteLink = `https://t.me/${botInfo.username}`;
+    await ctx.reply(
+      `📡 *Add Channel*\n\n` +
+      `1) Add this bot as an admin to your channel\n` +
+      `2) Run /addchannel <channel_id> here to claim it\n\n` +
+      `Tip: You can get the channel id via @RawDataBot or by forwarding a message to @userinfobot.\n` +
+      `Bot link (for convenience): ${inviteLink}`,
+      { parse_mode: 'Markdown' }
+    );
+  });
+
   bot.action(/^chart:(\d+)$/, async (ctx) => {
     const signalId = parseInt(ctx.match[1]);
     try {

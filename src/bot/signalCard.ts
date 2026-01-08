@@ -30,13 +30,16 @@ const formatPercent = (num: number | undefined | null): string => {
 };
 
 // Check if this is a duplicate CA
-export const checkDuplicateCA = async (mint: string, currentChatId: bigint): Promise<{
+export const checkDuplicateCA = async (mint: string, currentChatId: bigint, ownerId?: number): Promise<{
   isDuplicate: boolean;
   firstSignal?: Signal;
   firstGroupName?: string;
 }> => {
   const existingSignals = await prisma.signal.findMany({
-    where: { mint },
+    where: { 
+      mint,
+      ...(ownerId ? { group: { ownerId } } : {}),
+    },
     orderBy: { detectedAt: 'asc' },
     take: 1,
     include: { group: true },
