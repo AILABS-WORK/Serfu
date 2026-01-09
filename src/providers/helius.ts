@@ -49,11 +49,11 @@ export class HeliusProvider implements MarketDataProvider {
       // Fallback to Jupiter quote if Helius has no price
       const decimals = asset?.token_info?.decimals || 9;
       const jupPrice = await getJupiterPrice(mint, decimals);
-      if (jupPrice !== null) {
+      if (jupPrice.price !== null) {
         return {
-          price: jupPrice,
+          price: jupPrice.price,
           timestamp: Date.now(),
-          source: 'jupiter',
+          source: jupPrice.source,
           confidence: 0.8,
         };
       }
