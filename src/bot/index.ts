@@ -106,11 +106,12 @@ export const setupBot = () => {
       if (!mint) {
         return ctx.reply('Usage: /testjup <mint>');
       }
-      const price = await getJupiterPrice(mint, 9);
-      if (price === null) {
-        return ctx.reply('Jupiter price not available (quote failed). Try a well-known mint like USDC: /testjup EPjFWdd5AufqSSqeM2q1zqGQJSd7G7e8Yzi5Hq7XG4k');
+      const result = await getJupiterPrice(mint, 9);
+      if (result.price === null) {
+        return ctx.reply(`Jupiter price not available. Source=${result.source} Error=${result.error || 'unknown'}. Try a well-known mint like USDC: /testjup EPjFWdd5AufqSSqeM2q1zqGQJSd7G7e8Yzi5Hq7XG4k`);
       }
-      await ctx.reply(`Jupiter price for ${mint}: $${price.toFixed(10)} (queried now)`);
+      const price = result.price;
+      await ctx.reply(`Jupiter price for ${mint}: $${price.toFixed(10)} (source=${result.source})`);
     } catch (err) {
       logger.error('Error in /testjup:', err);
       ctx.reply('Error testing Jupiter price.');
