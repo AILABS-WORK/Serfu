@@ -3,6 +3,7 @@ import { logger } from '../utils/logger';
 
 const JUP_URL = 'https://quote-api.jup.ag/v6/quote';
 const SOL_MINT = 'So11111111111111111111111111111111111111112';
+const JUP_API_KEY = process.env.JUPITER_API_KEY || process.env.JUP_API_KEY;
 
 /**
  * Fetch price via Jupiter by quoting 1 SOL to the target mint.
@@ -12,7 +13,11 @@ export const getJupiterPrice = async (mint: string, decimals: number = 9): Promi
   try {
     const amount = 1_000_000_000; // 1 SOL in lamports
     const url = `${JUP_URL}?inputMint=${SOL_MINT}&outputMint=${mint}&amount=${amount}`;
-    const res = await fetch(url);
+    const headers: Record<string, string> = {};
+    if (JUP_API_KEY) {
+      headers['x-api-key'] = JUP_API_KEY;
+    }
+    const res = await fetch(url, { headers });
     if (!res.ok) {
       logger.debug(`Jupiter quote failed status ${res.status}`);
       return null;
