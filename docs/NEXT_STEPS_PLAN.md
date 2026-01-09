@@ -63,11 +63,11 @@ This plan ties together the PRD, BUILD_PLAN.md, and current implementation. It l
 - **Threshold monitoring**: Ensure sampling loop continues after message deletion and uses persisted signals to trigger 2x–100x alerts.
 
 ## 8) Implementation Tasks (Step-by-Step)
-1) **Anti-Spam**
-   - Add auto-delete scheduler per sent bot message (stores chatId, messageId, expiry).
-   - Add inline “Hide” button to signal/alert cards; on press, delete the bot message.
-   - Add per-chat settings (commands or inline settings) for TTL and hide toggle.
-   - Handle permission failures gracefully; log telemetry.
+1) **Anti-Spam** (status: in progress — code present; surface settings + verify perms)
+   - ✅ Auto-delete scheduler per bot message (TTL, per-chat).
+   - ✅ “Hide” button on cards; deletes bot message; handle missing delete rights gracefully.
+   - ⚠️ Expose per-chat settings for TTL/hide toggle via command/UI.
+   - ⚠️ Telemetry/feature flag for delete failures and rate limits.
 
 2) **Isolation Hardening**
    - Audit and enforce ownerId in all DB accessors and command handlers (groups, destinations, analytics, leaderboards, live signals).
@@ -99,6 +99,7 @@ This plan ties together the PRD, BUILD_PLAN.md, and current implementation. It l
    - Destination alerts: Verify first/repost alerts arrive in destination groups with origin info (group/channel, user).
    - Duplicate persistence: Delete messages and repost CA; verify repost still detected as duplicate.
    - Price freshness: Re-query CA and confirm updated price; threshold alerts fire off persisted signals.
+   - Jupiter search: `/testjup <mint>` returns fresh meta/price; cards display icon/links/meta.
 
 6) **Docs & Ops**
    - Update COMMANDS_REFERENCE with settings toggles.
@@ -122,4 +123,9 @@ This plan ties together the PRD, BUILD_PLAN.md, and current implementation. It l
   - A channel with bot as admin to confirm channel handling
 - Monitor logs for delete failures and alert routing.
 
-
+## 11) Card & Alerts Upgrade (New)
+- **Richer cards**: Use Jupiter search meta (icon, price, MC, liquidity, supplies, 1h/24h change, links), show current vs entry price and MC deltas, keep Chart/Stats/Hide.
+- **Entry snapshots**: Persist entry price and entry MC (price * supply) per signal to power deltas, run-up, and drawdown.
+- **Threshold alerts**: Expand to 2x, 3x, 4x, 5x, 10x, 15x, 20x, 30x, 50x, 100x for both price and MC; honor per-user settings (DM/group/destination/home).
+- **Settings**: Add toggles for price/MC thresholds and entry override in a simple settings flow.
+- **Stats**: Show current vs entry % and MC % on cards; prep for deeper run-up/drawdown stats once time-series is stored.

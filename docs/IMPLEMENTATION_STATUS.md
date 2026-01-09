@@ -2,7 +2,7 @@
 
 This document provides a clear overview of what has been implemented versus what remains to be done.
 
-**Last Updated**: January 2025
+**Last Updated**: January 2026
 
 ---
 
@@ -29,12 +29,12 @@ This document provides a clear overview of what has been implemented versus what
 - ✅ `ForwardedSignal` - Forwarding history
 - ✅ `CopyTradingStrategy` - Strategy recommendations
 
-### Helius Integration
-- ✅ Helius SDK integration (100% Helius-only)
-- ✅ Price fetching via `getAsset().token_info.price_info`
-- ✅ Metadata fetching via `getAsset()`
-- ✅ Error handling and retry logic
-- ✅ Tested with real tokens
+### Market Data Providers
+- ✅ Helius SDK integration
+- ✅ Jupiter price/quote fallback
+- ✅ Jupiter `tokens/v2/search` as primary meta/price source for fresh data
+- ✅ `/testjup` command outputs full Jupiter search fields for debugging
+- ✅ Error handling and retry logging
 
 ### Telegram Bot Core
 - ✅ Telegraf bot setup
@@ -54,19 +54,21 @@ This document provides a clear overview of what has been implemented versus what
 - ✅ `/togglegroup` command - Enable/disable
 - ✅ Group type management (source/destination)
 
-### Signal Forwarding
+### Signal Forwarding & Cards
 - ✅ Forward signals to destination groups
 - ✅ Track forwarding history
 - ✅ Include source group info in forwarded signals
-- ✅ Custom message formatting
+- ✅ Custom message formatting (first/repost cards)
+- ✅ Auto-delete/hide button support (anti-spam) in cards
 
-### Price Tracking
+### Price Tracking & Alerts
 - ✅ Dynamic sampling scheduler
 - ✅ Age-based sampling intervals
 - ✅ Price sampling job (runs every minute)
 - ✅ Threshold detection (2x, 3x, 5x, 10x)
 - ✅ Signal metrics updates (ATH, drawdown)
 - ✅ Price history storage
+- ⚠️ MC/price multiplier alerts need expansion to 15x/20x/30x/50x/100x and MC-based triggers with owner settings
 
 ### Analytics Backend
 - ✅ Group metrics computation
@@ -124,16 +126,15 @@ This document provides a clear overview of what has been implemented versus what
 - ⚠️ Pagination could be improved
 
 ### Watchlist
-- ❌ Watchlist feature not yet implemented
-- ❌ Add/remove signals from watchlist
-- ❌ Watchlist notifications
+- ⚠️ Buttons present; end-to-end watchlist storage/notifications not completed
 
 ### Settings/Admin
+- ⚠️ Anti-spam settings (TTL/hide) exist but need fuller surface
+- ⚠️ Home chat / routing settings partially present
+- ⚠️ Alert preferences (price/MC thresholds) need UI and persistence
 - ❌ Admin middleware
-- ❌ Settings menu
 - ❌ Configurable sampling intensity
 - ❌ Configurable tracking horizon
-- ❌ Alert preferences
 
 ---
 
