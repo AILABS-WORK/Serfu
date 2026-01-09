@@ -37,28 +37,35 @@ export const notifySignal = async (
     const homeChatId = ownerSettings?.homeChatId;
 
     // Refresh live price/MC from provider to avoid stale data
-    let metaWithLive: TokenMeta | undefined = meta
-      ? {
-          mint: meta.mint || signal.mint,
-          name: meta.name || signal.name || 'Unknown',
-          symbol: meta.symbol || signal.symbol || 'UNKNOWN',
-          ...meta,
-        }
-      : {
-          mint: signal.mint,
-          name: signal.name || 'Unknown',
-          symbol: signal.symbol || 'UNKNOWN',
-        };
+    const baseMeta: TokenMeta = {
+      mint: meta?.mint || signal.mint,
+      name: meta?.name || signal.name || 'Unknown',
+      symbol: meta?.symbol || signal.symbol || 'UNKNOWN',
+      decimals: meta?.decimals,
+      image: meta?.image,
+      marketCap: meta?.marketCap,
+      volume24h: meta?.volume24h,
+      liquidity: meta?.liquidity,
+      supply: meta?.supply,
+      priceChange1h: meta?.priceChange1h,
+      priceChange24h: meta?.priceChange24h,
+      ath: meta?.ath,
+      athDate: meta?.athDate,
+      socialLinks: meta?.socialLinks,
+      launchpad: meta?.launchpad,
+      createdAt: meta?.createdAt,
+      chain: meta?.chain,
+      livePrice: meta?.livePrice,
+      liveMarketCap: meta?.liveMarketCap,
+    };
+    let metaWithLive: TokenMeta = baseMeta;
     try {
       const fresh = await provider.getQuote(signal.mint);
       const supply = meta?.supply ?? signal.entrySupply ?? undefined;
       metaWithLive = {
-        mint: meta?.mint || signal.mint,
-        name: meta?.name || signal.name || 'Unknown',
-        symbol: meta?.symbol || signal.symbol || 'UNKNOWN',
-        ...meta,
+        ...baseMeta,
         livePrice: fresh.price,
-        liveMarketCap: supply ? fresh.price * supply : meta?.liveMarketCap ?? meta?.marketCap,
+        liveMarketCap: supply ? fresh.price * supply : baseMeta.liveMarketCap ?? baseMeta.marketCap,
       };
     } catch (err) {
       logger.debug(`Notifier: could not refresh price for ${signal.mint}:`, err);
