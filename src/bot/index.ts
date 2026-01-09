@@ -17,6 +17,7 @@ import {
   handleGroupLeaderboardCommand,
   handleUserLeaderboardCommand,
 } from './commands/analytics';
+import { handleSettingsCommand } from './commands/settings';
 import { getJupiterPrice, getJupiterTokenInfo } from '../providers/jupiter';
 
 export const setupBot = () => {
@@ -44,6 +45,7 @@ export const setupBot = () => {
           [{ text: '📊 Distributions', callback_data: 'distributions' }],
           [{ text: '📈 Analytics', callback_data: 'analytics' }],
           [{ text: '👥 Groups', callback_data: 'groups_menu' }],
+          [{ text: '⚙️ Settings', callback_data: 'settings_menu' }],
           [{ text: '⭐ Watchlist', callback_data: 'watchlist' }],
         ],
       },
@@ -98,6 +100,15 @@ export const setupBot = () => {
   bot.command('addchannel', (ctx) => {
     const args = ctx.message.text?.split(' ').slice(1);
     handleAddChannelCommand(ctx, args?.[0]);
+  });
+  bot.command('settings', handleSettingsCommand);
+  bot.command('sethome', async (ctx) => {
+    if (!ctx.from?.id || !ctx.chat?.id) {
+      return ctx.reply('Unable to set home chat.');
+    }
+    const { setHomeChat } = await import('./commands/settings');
+    await setHomeChat(ctx.from.id, BigInt(ctx.chat.id));
+    ctx.reply(`Home chat set to this chat (${ctx.chat.id}).`);
   });
   bot.command('testjup', async (ctx) => {
     try {

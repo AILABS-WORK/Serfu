@@ -8,8 +8,11 @@ import {
   handleUserStatsCommand,
   handleGroupLeaderboardCommand,
   handleUserLeaderboardCommand,
+  handleEarliestCallers,
+  handleCrossGroupConfirms,
 } from './commands/analytics';
 import { handleGroupsCommand } from './commands/groups';
+import { handleSettingsCommand, setHomeChat, setTtl, toggleHideForChat, toggleHomeFirst, toggleHomeRepost, toggleMcAlerts, togglePriceAlerts } from './commands/settings';
 
 export const registerActions = (bot: Telegraf) => {
   // Hide action: delete the bot message if possible
@@ -87,6 +90,8 @@ Current: $${m.currentPrice.toFixed(6)} (${m.currentMultiple.toFixed(2)}x)
 ATH: $${m.athPrice.toFixed(6)} (${m.athMultiple.toFixed(2)}x)
 Drawdown: ${(m.maxDrawdown * 100).toFixed(2)}%
 Entry: $${signal.entryPrice?.toFixed(6)}
+ATH vs Entry: ${(m.athMultiple * 100).toFixed(1)}%
+Current vs Entry: ${(m.currentMultiple * 100).toFixed(1)}%
       `;
 
       await ctx.answerCbQuery();
@@ -154,6 +159,54 @@ Entry: $${signal.entryPrice?.toFixed(6)}
     await ctx.answerCbQuery();
     await handleGroupsCommand(ctx);
   });
+
+  bot.action('settings_menu', async (ctx) => {
+    await ctx.answerCbQuery();
+    await handleSettingsCommand(ctx);
+  });
+
+  bot.action('toggle_price_alerts', async (ctx) => {
+    if (!ctx.from?.id) return;
+    await ctx.answerCbQuery();
+    const newState = await togglePriceAlerts(ctx.from.id);
+    await ctx.reply(`Price alerts are now ${newState ? 'ENABLED' : 'DISABLED'} (2x-100x).`);
+  });
+
+  bot.action('toggle_mc_alerts', async (ctx) => {
+    if (!ctx.from?.id) return;
+    await ctx.answerCbQuery();
+    const newState = await toggleMcAlerts(ctx.from.id);
+    await ctx.reply(`MC alerts are now ${newState ? 'ENABLED' : 'DISABLED'} (2x-100x).`);
+  });
+
+  bot.action('toggle_home_first', async (ctx) => {
+    if (!ctx.from?.id) return;
+    await ctx.answerCbQuery();
+    const newState = await toggleHomeFirst(ctx.from.id);
+    await ctx.reply(`Home alerts for first CA are now ${newState ? 'ENABLED' : 'DISABLED'}.`);
+  });
+
+  bot.action('toggle_home_repost', async (ctx) => {
+    if (!ctx.from?.id) return;
+    await ctx.answerCbQuery();
+    const newState = await toggleHomeRepost(ctx.from.id);
+    await ctx.reply(`Home alerts for reposts are now ${newState ? 'ENABLED' : 'DISABLED'}.`);
+  });
+
+  bot.action('set_home_here', async (ctx) => {
+    if (!ctx.from?.id || !ctx.chat?.id) return;
+    await ctx.answerCbQuery();
+    const chatId = BigInt(ctx.chat.id);
+    await setHomeChat(ctx.from.id, chatId);
+    await ctx.reply(`Home chat set to this chat (${chatId}).`);
+  });
+
+  // TTL presets
+  bot.action('ttl_off', async (ctx) => { await ctx.answerCbQuery(); await setTtl(ctx, null); });
+  bot.action('ttl_30', async (ctx) => { await ctx.answerCbQuery(); await setTtl(ctx, 30); });
+  bot.action('ttl_60', async (ctx) => { await ctx.answerCbQuery(); await setTtl(ctx, 60); });
+  bot.action('ttl_180', async (ctx) => { await ctx.answerCbQuery(); await setTtl(ctx, 180); });
+  bot.action('toggle_hide', async (ctx) => { await ctx.answerCbQuery(); await toggleHideForChat(ctx); });
 
   // Analytics Actions
   bot.action('analytics', handleAnalyticsCommand);
@@ -262,6 +315,16 @@ Entry: $${signal.entryPrice?.toFixed(6)}
     await ctx.answerCbQuery();
     const { handleCopyTradingCommand } = await import('./commands/copyTrading');
     await handleCopyTradingCommand(ctx, '30D');
+  });
+
+  bot.action('analytics_earliest', async (ctx) => {
+    await ctx.answerCbQuery();
+    await handleEarliestCallers(ctx);
+  });
+
+  bot.action('analytics_confirms', async (ctx) => {
+    await ctx.answerCbQuery();
+    await handleCrossGroupConfirms(ctx);
   });
 
   bot.action(/^copytrade:(7D|30D|ALL)$/, async (ctx) => {

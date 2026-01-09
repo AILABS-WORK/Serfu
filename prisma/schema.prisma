@@ -52,6 +52,8 @@ model Signal {
   entryPrice         Float?    @map("entry_price")
   entryPriceAt       DateTime? @map("entry_price_at")
   entryPriceProvider String?   @default("helius") @map("entry_price_provider")
+  entryMarketCap     Float?    @map("entry_market_cap")
+  entrySupply        Float?    @map("entry_supply")
 
   trackingStatus TrackingStatus @default(ACTIVE) @map("tracking_status")
   trackingEndAt  DateTime?      @map("tracking_end_at")
@@ -153,6 +155,8 @@ model Group {
   type      String? // "source" or "destination"
   chatType  String?  @map("chat_type") // "group", "supergroup", "channel"
   isActive  Boolean  @default(true) @map("is_active")
+  autoDeleteSeconds Int?     @map("auto_delete_seconds")
+  showHideButton    Boolean  @default(true) @map("show_hide_button")
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
   
@@ -299,11 +303,26 @@ model UserNotificationSettings {
   alertBonding       Boolean  @default(true) @map("alert_bonding")
   alertMigrating      Boolean  @default(true) @map("alert_migrating")
   alertNewSignal      Boolean  @default(true) @map("alert_new_signal")
+
+  // MC multiplier alerts
+  alertMc2x           Boolean  @default(true) @map("alert_mc_2x")
+  alertMc3x           Boolean  @default(true) @map("alert_mc_3x")
+  alertMc4x           Boolean  @default(true) @map("alert_mc_4x")
+  alertMc5x           Boolean  @default(true) @map("alert_mc_5x")
+  alertMc10x          Boolean  @default(true) @map("alert_mc_10x")
+  alertMc15x          Boolean  @default(false) @map("alert_mc_15x")
+  alertMc20x          Boolean  @default(false) @map("alert_mc_20x")
+  alertMc30x          Boolean  @default(false) @map("alert_mc_30x")
+  alertMc50x          Boolean  @default(false) @map("alert_mc_50x")
+  alertMc100x         Boolean  @default(false) @map("alert_mc_100x")
   
   // Notification channels
   notifyInGroup      Boolean  @default(true) @map("notify_in_group")
   notifyInDM         Boolean  @default(false) @map("notify_in_dm")
   notifyDestination  Boolean  @default(true) @map("notify_destination")
+  notifyHomeOnFirstCa Boolean @default(true) @map("notify_home_first_ca")
+  notifyHomeOnRepost  Boolean @default(true) @map("notify_home_repost")
+  homeChatId         BigInt?  @map("home_chat_id")
   
   createdAt          DateTime @default(now()) @map("created_at")
   updatedAt          DateTime @updatedAt @map("updated_at")

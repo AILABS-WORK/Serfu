@@ -36,6 +36,8 @@
    - Repost CA → duplicate card still works with deltas; no cross-owner leakage.
 
 ## Status
-- In progress: card redesign, alerts expansion, settings surface.
-- Done: Jupiter search primary meta, `/testjup` search-only output, anti-spam infrastructure.
+- Done: card redesign, alerts expansion (price & MC), settings surface, anti-spam surface, home routing.
+- Done: Jupiter search primary meta, `/testjup` search-only output.
+- In progress: deeper analytics surfacing (earliest callers, confirmations, run-up/drawdown visibility).
+
 

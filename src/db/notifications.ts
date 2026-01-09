@@ -40,3 +40,4 @@ export const getNotificationSettings = async (userId: number) => {
   return getOrCreateNotificationSettings(userId);
 };
 
+

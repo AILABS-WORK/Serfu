@@ -4,11 +4,13 @@ import { logger } from '../utils/logger';
 import { getBotInstance } from '../bot/instance';
 import { scheduleAutoDelete } from '../utils/messageCleanup';
 
-// Price multipliers to check
+// Multipliers to check
 const PRICE_MULTIPLIERS = [2, 3, 4, 5, 10, 15, 20, 30, 50, 100];
+const MC_MULTIPLIERS = [2, 3, 4, 5, 10, 15, 20, 30, 50, 100];
 
-// Track which alerts have been sent (to avoid duplicates)
-const sentAlerts = new Map<number, Set<number>>(); // signalId -> Set of multipliers
+// Track which alerts have been sent (price and MC) to avoid duplicates
+// Keys are strings like "price_2" or "mc_5"
+const sentAlerts = new Map<number, Set<string>>(); // signalId -> Set of alert keys
 
 export const checkPriceAlerts = async () => {
   try {
@@ -53,30 +55,43 @@ export const checkPriceAlerts = async () => {
 
         if (!settings) continue; // No settings, skip
 
-        // Check each multiplier threshold
+        // Ensure alert set
+        if (!sentAlerts.has(signal.id)) {
+          sentAlerts.set(signal.id, new Set());
+        }
+        const sentKeys = sentAlerts.get(signal.id)!;
+
+        // Price thresholds
         for (const threshold of PRICE_MULTIPLIERS) {
-          if (multiplier >= threshold) {
-            // Check if we've already sent this alert
-            const alertKey = `${signal.id}_${threshold}x`;
-            if (!sentAlerts.has(signal.id)) {
-              sentAlerts.set(signal.id, new Set());
+          const key = `price_${threshold}`;
+          if (multiplier >= threshold && !sentKeys.has(key)) {
+            const alertEnabled = getAlertEnabled(settings, threshold, 'price');
+            if (alertEnabled) {
+              await sendPriceAlert(signal, threshold, currentPrice, multiplier);
             }
-            const sentMultipliers = sentAlerts.get(signal.id)!;
+            sentKeys.add(key);
+          }
+        }
 
-            if (sentMultipliers.has(threshold)) {
-              continue; // Already sent
+        // MC thresholds (requires entry MC and a supply estimate)
+        const entryMc = signal.entryMarketCap ?? (signal.entryPrice && signal.entrySupply ? signal.entryPrice * signal.entrySupply : null);
+        if (entryMc && signal.entrySupply) {
+          const currentMc = currentPrice * signal.entrySupply;
+          const mcMultiple = currentMc / entryMc;
+          for (const threshold of MC_MULTIPLIERS) {
+            const key = `mc_${threshold}`;
+            if (mcMultiple >= threshold && !sentKeys.has(key)) {
+              const alertEnabled = getAlertEnabled(settings, threshold, 'mc');
+              if (alertEnabled) {
+                await sendMcAlert(signal, threshold, {
+                  currentPrice,
+                  currentMc,
+                  multiplier: mcMultiple,
+                  entryMc,
+                });
+              }
+              sentKeys.add(key);
             }
-
-            // Check if user wants this alert
-            const alertEnabled = getAlertEnabled(settings, threshold);
-            if (!alertEnabled) {
-              sentMultipliers.add(threshold); // Mark as "sent" so we don't check again
-              continue;
-            }
-
-            // Send alert
-            await sendPriceAlert(signal, threshold, currentPrice, multiplier);
-            sentMultipliers.add(threshold);
           }
         }
 
@@ -94,7 +109,23 @@ export const checkPriceAlerts = async () => {
   }
 };
 
-const getAlertEnabled = (settings: any, multiplier: number): boolean => {
+const getAlertEnabled = (settings: any, multiplier: number, type: 'price' | 'mc'): boolean => {
+  if (type === 'mc') {
+    switch (multiplier) {
+      case 2: return settings.alertMc2x;
+      case 3: return settings.alertMc3x;
+      case 4: return settings.alertMc4x;
+      case 5: return settings.alertMc5x;
+      case 10: return settings.alertMc10x;
+      case 15: return settings.alertMc15x;
+      case 20: return settings.alertMc20x;
+      case 30: return settings.alertMc30x;
+      case 50: return settings.alertMc50x;
+      case 100: return settings.alertMc100x;
+      default: return false;
+    }
+  }
+
   switch (multiplier) {
     case 2: return settings.alert2x;
     case 3: return settings.alert3x;
@@ -141,10 +172,10 @@ const sendPriceAlert = async (
       const ownerTelegramId = signal.group.owner.userId;
       const destinations = await getDestinationGroups(ownerTelegramId);
       for (const dest of destinations) {
-      const sent = await bot.telegram.sendMessage(Number(dest.chatId), message, {
+        const sent = await bot.telegram.sendMessage(Number(dest.chatId), message, {
           parse_mode: 'Markdown',
         });
-      scheduleAutoDelete(bot, dest.chatId, sent.message_id);
+        scheduleAutoDelete(bot, dest.chatId, sent.message_id, dest.autoDeleteSeconds ?? null);
       }
     }
 
@@ -167,6 +198,77 @@ const sendPriceAlert = async (
     logger.info(`Sent ${threshold}x alert for signal ${signal.id}`);
   } catch (error) {
     logger.error(`Error sending price alert:`, error);
+  }
+};
+
+const sendMcAlert = async (
+  signal: any,
+  threshold: number,
+  info: { currentPrice: number; currentMc: number; multiplier: number; entryMc: number }
+) => {
+  try {
+    const bot = getBotInstance();
+    const settings = signal.user?.notificationSettings || 
+                    signal.group?.owner?.notificationSettings;
+
+    if (!settings) return;
+
+    const message = `
+🚨 *MC ALERT: ${threshold}x REACHED*
+
+*Token:* ${signal.name || 'Unknown'} (${signal.symbol || 'N/A'})
+*Mint:* \`${signal.mint}\`
+*Entry MC:* $${info.entryMc.toFixed(2)}
+*Current MC:* $${info.currentMc.toFixed(2)}
+*Current Price:* $${info.currentPrice.toFixed(6)}
+*Multiplier:* ${info.multiplier.toFixed(2)}x
+
+[View on Solscan](https://solscan.io/token/${signal.mint})
+    `;
+
+    // Send to destination groups if enabled
+    if (settings.notifyDestination && signal.group?.owner?.userId) {
+      const { getDestinationGroups } = await import('../db/groups');
+      const ownerTelegramId = signal.group.owner.userId;
+      const destinations = await getDestinationGroups(ownerTelegramId);
+      for (const dest of destinations) {
+        const sent = await bot.telegram.sendMessage(Number(dest.chatId), message, {
+          parse_mode: 'Markdown',
+        });
+        scheduleAutoDelete(bot, dest.chatId, sent.message_id);
+      }
+    }
+
+    // Send DM if enabled
+    if (settings.notifyInDM && signal.user?.userId) {
+      const sent = await bot.telegram.sendMessage(Number(signal.user.userId), message, {
+        parse_mode: 'Markdown',
+      });
+      scheduleAutoDelete(bot, signal.user.userId, sent.message_id);
+    }
+
+    // Send in group if enabled
+    if (settings.notifyInGroup && signal.chatId) {
+      const sent = await bot.telegram.sendMessage(Number(signal.chatId), message, {
+        parse_mode: 'Markdown',
+      });
+      scheduleAutoDelete(bot, signal.chatId, sent.message_id);
+    }
+
+    // Send to home chat if configured and allowed (reuse repost toggle)
+    if (settings.homeChatId) {
+      const allowHome = settings.notifyHomeOnRepost || settings.notifyHomeOnFirstCa;
+      if (allowHome && settings.homeChatId !== signal.chatId) {
+        const sent = await bot.telegram.sendMessage(Number(settings.homeChatId), message, {
+          parse_mode: 'Markdown',
+        });
+        scheduleAutoDelete(bot, settings.homeChatId, sent.message_id);
+      }
+    }
+
+    logger.info(`Sent MC ${threshold}x alert for signal ${signal.id}`);
+  } catch (error) {
+    logger.error(`Error sending MC alert:`, error);
   }
 };
 

@@ -29,6 +29,20 @@ const formatPercent = (num: number | undefined | null): string => {
   return `${sign}${num.toFixed(2)}%`;
 };
 
+const formatPrice = (value: number | undefined | null): string => {
+  if (value === undefined || value === null) return 'Pending';
+  if (value >= 1) return `$${value.toFixed(4)}`;
+  return `$${value.toFixed(8)}`;
+};
+
+const calcPercentDelta = (current?: number | null, entry?: number | null): string => {
+  if (current === undefined || current === null || entry === undefined || entry === null || entry === 0) {
+    return 'N/A';
+  }
+  const delta = ((current - entry) / entry) * 100;
+  return formatPercent(delta);
+};
+
 // Check if this is a duplicate CA for an owner
 export const checkDuplicateCA = async (mint: string, ownerId?: number): Promise<{
   isDuplicate: boolean;
@@ -71,18 +85,25 @@ export const generateFirstSignalCard = (
   userName: string
 ): string => {
   const age = formatAge(meta.createdAt);
-  const mc = formatNumber(meta.liveMarketCap ?? meta.marketCap);
+  const currentPrice = meta.livePrice ?? (meta.marketCap && meta.supply ? meta.marketCap / meta.supply : signal.entryPrice ?? null);
+  const currentMc = meta.liveMarketCap ?? meta.marketCap ?? (currentPrice && meta.supply ? currentPrice * meta.supply : undefined);
+  const mc = formatNumber(currentMc);
+  const entryPriceVal = signal.entryPrice ?? null;
+  const entryMcVal = signal.entryMarketCap ?? (signal.entryPrice && signal.entrySupply ? signal.entryPrice * signal.entrySupply : null);
+  const entryMc = formatNumber(entryMcVal);
   const volume = formatNumber(meta.volume24h);
   const lp = formatNumber(meta.liquidity);
-  const supply = meta.supply
-    ? meta.supply.toLocaleString(undefined, { maximumFractionDigits: 2 })
+  const supplyVal = meta.supply ?? signal.entrySupply ?? null;
+  const supply = supplyVal
+    ? supplyVal.toLocaleString(undefined, { maximumFractionDigits: 2 })
     : 'N/A';
   const change1h = formatPercent(meta.priceChange1h);
   const change24h = formatPercent(meta.priceChange24h);
-  const livePrice = meta.livePrice ? `$${meta.livePrice.toFixed(6)}` : undefined;
+  const livePrice = currentPrice ? formatPrice(currentPrice) : undefined;
   const ath = formatNumber(meta.ath);
-  const entryPrice = signal.entryPrice ? `$${signal.entryPrice.toFixed(6)}` : 'Pending';
   const icon = meta.image ? `[🖼️ Icon](${meta.image})` : 'N/A';
+  const priceDelta = calcPercentDelta(currentPrice, entryPriceVal);
+  const mcDelta = calcPercentDelta(currentMc ?? null, entryMcVal);
 
   // Build social links
   let socialLinks = '';
@@ -106,11 +127,12 @@ export const generateFirstSignalCard = (
 *Chain:* ${meta.chain || 'Solana'}
 ${meta.launchpad ? `*Launchpad:* ${meta.launchpad}\n` : ''}*Age:* ${age}
 *Icon:* ${icon}
-*Entry Price:* ${entryPrice}
-${livePrice ? `*Current Price:* ${livePrice}\n` : ''}
+*Entry Price:* ${formatPrice(entryPriceVal)}
+*Current Price:* ${livePrice || 'N/A'} (${priceDelta})
+*Entry MC:* ${entryMc}
+*Current MC:* ${mc} (${mcDelta})
 
 *Market Data:*
-• *MC:* ${mc}
 • *Volume 24h:* ${volume}
 • *LP:* ${lp}
 • *Supply:* ${supply}
@@ -137,13 +159,14 @@ export const generateDuplicateSignalCard = (
   currentGroupName: string,
   currentUserName: string
 ): string => {
-  const entryPrice = signal.entryPrice ? `$${signal.entryPrice.toFixed(6)}` : 'Pending';
-  const mc = formatNumber(meta.marketCap);
-  const firstPrice = firstSignal.entryPrice || 0;
-  const currentPrice = signal.entryPrice || 0;
-  const priceChange = firstPrice > 0 
-    ? formatPercent(((currentPrice - firstPrice) / firstPrice) * 100)
-    : 'N/A';
+  const currentPriceVal = meta.livePrice ?? (meta.marketCap && meta.supply ? meta.marketCap / meta.supply : signal.entryPrice ?? null);
+  const currentMcVal = meta.liveMarketCap ?? meta.marketCap ?? (currentPriceVal && meta.supply ? currentPriceVal * meta.supply : null);
+  const entryPrice = formatPrice(currentPriceVal);
+  const mc = formatNumber(currentMcVal);
+  const firstPrice = firstSignal.entryPrice || null;
+  const priceChange = calcPercentDelta(currentPriceVal, firstPrice);
+  const entryMcVal = firstSignal.entryMarketCap ?? (firstSignal.entryPrice && firstSignal.entrySupply ? firstSignal.entryPrice * firstSignal.entrySupply : null);
+  const mcChange = calcPercentDelta(currentMcVal, entryMcVal);
 
   return `
 🔄 *CA POSTED AGAIN*
@@ -153,6 +176,7 @@ export const generateDuplicateSignalCard = (
 *Current MC:* ${mc}
 *Current Price:* ${entryPrice}
 *Change from First Call:* ${priceChange}
+*MC Change:* ${mcChange}
 
 *First Mention:*
 • *Group:* ${firstGroupName}

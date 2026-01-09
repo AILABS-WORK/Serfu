@@ -126,3 +126,4 @@ The updated code will automatically run migrations on startup.
 
 **Note**: The bot code has been updated to automatically run migrations on startup when `RUN_MIGRATIONS=true` is set. This is the recommended approach for production.
 
+

@@ -24,11 +24,16 @@ export const notifySignal = async (
     // Load group info if available
     const signalWithGroup = await prisma.signal.findUnique({
       where: { id: signal.id },
-      include: { group: true, user: true },
+      include: { 
+        group: { include: { owner: { include: { notificationSettings: true } } } }, 
+        user: true 
+      },
     });
 
     const groupName = signalWithGroup?.group?.name || 'Unknown Group';
     const userName = signalWithGroup?.user?.username || signalWithGroup?.user?.firstName || 'Unknown User';
+    const ownerSettings = signalWithGroup?.group?.owner?.notificationSettings;
+    const homeChatId = ownerSettings?.homeChatId;
 
     let message: string;
     let keyboard: any;
@@ -100,13 +105,68 @@ export const notifySignal = async (
       };
     }
 
-    const sent = await bot.telegram.sendMessage(Number(chatId), message, {
-      parse_mode: 'Markdown',
-      reply_markup: keyboard,
+    const sendWithCleanup = async (targetChatId: bigint, ttlSeconds?: number | null, hideButton = true) => {
+      const sent = await bot.telegram.sendMessage(Number(targetChatId), message, {
+        parse_mode: 'Markdown',
+        reply_markup: keyboard,
+      });
+      scheduleAutoDelete(bot, targetChatId, sent.message_id, ttlSeconds);
+    };
+
+    // Send to source chat always
+    const sourcePrefs = await prisma.group.findFirst({
+      where: { chatId },
+      select: { autoDeleteSeconds: true, showHideButton: true },
     });
-    // Auto-delete after TTL (configurable via env)
-    scheduleAutoDelete(bot, chatId, sent.message_id);
-    
+    if (sourcePrefs?.showHideButton === false) {
+      // remove hide buttons
+      if (keyboard?.inline_keyboard) {
+        keyboard.inline_keyboard = keyboard.inline_keyboard.map((row: any[]) =>
+          row.filter((btn) => btn.callback_data !== 'hide')
+        );
+      }
+    }
+    await sendWithCleanup(chatId, sourcePrefs?.autoDeleteSeconds ?? null, sourcePrefs?.showHideButton ?? true);
+
+    // Optionally send to home chat based on settings
+    if (homeChatId) {
+      const wantHome =
+        (!duplicateCheck?.isDuplicate && ownerSettings?.notifyHomeOnFirstCa) ||
+        (duplicateCheck?.isDuplicate && ownerSettings?.notifyHomeOnRepost);
+
+      if (wantHome && homeChatId !== chatId) {
+        const homePrefs = await prisma.group.findFirst({
+          where: { chatId: homeChatId },
+          select: { autoDeleteSeconds: true, showHideButton: true },
+        });
+        let homeKeyboard = keyboard;
+        if (homePrefs?.showHideButton === false && homeKeyboard?.inline_keyboard) {
+          homeKeyboard.inline_keyboard = homeKeyboard.inline_keyboard.map((row: any[]) =>
+            row.filter((btn) => btn.callback_data !== 'hide')
+          );
+        }
+        // Avoid duplicate send of same signal to the same home chat
+        const exists = await prisma.forwardedSignal.findUnique({
+          where: {
+            signalId_destGroupId: {
+              signalId: signal.id,
+              destGroupId: homeChatId,
+            },
+          },
+        });
+        if (!exists) {
+          await sendWithCleanup(homeChatId, homePrefs?.autoDeleteSeconds ?? null, homePrefs?.showHideButton ?? true);
+          await prisma.forwardedSignal.create({
+            data: {
+              signalId: signal.id,
+              sourceGroupId: signal.chatId,
+              destGroupId: homeChatId,
+            },
+          });
+        }
+      }
+    }
+
     logger.info(`Notification sent for signal ${signal.id}`);
   } catch (error) {
     logger.error(`Failed to send notification for signal ${signal.id}:`, error);

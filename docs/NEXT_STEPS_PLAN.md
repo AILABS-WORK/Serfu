@@ -2,16 +2,14 @@
 
 This plan ties together the PRD, BUILD_PLAN.md, and current implementation. It lists concrete engineering tasks, ownership/scoping rules, UX changes, testing, and rollout steps to ensure full functionality.
 
-## 1) Anti-Spam Controls (Auto-Delete + Hide)
-- **Auto-delete bot messages**: Delete bot-sent signal/alert cards after a configurable TTL (default 60s). Scope per chat (group/channel). Never delete user messages.
-- **Hide button**: Add an inline “Hide” button on every bot card that immediately deletes that bot message. Handle missing delete rights gracefully and log failures.
-- **Settings**:
-  - `auto_delete_seconds` (per chat; 0 = off; default 60)
-  - `show_hide_button` (default on)
-- **Permissions**: Requires bot admin rights to delete its messages in groups/channels. If not granted, show a one-time warning and continue without deletion.
-- **Telemetry**: Log deletions and failures to understand coverage; add a feature flag to disable globally if Telegram rate-limits.
+## 1) Anti-Spam Controls (Auto-Delete + Hide) — **Complete**
+- **Auto-delete bot messages**: Delete bot-sent signal/alert cards after configurable TTL (per chat).
+- **Hide button**: Inline “Hide” on bot cards; handles missing delete rights gracefully.
+- **Settings**: `auto_delete_seconds` (0 = off), `show_hide_button` via /settings; per chat/owner.
+- **Permissions**: Bot admin rights needed to delete; warn gracefully if missing.
+- **Telemetry**: (Optional) add rate-limit flag later.
 
-## 2) Data Isolation & Ownership (Private vs Shared)
+## 2) Data Isolation & Ownership (Private vs Shared) — **Complete**
 - **Owner-scoped groups**: All group lists, destination lists, leaderboards, analytics, live signals must filter by `ownerId` (Telegram user ID). A user sees only groups they own.
 - **Private “Serfu” workspace**: Your own groups/destinations stay private. Groups added by other users remain invisible to you and vice versa.
 - **Destination groups**: When a user sets a destination, store under that user’s ownership; never surface in other users’ lists.
@@ -20,7 +18,7 @@ This plan ties together the PRD, BUILD_PLAN.md, and current implementation. It l
 - **Audit pass**: Review all queries:
   - `getAllGroups`, `getDestinationGroups`, leaderboards, distributions, live signals, analytics commands, and callbacks — ensure `ownerId` filter is applied.
 
-## 3) Alerts to Owner (“Home”) + Repost Handling
+## 3) Alerts to Owner (“Home”) + Repost Handling — **Complete**
 - **First CA**: Send rich signal card to the posting chat and optionally to the owner’s “home” chat (config default ON). Includes group, user, entry price, MC, links (Solscan, Axiom, GMGN).
 - **Repost CA**: Send “CA posted again” card with group/user context and price delta since first call; also optionally to the owner’s home chat.
 - **Settings**:
@@ -34,7 +32,7 @@ This plan ties together the PRD, BUILD_PLAN.md, and current implementation. It l
 - **Signal card actions**: Add quick “Stats”/“Chart” buttons (already present) and ensure they respect ownership.
 - **Testing**: Multi-owner scenarios to confirm isolation in commands, callbacks, and forwarded alerts.
 
-## 5) Additional UX & Settings Coverage
+## 5) Additional UX & Settings Coverage — **Complete**
 - **Monitored Channels section**: In `/groups` (or main menu), show monitored channels separately from monitored groups; include status and counts.
 - **Settings coverage**: Each major section (groups/channels, alerts, anti-spam, destinations, home chat) must expose settings via buttons/commands and persist per owner/chat.
 - **Home chat selection**: Allow user to designate a “home” chat (group/channel/DM) where their own alerts are routed; default to the owner’s private workspace if set.
@@ -42,19 +40,19 @@ This plan ties together the PRD, BUILD_PLAN.md, and current implementation. It l
 - **Destination-as-monitored**: When a destination is set, also list it in monitored items for that owner (but never leak to other owners).
 - **Channel add UX**: Provide an explicit “Add Channel” path (instructions + buttons) so channels can be added, tracked, and listed just like groups.
 
-## 6) Alerts & Signals (Expanded)
-- **Threshold alerts**: 2x, 3x, 4x, 5x, 10x, 15x, 20x, 30x, 50x, 100x from entry; route per owner settings (group, destination, home).
-- **Event alerts**: bonding, migrating, new signal, CA repost; include group and user origin.
-- **Cross-group awareness**: On reposts, include source group/user and price delta vs first call; log for analytics.
-- **Destination alerts**: Ensure destinations receive “CA posted” (first) and “CA posted again” with origin (group/channel) and user.
-- **Persisted duplicate tracking**: Track first-call per mint per owner in DB (not just in-memory) so repost detection survives message deletion and restarts.
+## 6) Alerts & Signals (Expanded) — **Mostly Complete**
+- **Threshold alerts**: 2x–100x price & MC routed per settings (group/destination/home/DM).
+- **Event alerts**: dex paid, bonding, migrating; routed to destinations/home when enabled.
+- **Cross-group awareness**: Destinations distinguish first vs new-group mention; owner-scoped duplicates persisted.
+- **Destination alerts**: “NEW CA SIGNAL” for first; “New group mention” for other owned sources; deduped per source/destination.
+- **Persisted duplicate tracking**: Owner-scoped in DB; survives restarts.
+- **Nice-to-have**: richer event parsing and analytics logging.
 
-## 7) Analytics Depth
-- Track which groups/users call first across multiple groups; earliest-call scoring.
-- Cross-group confirmation: identify signals echoed across multiple groups and compare performance.
-- Per-user performance across groups: where they post first, win rates, ATH multiples, time-to-2x.
-- Group-level “earliest callers” and “best confirmations.”
-- Ensure all analytics remain owner-scoped.
+## 7) Analytics Depth — **In Progress**
+- ✅ Earliest callers (7d, owner-scoped) surfaced.
+- ✅ Cross-group confirmations (7d) surfaced.
+- ⚠️ Extend per-user/group performance drill-down (run-up/drawdown to cards/charts).
+- ⚠️ Log/visualize event alerts and confirmations.
 
 ## 8) Data Freshness & Token Data Quality
 - **Price freshness**: Implement re-fetch/refresh for price when rendering cards; consider short-term cache with expiry; note Helius 600s cache—force a fresh call where possible or retry.

@@ -3,6 +3,7 @@ import { prisma } from '../../db';
 import { logger } from '../../utils/logger';
 import { getAllGroups, getGroupByChatId } from '../../db/groups';
 import { getAllUsers } from '../../db/users';
+import { subDays } from 'date-fns';
 
 export const handleAnalyticsCommand = async (ctx: Context) => {
   try {
@@ -19,7 +20,8 @@ export const handleAnalyticsCommand = async (ctx: Context) => {
             { text: '🎯 Strategies', callback_data: 'analytics_strategies' },
           ],
           [
-            { text: '📊 Performance', callback_data: 'analytics_performance' },
+            { text: '🚀 Earliest Callers', callback_data: 'analytics_earliest' },
+            { text: '🔁 Cross-Group Confirms', callback_data: 'analytics_confirms' },
           ],
         ],
       },
@@ -266,8 +268,31 @@ export const handleGroupLeaderboardCommand = async (ctx: Context, window: '7D' |
 
 export const handleUserLeaderboardCommand = async (ctx: Context, window: '7D' | '30D' | 'ALL' = '30D') => {
   try {
+    const ownerTelegramId = ctx.from?.id ? BigInt(ctx.from.id) : null;
+    if (!ownerTelegramId) {
+      return ctx.reply('❌ Unable to identify user.');
+    }
+
+    // Limit to users who have signals in groups owned by the caller
+    const userIds = await prisma.user.findMany({
+      where: {
+        signals: {
+          some: {
+            group: {
+              owner: { userId: ownerTelegramId },
+            },
+          },
+        },
+      },
+      select: { id: true },
+    });
+
+    if (userIds.length === 0) {
+      return ctx.reply('No users found for your workspace yet.');
+    }
+
     const metrics = await prisma.userMetric.findMany({
-      where: { window },
+      where: { window, userId: { in: userIds.map((u) => u.id) } },
       include: { user: true },
       orderBy: { hit2Rate: 'desc' },
       take: 20,
@@ -311,6 +336,104 @@ export const handleUserLeaderboardCommand = async (ctx: Context, window: '7D' | 
   } catch (error) {
     logger.error('Error in user leaderboard:', error);
     ctx.reply('Error loading leaderboard.');
+  }
+};
+
+export const handleEarliestCallers = async (ctx: Context) => {
+  try {
+    const ownerTelegramId = ctx.from?.id ? BigInt(ctx.from.id) : null;
+    if (!ownerTelegramId) return ctx.reply('❌ Unable to identify user.');
+    const since = subDays(new Date(), 7);
+
+    // Signals in owner workspace last 7d
+    const signals = await prisma.signal.findMany({
+      where: {
+        detectedAt: { gte: since },
+        group: { owner: { userId: ownerTelegramId } },
+      },
+      select: { id: true, mint: true, detectedAt: true, userId: true },
+      orderBy: { detectedAt: 'asc' },
+    });
+
+    const firstByMint = new Map<string, { userId: number | null; detectedAt: Date }>();
+    signals.forEach((s) => {
+      if (!firstByMint.has(s.mint)) {
+        firstByMint.set(s.mint, { userId: s.userId, detectedAt: s.detectedAt });
+      }
+    });
+
+    const counts = new Map<number, number>();
+    for (const entry of firstByMint.values()) {
+      if (entry.userId) {
+        counts.set(entry.userId, (counts.get(entry.userId) || 0) + 1);
+      }
+    }
+
+    if (counts.size === 0) {
+      return ctx.reply('No earliest callers yet in the last 7 days.');
+    }
+
+    const top = Array.from(counts.entries()).sort((a, b) => b[1] - a[1]).slice(0, 10);
+    const users = await prisma.user.findMany({
+      where: { id: { in: top.map((t) => t[0]) } },
+    });
+    const userMap = new Map(users.map((u) => [u.id, u]));
+
+    let message = '🚀 *Earliest Callers (7d, your workspace)*\n\n';
+    top.forEach(([uid, cnt], idx) => {
+      const u = userMap.get(uid);
+      const name = u?.username || u?.firstName || u?.userId || uid;
+      const emoji = idx === 0 ? '🥇' : idx === 1 ? '🥈' : idx === 2 ? '🥉' : `${idx + 1}.`;
+      message += `${emoji} @${name} — ${cnt} first calls\n`;
+    });
+
+    await ctx.reply(message, { parse_mode: 'Markdown' });
+  } catch (error) {
+    logger.error('Error in earliest callers:', error);
+    ctx.reply('Error computing earliest callers.');
+  }
+};
+
+export const handleCrossGroupConfirms = async (ctx: Context) => {
+  try {
+    const ownerTelegramId = ctx.from?.id ? BigInt(ctx.from.id) : null;
+    if (!ownerTelegramId) return ctx.reply('❌ Unable to identify user.');
+    const since = subDays(new Date(), 7);
+
+    // Signals with group owner filter
+    const signals = await prisma.signal.findMany({
+      where: {
+        detectedAt: { gte: since },
+        group: { owner: { userId: ownerTelegramId } },
+      },
+      select: { mint: true, groupId: true },
+    });
+
+    const byMint = new Map<string, Set<number>>();
+    signals.forEach((s) => {
+      if (!byMint.has(s.mint)) byMint.set(s.mint, new Set());
+      byMint.get(s.mint)!.add(s.groupId || -1);
+    });
+
+    const multiGroup = Array.from(byMint.entries())
+      .map(([mint, groups]) => ({ mint, groups: Array.from(groups) }))
+      .filter((m) => m.groups.length > 1)
+      .slice(0, 20);
+
+    if (multiGroup.length === 0) {
+      return ctx.reply('No cross-group confirmations yet in the last 7 days.');
+    }
+
+    let message = '🔁 *Cross-Group Confirmations (7d, your workspace)*\n\n';
+    multiGroup.slice(0, 10).forEach((m, idx) => {
+      const emoji = idx === 0 ? '🔥' : `${idx + 1}.`;
+      message += `${emoji} \`${m.mint}\` — ${m.groups.length} groups\n`;
+    });
+
+    await ctx.reply(message, { parse_mode: 'Markdown' });
+  } catch (error) {
+    logger.error('Error in cross-group confirmations:', error);
+    ctx.reply('Error computing cross-group confirmations.');
   }
 };
 

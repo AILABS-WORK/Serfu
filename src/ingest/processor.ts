@@ -7,12 +7,50 @@ import { prisma } from '../db';
 import { notifySignal } from '../bot/notifier';
 import { forwardSignalToDestination } from '../bot/forwarder';
 import { checkDuplicateCA } from '../bot/signalCard';
+import { detectEvents, sendEventAlerts } from '../bot/eventAlerts';
 
 export const processMessage = async (message: RawMessage) => {
   const { rawText, chatId, messageId } = message;
   
   logger.debug(`Processing message ${messageId} from chat ${chatId}: ${rawText?.substring(0, 50)}...`);
   
+  // Event detection (dex payment / bonding / migrating)
+  try {
+    const events = detectEvents(rawText);
+    if (events.length > 0) {
+      const rawMsg = await prisma.rawMessage.findUnique({
+        where: { id: message.id },
+        include: { group: { include: { owner: { include: { notificationSettings: true } } } }, user: true },
+      });
+      const ownerTelegramId = rawMsg?.group?.owner?.userId;
+      const settings = rawMsg?.group?.owner?.notificationSettings;
+      if (ownerTelegramId && settings) {
+        const allowed = events.filter((e) => {
+          if (e === 'dex_payment') return settings.alertDexPayment;
+          if (e === 'bonding') return settings.alertBonding;
+          if (e === 'migrating') return settings.alertMigrating;
+          return false;
+        });
+        if (allowed.length > 0) {
+          const bot = (await import('../bot/instance')).getBotInstance();
+          const sourceName = rawMsg?.group?.name || `Chat ${chatId}`;
+          const snippet = rawText?.slice(0, 160) || '';
+          await sendEventAlerts({
+            bot,
+            ownerTelegramId,
+            sourceChatId: BigInt(chatId),
+            sourceName,
+            textSnippet: snippet,
+            settings,
+            events: allowed,
+          });
+        }
+      }
+    }
+  } catch (err) {
+    logger.debug('Event detection error:', err);
+  }
+
   const detection = await detectSignal(rawText);
   
   logger.debug(`Signal detection result: isSignal=${detection.isSignal}, mints=${detection.mints.length}, confidence=${detection.confidence}`);
@@ -45,15 +83,22 @@ export const processMessage = async (message: RawMessage) => {
     // Fetch Metadata
     const meta = await provider.getTokenMeta(mint);
     
-    // Fetch Price (Entry)
+    // Fetch Price (Entry) and supply snapshots
     let entryPrice: number | null = null;
     let entryProvider = 'helius';
     let trackingStatus: 'ACTIVE' | 'ENTRY_PENDING' = 'ACTIVE';
+    const entrySupply = meta.supply || null;
+    let entryMarketCap: number | null = null;
 
     try {
       const quote = await provider.getQuote(mint);
       entryPrice = quote.price;
       entryProvider = quote.source;
+      if (entryPrice && entrySupply) {
+        entryMarketCap = entryPrice * entrySupply;
+      } else if (meta.marketCap) {
+        entryMarketCap = meta.marketCap;
+      }
     } catch (err) {
       logger.warn(`Failed to fetch entry price for ${mint}:`, err);
       trackingStatus = 'ENTRY_PENDING';
@@ -114,6 +159,8 @@ export const processMessage = async (message: RawMessage) => {
       entryPrice,
       entryPriceAt: entryPrice ? new Date() : null,
       entryPriceProvider: entryProvider,
+      entryMarketCap,
+      entrySupply,
       trackingStatus,
       detectedAt: new Date(),
       ...(groupId ? { group: { connect: { id: groupId } } } : {}),

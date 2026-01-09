@@ -11,10 +11,11 @@ export const scheduleAutoDelete = (
   bot: Telegraf,
   chatId: bigint | number,
   messageId: number,
-  seconds: number = DEFAULT_AUTO_DELETE_SECONDS,
+  seconds?: number | null,
 ) => {
-  if (!seconds || seconds <= 0) return;
-  const delayMs = seconds * 1000;
+  const ttl = seconds ?? DEFAULT_AUTO_DELETE_SECONDS;
+  if (!ttl || ttl <= 0) return;
+  const delayMs = ttl * 1000;
 
   setTimeout(async () => {
     try {
@@ -30,5 +31,6 @@ export const scheduleAutoDelete = (
  * Expose default for use in keyboards/settings if needed.
  */
 export const getDefaultAutoDeleteSeconds = () => DEFAULT_AUTO_DELETE_SECONDS;
+
 
 

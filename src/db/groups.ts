@@ -101,6 +101,50 @@ export const getAllGroups = async (ownerTelegramId: bigint, activeOnly: boolean 
   }
 };
 
+// Get chat preferences (auto-delete/hide) by chatId (any owner) - used when routing to destinations/home
+export const getChatPreferences = async (chatId: bigint) => {
+  const group = await prisma.group.findFirst({
+    where: { chatId },
+    select: { autoDeleteSeconds: true, showHideButton: true },
+  });
+  return {
+    autoDeleteSeconds: group?.autoDeleteSeconds ?? null,
+    showHideButton: group?.showHideButton ?? true,
+  };
+};
+
+export const updateChatPreferences = async (
+  chatId: bigint,
+  ownerTelegramId: bigint,
+  data: { autoDeleteSeconds?: number | null; showHideButton?: boolean }
+) => {
+  const ownerId = await getUserIdFromTelegramId(ownerTelegramId);
+  const group = await prisma.group.findFirst({
+    where: { chatId, ownerId },
+  });
+  if (!group) {
+    // If not existing, create as source with defaults then update
+    await prisma.group.create({
+      data: {
+        chatId,
+        ownerId,
+        type: 'source',
+        isActive: true,
+        autoDeleteSeconds: data.autoDeleteSeconds ?? null,
+        showHideButton: data.showHideButton ?? true,
+      },
+    });
+    return;
+  }
+  await prisma.group.update({
+    where: { id: group.id },
+    data: {
+      autoDeleteSeconds: data.autoDeleteSeconds ?? group.autoDeleteSeconds,
+      showHideButton: data.showHideButton ?? group.showHideButton,
+    },
+  });
+};
+
 export const getDestinationGroups = async (ownerTelegramId: bigint) => {
   try {
     const ownerId = await getUserIdFromTelegramId(ownerTelegramId);

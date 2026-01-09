@@ -51,7 +51,7 @@ export const forwardSignalToDestination = async (signal: Signal) => {
         continue;
       }
 
-      // Check if already forwarded
+      // Check if we've already sent THIS signal to this destination
       const existing = await prisma.forwardedSignal.findUnique({
         where: {
           signalId_destGroupId: {
@@ -60,17 +60,32 @@ export const forwardSignalToDestination = async (signal: Signal) => {
           },
         },
       });
-
       if (existing) {
-        continue; // Already forwarded
+        continue; // Already forwarded this signal instance
       }
 
-      // Check duplicate across this owner
+      // Check if we've already sent this mint from this source group to this destination
+      const alreadySentFromSource = await prisma.forwardedSignal.findFirst({
+        where: {
+          destGroupId: destGroup.chatId,
+          sourceGroupId: signal.chatId,
+          signal: {
+            mint: signal.mint,
+            group: { ownerId },
+          },
+        },
+        include: { signal: true },
+      });
+      if (alreadySentFromSource) {
+        continue; // Avoid spamming destination from the same source group for the same CA
+      }
+
+      // Check duplicate across this owner (to label first vs new group mention)
       const duplicateCheck = await checkDuplicateCA(signal.mint, ownerId || undefined);
       const isDup = duplicateCheck.isDuplicate;
 
       // Format forwarded message
-      const header = isDup ? '🔄 CA POSTED AGAIN' : `🚨 SIGNAL FROM ${originType}`;
+      const header = isDup ? '🆕 New group mention' : '🚨 NEW CA SIGNAL';
       const originLine = `*Source ${originType}:* ${groupName}`;
       const userLine = `*From:* @${userName}`;
       const entryLine = `*Entry:* $${signal.entryPrice?.toFixed(6) || 'Pending'}`;
@@ -103,12 +118,32 @@ ${userLine}${duplicateExtra}
             ],
             [
               { text: '🔍 View Source', callback_data: `source:${signal.id}` },
-              { text: '🙈 Hide', callback_data: 'hide' },
             ],
           ],
         },
       });
-      scheduleAutoDelete(bot, destGroup.chatId, sent.message_id);
+      // Apply hide button based on destination prefs
+      const hideAllowed = destGroup.showHideButton ?? true;
+      if (hideAllowed) {
+        await bot.telegram.editMessageReplyMarkup(
+          Number(destGroup.chatId),
+          sent.message_id,
+          undefined,
+          {
+            inline_keyboard: [
+              [
+                { text: '📊 Chart', callback_data: `chart:${signal.id}` },
+                { text: '📈 Stats', callback_data: `stats:${signal.id}` },
+              ],
+              [
+                { text: '🔍 View Source', callback_data: `source:${signal.id}` },
+                { text: '🙈 Hide', callback_data: 'hide' },
+              ],
+            ],
+          }
+        );
+      }
+      scheduleAutoDelete(bot, destGroup.chatId, sent.message_id, destGroup.autoDeleteSeconds ?? null);
 
       // Record forwarding
       await prisma.forwardedSignal.create({

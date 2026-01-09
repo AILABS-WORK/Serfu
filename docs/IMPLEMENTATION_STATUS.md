@@ -2,7 +2,7 @@
 
 This document provides a clear overview of what has been implemented versus what remains to be done.
 
-**Last Updated**: January 2026
+**Last Updated**: January 2026 (post anti-spam, home routing, event alerts, analytics depth v1)
 
 ---
 
@@ -129,9 +129,9 @@ This document provides a clear overview of what has been implemented versus what
 - ⚠️ Buttons present; end-to-end watchlist storage/notifications not completed
 
 ### Settings/Admin
-- ⚠️ Anti-spam settings (TTL/hide) exist but need fuller surface
-- ⚠️ Home chat / routing settings partially present
-- ⚠️ Alert preferences (price/MC thresholds) need UI and persistence
+- ✅ Anti-spam settings (TTL/hide) surfaced via /settings and per-chat prefs
+- ✅ Home chat / routing settings implemented with toggles
+- ✅ Alert preferences (price/MC thresholds, home alerts) in UI and persisted
 - ❌ Admin middleware
 - ❌ Configurable sampling intensity
 - ❌ Configurable tracking horizon
@@ -191,17 +191,18 @@ This document provides a clear overview of what has been implemented versus what
 
 ### What Needs Testing
 
-- [ ] End-to-end signal detection and forwarding
-- [ ] Analytics accuracy with real data
+- [ ] End-to-end signal detection and forwarding (multi-owner + channels)
+- [ ] Event alerts (dex paid / bonding / migrating) routing to dest/home
+- [ ] Analytics accuracy with real data; earliest callers & cross-group confirms
 - [ ] Copy trading strategy quality
 - [ ] Performance under load
 - [ ] Error handling and recovery
 
 ### What Needs Deployment
 
-- [ ] Database migration on production
+- [ ] Database migration on production (group anti-spam fields; home alert flags)
 - [ ] Environment variables configured
-- [ ] Bot added to production groups
+- [ ] Bot added to production groups/channels
 - [ ] Monitoring and alerting setup
 
 ---
