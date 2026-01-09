@@ -3,13 +3,14 @@ import { logger } from '../utils/logger';
 
 const JUP_URL = 'https://quote-api.jup.ag/v6/quote';
 const JUP_PRICE_URL = 'https://api.jup.ag/price/v3';
+const JUP_SEARCH_URL = 'https://api.jup.ag/tokens/v2/search';
 const SOL_MINT = 'So11111111111111111111111111111111111111112';
-const JUP_API_KEY = process.env.JUPITER_API_KEY || process.env.JUP_API_KEY;
+const JUP_API_KEY = (process.env.JUPITER_API_KEY || process.env.JUP_API_KEY || '').trim() || undefined;
 
 /**
  * Fetch price via Jupiter price/v3 (best effort).
  */
-export const getJupiterPriceV3 = async (mint: string): Promise<number | null> => {
+export const getJupiterPriceV3 = async (mint: string): Promise<{ price: number | null; error?: string }> => {
   try {
     const headers: Record<string, string> = {};
     if (JUP_API_KEY) {
@@ -20,15 +21,15 @@ export const getJupiterPriceV3 = async (mint: string): Promise<number | null> =>
     if (!res.ok) {
       const text = await res.text().catch(() => '');
       logger.debug(`Jupiter price/v3 failed status ${res.status} body: ${text?.slice(0, 200)}`);
-      return null;
+      return { price: null, error: `status ${res.status} body ${text?.slice(0, 200)}` };
     }
     const data: any = await res.json();
     const price = data?.data?.[mint]?.price;
-    if (price === undefined || price === null) return null;
-    return Number(price);
-  } catch (err) {
+    if (price === undefined || price === null) return { price: null, error: 'no price in response' };
+    return { price: Number(price) };
+  } catch (err: any) {
     logger.debug('Jupiter price/v3 error:', err);
-    return null;
+    return { price: null, error: err?.message || 'unknown error' };
   }
 };
 
@@ -36,11 +37,11 @@ export const getJupiterPriceV3 = async (mint: string): Promise<number | null> =>
  * Fetch price via Jupiter by quoting 1 SOL to the target mint (fallback if price/v3 unavailable).
  * Assumes decimals if provided; otherwise defaults to 9.
  */
-export const getJupiterPrice = async (mint: string, decimals: number = 9): Promise<number | null> => {
+export const getJupiterPrice = async (mint: string, decimals: number = 9): Promise<{ price: number | null; source: string; error?: string }> => {
   try {
     // First try price/v3
     const v3 = await getJupiterPriceV3(mint);
-    if (v3 !== null) return v3;
+    if (v3.price !== null) return { price: v3.price, source: 'jup_price_v3' };
 
     const amount = 1_000_000_000; // 1 SOL in lamports
     const url = `${JUP_URL}?inputMint=${SOL_MINT}&outputMint=${mint}&amount=${amount}`;
@@ -50,16 +51,80 @@ export const getJupiterPrice = async (mint: string, decimals: number = 9): Promi
     }
     const res = await fetch(url, { headers });
     if (!res.ok) {
-      logger.debug(`Jupiter quote failed status ${res.status}`);
-      return null;
+      const text = await res.text().catch(() => '');
+      logger.debug(`Jupiter quote failed status ${res.status} body: ${text?.slice(0, 200)}`);
+      return { price: null, source: 'jup_quote', error: `status ${res.status} body ${text?.slice(0, 200)}` };
     }
     const data: any = await res.json();
     const outAmount = data?.outAmount;
-    if (!outAmount) return null;
+    if (!outAmount) return { price: null, source: 'jup_quote', error: 'no outAmount in response' };
     const price = Number(outAmount) / Math.pow(10, decimals); // price per 1 SOL
-    return price;
-  } catch (err) {
+    return { price, source: 'jup_quote' };
+  } catch (err: any) {
     logger.debug('Jupiter quote error:', err);
+    return { price: null, source: 'jup_quote', error: err?.message || 'unknown error' };
+  }
+};
+
+export interface JupiterTokenInfo {
+  id: string;
+  name?: string;
+  symbol?: string;
+  icon?: string;
+  decimals?: number;
+  circSupply?: number;
+  totalSupply?: number;
+  usdPrice?: number;
+  mcap?: number;
+  liquidity?: number;
+  stats1h?: { priceChange?: number };
+  stats24h?: { priceChange?: number };
+  twitter?: string;
+  telegram?: string;
+  website?: string;
+  launchpad?: string;
+  createdAt?: string;
+  firstPoolId?: string;
+}
+
+export const getJupiterTokenInfo = async (mint: string): Promise<JupiterTokenInfo | null> => {
+  try {
+    const headers: Record<string, string> = {};
+    if (JUP_API_KEY) {
+      headers['x-api-key'] = JUP_API_KEY;
+    }
+    const url = `${JUP_SEARCH_URL}?query=${mint}`;
+    const res = await fetch(url, { headers });
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      logger.debug(`Jupiter search failed status ${res.status} body: ${text?.slice(0, 200)}`);
+      return null;
+    }
+    const data: any = await res.json();
+    if (!data || !data.length) return null;
+    const t = data[0];
+    return {
+      id: t.id,
+      name: t.name,
+      symbol: t.symbol,
+      icon: t.icon,
+      decimals: t.decimals,
+      circSupply: t.circSupply,
+      totalSupply: t.totalSupply,
+      usdPrice: t.usdPrice,
+      mcap: t.mcap,
+      liquidity: t.liquidity,
+      stats1h: t.stats1h,
+      stats24h: t.stats24h,
+      twitter: t.twitter,
+      telegram: t.telegram,
+      website: t.website,
+      launchpad: t.launchpad,
+      createdAt: t.createdAt,
+      firstPoolId: t?.firstPool?.id,
+    };
+  } catch (err: any) {
+    logger.debug('Jupiter search error:', err);
     return null;
   }
 };

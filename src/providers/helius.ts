@@ -1,6 +1,6 @@
 import { MarketDataProvider, PriceQuote, TokenMeta, OHLCV } from './types';
 import { logger } from '../utils/logger';
-import { getJupiterPrice } from './jupiter';
+import { getJupiterPrice, getJupiterTokenInfo } from './jupiter';
 
 // Lazy load helius-sdk (ESM module) - use require for type checking
 const getHeliusModule = async () => {
@@ -28,6 +28,17 @@ export class HeliusProvider implements MarketDataProvider {
 
   async getQuote(mint: string): Promise<PriceQuote> {
     try {
+      // Prefer Jupiter search price first for freshness
+      const jupInfo = await getJupiterTokenInfo(mint);
+      if (jupInfo?.usdPrice !== undefined && jupInfo.usdPrice !== null) {
+        return {
+          price: jupInfo.usdPrice,
+          timestamp: Date.now(),
+          source: 'jupiter_search',
+          confidence: 0.9,
+        };
+      }
+
       // Ensure helius is initialized
       if (!this.helius) {
         await this.initHelius();
@@ -67,6 +78,39 @@ export class HeliusProvider implements MarketDataProvider {
 
   async getTokenMeta(mint: string): Promise<TokenMeta> {
     try {
+      // Try Jupiter token search first for rich meta and fresh price
+      const jupInfo = await getJupiterTokenInfo(mint);
+      if (jupInfo) {
+        const adjustedSupply = jupInfo.circSupply || jupInfo.totalSupply;
+        const marketCap =
+          jupInfo.mcap ??
+          (jupInfo.usdPrice && adjustedSupply ? jupInfo.usdPrice * adjustedSupply : undefined);
+
+        const socialLinks: any = {};
+        if (jupInfo.website) socialLinks.website = jupInfo.website;
+        if (jupInfo.twitter) socialLinks.twitter = jupInfo.twitter;
+        if (jupInfo.telegram) socialLinks.telegram = jupInfo.telegram;
+
+        return {
+          mint,
+          name: jupInfo.name || 'Unknown',
+          symbol: jupInfo.symbol || 'UNKNOWN',
+          decimals: jupInfo.decimals || 9,
+          image: jupInfo.icon,
+          marketCap: marketCap,
+          liquidity: jupInfo.liquidity,
+          supply: adjustedSupply,
+          priceChange1h: jupInfo.stats1h?.priceChange,
+          priceChange24h: jupInfo.stats24h?.priceChange,
+          ath: undefined,
+          athDate: undefined,
+          socialLinks: Object.keys(socialLinks).length ? socialLinks : undefined,
+          launchpad: jupInfo.launchpad,
+          createdAt: jupInfo.createdAt ? new Date(jupInfo.createdAt) : undefined,
+          chain: 'Solana',
+        };
+      }
+
       // Ensure helius is initialized
       if (!this.helius) {
         await this.initHelius();
@@ -121,6 +165,7 @@ export class HeliusProvider implements MarketDataProvider {
           liquidity: priceInfo.liquidity,
           supply: adjustedSupply > 0 ? adjustedSupply : undefined,
           priceChange1h: priceInfo.price_change_1h || priceInfo.price_change_24h, // Use 1h if available
+          priceChange24h: priceInfo.price_change_24h,
           ath: priceInfo.ath_price,
           athDate: priceInfo.ath_price_date ? new Date(priceInfo.ath_price_date * 1000) : undefined,
           socialLinks: Object.keys(socialLinks).length > 0 ? socialLinks : undefined,

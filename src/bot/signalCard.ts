@@ -74,11 +74,15 @@ export const generateFirstSignalCard = (
   const mc = formatNumber(meta.liveMarketCap ?? meta.marketCap);
   const volume = formatNumber(meta.volume24h);
   const lp = formatNumber(meta.liquidity);
-  const supply = meta.supply ? `${(meta.supply / 1e9).toFixed(2)}B` : 'N/A';
+  const supply = meta.supply
+    ? meta.supply.toLocaleString(undefined, { maximumFractionDigits: 2 })
+    : 'N/A';
   const change1h = formatPercent(meta.priceChange1h);
+  const change24h = formatPercent(meta.priceChange24h);
   const livePrice = meta.livePrice ? `$${meta.livePrice.toFixed(6)}` : undefined;
   const ath = formatNumber(meta.ath);
   const entryPrice = signal.entryPrice ? `$${signal.entryPrice.toFixed(6)}` : 'Pending';
+  const icon = meta.image ? `[🖼️ Icon](${meta.image})` : 'N/A';
 
   // Build social links
   let socialLinks = '';
@@ -101,6 +105,7 @@ export const generateFirstSignalCard = (
 *CA:* \`${signal.mint}\`
 *Chain:* ${meta.chain || 'Solana'}
 ${meta.launchpad ? `*Launchpad:* ${meta.launchpad}\n` : ''}*Age:* ${age}
+*Icon:* ${icon}
 *Entry Price:* ${entryPrice}
 ${livePrice ? `*Current Price:* ${livePrice}\n` : ''}
 
@@ -110,6 +115,7 @@ ${livePrice ? `*Current Price:* ${livePrice}\n` : ''}
 • *LP:* ${lp}
 • *Supply:* ${supply}
 • *1h Change:* ${change1h}
+• *24h Change:* ${change24h}
 • *ATH:* ${ath}
 
 *Source:*

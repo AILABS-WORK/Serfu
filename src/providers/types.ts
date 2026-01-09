@@ -10,6 +10,7 @@ export interface TokenMeta {
   liquidity?: number;
   supply?: number;
   priceChange1h?: number;
+  priceChange24h?: number;
   ath?: number;
   athDate?: Date;
   socialLinks?: {
