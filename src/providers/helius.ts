@@ -1,5 +1,6 @@
 import { MarketDataProvider, PriceQuote, TokenMeta, OHLCV } from './types';
 import { logger } from '../utils/logger';
+import { getJupiterPrice } from './jupiter';
 
 // Lazy load helius-sdk (ESM module) - use require for type checking
 const getHeliusModule = async () => {
@@ -42,6 +43,18 @@ export class HeliusProvider implements MarketDataProvider {
           timestamp: Date.now(),
           source: 'helius',
           confidence: 1.0,
+        };
+      }
+
+      // Fallback to Jupiter quote if Helius has no price
+      const decimals = asset?.token_info?.decimals || 9;
+      const jupPrice = await getJupiterPrice(mint, decimals);
+      if (jupPrice !== null) {
+        return {
+          price: jupPrice,
+          timestamp: Date.now(),
+          source: 'jupiter',
+          confidence: 0.8,
         };
       }
 

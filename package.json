@@ -21,6 +21,7 @@
     "@prisma/adapter-pg": "^7.2.0",
     "@prisma/client": "^7.2.0",
     "axios": "^1.13.2",
+    "node-fetch": "^3.3.2",
     "bs58": "^6.0.0",
     "bullmq": "^5.66.4",
     "chart.js": "^4.5.1",
