@@ -44,20 +44,22 @@ const calcPercentDelta = (current?: number | null, entry?: number | null): strin
 };
 
 // Check if this is a duplicate CA for an owner
-export const checkDuplicateCA = async (mint: string, ownerId?: number): Promise<{
+export const checkDuplicateCA = async (mint: string, ownerId?: number, groupId?: number): Promise<{
   isDuplicate: boolean;
   firstSignal?: Signal;
   firstGroupName?: string;
 }> => {
-  if (!ownerId) {
+  const whereClause: any = { mint };
+  if (groupId) {
+    whereClause.groupId = groupId; // group-scoped duplicate detection
+  } else if (ownerId) {
+    whereClause.group = { ownerId };
+  } else {
     return { isDuplicate: false };
   }
 
   const existingSignals = await prisma.signal.findMany({
-    where: { 
-      mint,
-      group: { ownerId },
-    },
+    where: whereClause,
     orderBy: { detectedAt: 'asc' },
     take: 1,
     include: { group: true },
@@ -119,34 +121,26 @@ export const generateFirstSignalCard = (
   }
 
   return `
-🚨 *NEW CA SIGNAL* 🚨
+🚀 *NEW CA SIGNAL*
+${icon}
+*${meta.name || 'Unknown'}* (${meta.symbol || 'N/A'}) · ${meta.chain || 'Solana'}
+\`${signal.mint}\`
 
-*Token:* ${meta.name || 'Unknown'} (${meta.symbol || 'N/A'})
-*Ticker:* ${meta.symbol || 'N/A'}
-*CA:* \`${signal.mint}\`
-*Chain:* ${meta.chain || 'Solana'}
-${meta.launchpad ? `*Launchpad:* ${meta.launchpad}\n` : ''}*Age:* ${age}
-*Icon:* ${icon}
-*Entry Price:* ${formatPrice(entryPriceVal)}
-*Current Price:* ${livePrice || 'N/A'} (${priceDelta})
-*Entry MC:* ${entryMc}
-*Current MC:* ${mc} (${mcDelta})
+*Price*  ${formatPrice(entryPriceVal)} → ${livePrice || 'N/A'} (${priceDelta})
+*MC*     ${entryMc} → ${mc} (${mcDelta})
+*Age*    ${age} ${meta.launchpad ? `· Launchpad: ${meta.launchpad}` : ''}
 
-*Market Data:*
-• *Volume 24h:* ${volume}
-• *LP:* ${lp}
-• *Supply:* ${supply}
-• *1h Change:* ${change1h}
-• *24h Change:* ${change24h}
-• *ATH:* ${ath}
+*Market*
+• Vol 24h: ${volume}
+• LP: ${lp}
+• Supply: ${supply}
+• 1h: ${change1h} · 24h: ${change24h}
+• ATH: ${ath}
 
-*Source:*
-• *Group:* ${groupName}
-• *From:* @${userName}
+*Source* • ${groupName} · @${userName}
 ${socialLinks}
 
-*Links:*
-[🔍 Solscan](https://solscan.io/token/${signal.mint}) • [📊 Axiom](https://app.axiom.xyz/token/${signal.mint}) • [📈 GMGN](https://gmgn.ai/sol/token/${signal.mint})
+*Links:* [🔍 Solscan](https://solscan.io/token/${signal.mint}) · [📊 Axiom](https://app.axiom.xyz/token/${signal.mint}) · [📈 GMGN](https://gmgn.ai/sol/token/${signal.mint})
   `.trim();
 };
 
@@ -174,32 +168,24 @@ export const generateDuplicateSignalCard = (
   const icon = meta.image ? `[🖼️ Icon](${meta.image})` : 'N/A';
 
   return `
-🔄 *CA POSTED AGAIN*
+🔁 *CA POSTED AGAIN*
+${icon}
+*${meta.name || 'Unknown'}* (${meta.symbol || 'N/A'}) · ${meta.chain || 'Solana'}
+\`${signal.mint}\`
 
-*Token:* ${meta.name || 'Unknown'} (${meta.symbol || 'N/A'})
-*CA:* \`${signal.mint}\`
-*Current MC:* ${mc}
-*Current Price:* ${entryPrice}
-*Change from First Call:* ${priceChange}
-*MC Change:* ${mcChange}
-*Icon:* ${icon}
+*Price*  ${entryPrice} (vs first: ${priceChange})
+*MC*     ${mc} (vs first: ${mcChange})
 
-*First Mention:*
-• *Group:* ${firstGroupName}
-• *Time:* ${firstSignal.detectedAt.toLocaleString()}
+*Market*
+• Vol 24h: ${volume}
+• LP: ${lp}
+• Supply: ${supply}
+• 1h: ${change1h}
 
-*This Mention:*
-• *Group:* ${currentGroupName}
-• *From:* @${currentUserName}
+*First Mention* • ${firstGroupName} • ${firstSignal.detectedAt.toLocaleString()}
+*This Mention*  • ${currentGroupName} • @${currentUserName}
 
-*Market Data:*
-• *Volume 24h:* ${volume}
-• *LP:* ${lp}
-• *Supply:* ${supply}
-• *1h Change:* ${change1h}
-
-*Links:*
-[🔍 Solscan](https://solscan.io/token/${signal.mint}) • [📊 Axiom](https://app.axiom.xyz/token/${signal.mint}) • [📈 GMGN](https://gmgn.ai/sol/token/${signal.mint})
+*Links:* [🔍 Solscan](https://solscan.io/token/${signal.mint}) · [📊 Axiom](https://app.axiom.xyz/token/${signal.mint}) · [📈 GMGN](https://gmgn.ai/sol/token/${signal.mint})
   `.trim();
 };
 
