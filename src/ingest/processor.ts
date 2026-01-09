@@ -91,7 +91,7 @@ export const processMessage = async (message: RawMessage) => {
     let entryMarketCap: number | null = null;
 
     try {
-      const quote = await provider.getQuote(mint);
+      const quote = await provider.getQuote(mint); // Prefer Jupiter (inside provider)
       entryPrice = quote.price;
       entryProvider = quote.source;
       if (entryPrice && entrySupply) {
@@ -176,7 +176,7 @@ export const processMessage = async (message: RawMessage) => {
     let livePrice: number | null = null;
     let liveMarketCap: number | null = null;
     try {
-      const freshQuote = await provider.getQuote(mint);
+      const freshQuote = await provider.getQuote(mint); // Fresh price for notification
       livePrice = freshQuote.price;
       if (meta.supply) {
         liveMarketCap = freshQuote.price * meta.supply;

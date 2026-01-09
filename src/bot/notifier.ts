@@ -5,6 +5,7 @@ import { prisma } from '../db';
 import { TokenMeta } from '../providers/types';
 import { generateFirstSignalCard, generateDuplicateSignalCard } from './signalCard';
 import { scheduleAutoDelete } from '../utils/messageCleanup';
+import { provider } from '../providers';
 
 interface DuplicateCheck {
   isDuplicate: boolean;
@@ -35,15 +36,29 @@ export const notifySignal = async (
     const ownerSettings = signalWithGroup?.group?.owner?.notificationSettings;
     const homeChatId = ownerSettings?.homeChatId;
 
+    // Refresh live price/MC from provider to avoid stale data
+    let metaWithLive = meta;
+    try {
+      const fresh = await provider.getQuote(signal.mint);
+      const supply = meta?.supply ?? signal.entrySupply ?? undefined;
+      metaWithLive = {
+        ...meta,
+        livePrice: fresh.price,
+        liveMarketCap: supply ? fresh.price * supply : meta?.liveMarketCap ?? meta?.marketCap,
+      };
+    } catch (err) {
+      logger.debug(`Notifier: could not refresh price for ${signal.mint}:`, err);
+    }
+
     let message: string;
     let keyboard: any;
 
     // Check if this is a duplicate
-    if (duplicateCheck?.isDuplicate && duplicateCheck.firstSignal && meta) {
+    if (duplicateCheck?.isDuplicate && duplicateCheck.firstSignal && metaWithLive) {
       // Generate duplicate card
       message = generateDuplicateSignalCard(
         signal,
-        meta,
+        metaWithLive,
         duplicateCheck.firstSignal,
         duplicateCheck.firstGroupName || 'Unknown Group',
         groupName,
@@ -62,9 +77,9 @@ export const notifySignal = async (
           ],
         ],
       };
-    } else if (meta) {
+    } else if (metaWithLive) {
       // Generate rich first signal card
-      message = generateFirstSignalCard(signal, meta, groupName, userName);
+      message = generateFirstSignalCard(signal, metaWithLive, groupName, userName);
       keyboard = {
         inline_keyboard: [
           [

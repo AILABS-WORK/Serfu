@@ -202,11 +202,11 @@ Current vs Entry: ${(m.currentMultiple * 100).toFixed(1)}%
   });
 
   // TTL presets
-  bot.action('ttl_off', async (ctx) => { await ctx.answerCbQuery(); await setTtl(ctx, null); });
-  bot.action('ttl_30', async (ctx) => { await ctx.answerCbQuery(); await setTtl(ctx, 30); });
-  bot.action('ttl_60', async (ctx) => { await ctx.answerCbQuery(); await setTtl(ctx, 60); });
-  bot.action('ttl_180', async (ctx) => { await ctx.answerCbQuery(); await setTtl(ctx, 180); });
-  bot.action('toggle_hide', async (ctx) => { await ctx.answerCbQuery(); await toggleHideForChat(ctx); });
+  bot.action('ttl_off', async (ctx) => { await ctx.answerCbQuery('TTL off'); await setTtl(ctx, null); });
+  bot.action('ttl_30', async (ctx) => { await ctx.answerCbQuery('TTL 30s'); await setTtl(ctx, 30); });
+  bot.action('ttl_60', async (ctx) => { await ctx.answerCbQuery('TTL 60s'); await setTtl(ctx, 60); });
+  bot.action('ttl_180', async (ctx) => { await ctx.answerCbQuery('TTL 180s'); await setTtl(ctx, 180); });
+  bot.action('toggle_hide', async (ctx) => { await ctx.answerCbQuery('Toggle hide'); await toggleHideForChat(ctx); });
 
   // Analytics Actions
   bot.action('analytics', handleAnalyticsCommand);

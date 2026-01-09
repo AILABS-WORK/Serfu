@@ -167,6 +167,11 @@ export const generateDuplicateSignalCard = (
   const priceChange = calcPercentDelta(currentPriceVal, firstPrice);
   const entryMcVal = firstSignal.entryMarketCap ?? (firstSignal.entryPrice && firstSignal.entrySupply ? firstSignal.entryPrice * firstSignal.entrySupply : null);
   const mcChange = calcPercentDelta(currentMcVal, entryMcVal);
+  const supply = meta.supply ? meta.supply.toLocaleString(undefined, { maximumFractionDigits: 2 }) : 'N/A';
+  const volume = formatNumber(meta.volume24h);
+  const lp = formatNumber(meta.liquidity);
+  const change1h = formatPercent(meta.priceChange1h);
+  const icon = meta.image ? `[🖼️ Icon](${meta.image})` : 'N/A';
 
   return `
 🔄 *CA POSTED AGAIN*
@@ -177,6 +182,7 @@ export const generateDuplicateSignalCard = (
 *Current Price:* ${entryPrice}
 *Change from First Call:* ${priceChange}
 *MC Change:* ${mcChange}
+*Icon:* ${icon}
 
 *First Mention:*
 • *Group:* ${firstGroupName}
@@ -185,6 +191,12 @@ export const generateDuplicateSignalCard = (
 *This Mention:*
 • *Group:* ${currentGroupName}
 • *From:* @${currentUserName}
+
+*Market Data:*
+• *Volume 24h:* ${volume}
+• *LP:* ${lp}
+• *Supply:* ${supply}
+• *1h Change:* ${change1h}
 
 *Links:*
 [🔍 Solscan](https://solscan.io/token/${signal.mint}) • [📊 Axiom](https://app.axiom.xyz/token/${signal.mint}) • [📈 GMGN](https://gmgn.ai/sol/token/${signal.mint})

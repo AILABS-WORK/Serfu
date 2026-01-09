@@ -61,6 +61,7 @@ export const forwardSignalToDestination = async (signal: Signal) => {
         },
       });
       if (existing) {
+        logger.debug(`Forward skip: already sent signal ${signal.id} to ${destGroup.chatId}`);
         continue; // Already forwarded this signal instance
       }
 
@@ -77,6 +78,7 @@ export const forwardSignalToDestination = async (signal: Signal) => {
         include: { signal: true },
       });
       if (alreadySentFromSource) {
+        logger.debug(`Forward skip: already sent CA ${signal.mint} from source ${signal.chatId} to ${destGroup.chatId}`);
         continue; // Avoid spamming destination from the same source group for the same CA
       }
 
