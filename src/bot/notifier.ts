@@ -37,12 +37,25 @@ export const notifySignal = async (
     const homeChatId = ownerSettings?.homeChatId;
 
     // Refresh live price/MC from provider to avoid stale data
-    let metaWithLive: TokenMeta | undefined = meta ? { ...meta, mint: meta.mint || signal.mint } : undefined;
+    let metaWithLive: TokenMeta | undefined = meta
+      ? {
+          mint: meta.mint || signal.mint,
+          name: meta.name || signal.name || 'Unknown',
+          symbol: meta.symbol || signal.symbol || 'UNKNOWN',
+          ...meta,
+        }
+      : {
+          mint: signal.mint,
+          name: signal.name || 'Unknown',
+          symbol: signal.symbol || 'UNKNOWN',
+        };
     try {
       const fresh = await provider.getQuote(signal.mint);
       const supply = meta?.supply ?? signal.entrySupply ?? undefined;
       metaWithLive = {
         mint: meta?.mint || signal.mint,
+        name: meta?.name || signal.name || 'Unknown',
+        symbol: meta?.symbol || signal.symbol || 'UNKNOWN',
         ...meta,
         livePrice: fresh.price,
         liveMarketCap: supply ? fresh.price * supply : meta?.liveMarketCap ?? meta?.marketCap,
