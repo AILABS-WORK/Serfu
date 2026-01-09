@@ -108,7 +108,7 @@ export const setupBot = () => {
       }
       const price = await getJupiterPrice(mint, 9);
       if (price === null) {
-        return ctx.reply('Jupiter price not available (quote failed)');
+        return ctx.reply('Jupiter price not available (quote failed). Try a well-known mint like USDC: /testjup EPjFWdd5AufqSSqeM2q1zqGQJSd7G7e8Yzi5Hq7XG4k');
       }
       await ctx.reply(`Jupiter price for ${mint}: $${price.toFixed(10)} (queried now)`);
     } catch (err) {

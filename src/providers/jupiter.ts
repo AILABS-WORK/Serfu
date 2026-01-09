@@ -18,7 +18,8 @@ export const getJupiterPriceV3 = async (mint: string): Promise<number | null> =>
     const url = `${JUP_PRICE_URL}?ids=${mint}`;
     const res = await fetch(url, { headers });
     if (!res.ok) {
-      logger.debug(`Jupiter price/v3 failed status ${res.status}`);
+      const text = await res.text().catch(() => '');
+      logger.debug(`Jupiter price/v3 failed status ${res.status} body: ${text?.slice(0, 200)}`);
       return null;
     }
     const data: any = await res.json();
