@@ -17,6 +17,7 @@ import {
   handleGroupLeaderboardCommand,
   handleUserLeaderboardCommand,
 } from './commands/analytics';
+import { getJupiterPrice } from '../providers/jupiter';
 
 export const setupBot = () => {
   const token = process.env.BOT_TOKEN;
@@ -97,6 +98,23 @@ export const setupBot = () => {
   bot.command('addchannel', (ctx) => {
     const args = ctx.message.text?.split(' ').slice(1);
     handleAddChannelCommand(ctx, args?.[0]);
+  });
+  bot.command('testjup', async (ctx) => {
+    try {
+      const args = ctx.message.text?.split(' ').slice(1);
+      const mint = args?.[0];
+      if (!mint) {
+        return ctx.reply('Usage: /testjup <mint>');
+      }
+      const price = await getJupiterPrice(mint, 9);
+      if (price === null) {
+        return ctx.reply('Jupiter price not available (quote failed)');
+      }
+      await ctx.reply(`Jupiter price for ${mint}: $${price.toFixed(10)} (queried now)`);
+    } catch (err) {
+      logger.error('Error in /testjup:', err);
+      ctx.reply('Error testing Jupiter price.');
+    }
   });
 
   // Analytics Commands
