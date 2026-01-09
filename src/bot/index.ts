@@ -17,7 +17,7 @@ import {
   handleGroupLeaderboardCommand,
   handleUserLeaderboardCommand,
 } from './commands/analytics';
-import { getJupiterPrice } from '../providers/jupiter';
+import { getJupiterPrice, getJupiterTokenInfo } from '../providers/jupiter';
 
 export const setupBot = () => {
   const token = process.env.BOT_TOKEN;
@@ -106,12 +106,32 @@ export const setupBot = () => {
       if (!mint) {
         return ctx.reply('Usage: /testjup <mint>');
       }
-      const result = await getJupiterPrice(mint, 9);
-      if (result.price === null) {
-        return ctx.reply(`Jupiter price not available. Source=${result.source} Error=${result.error || 'unknown'}. Try a well-known mint like USDC: /testjup EPjFWdd5AufqSSqeM2q1zqGQJSd7G7e8Yzi5Hq7XG4k`);
+      // Pure search-based debug to validate Jupiter search/price endpoint
+      const info = await getJupiterTokenInfo(mint);
+      if (!info) {
+        return ctx.reply('Jupiter search returned no data (or unreachable).');
       }
-      const price = result.price;
-      await ctx.reply(`Jupiter price for ${mint}: $${price.toFixed(10)} (source=${result.source})`);
+      const lines = [
+        `*Jupiter Search Result*`,
+        `Mint: \`${mint}\``,
+        `Name: ${info.name || 'N/A'}`,
+        `Symbol: ${info.symbol || 'N/A'}`,
+        `Price: ${info.usdPrice !== undefined && info.usdPrice !== null ? `$${info.usdPrice}` : 'N/A'}`,
+        `MC: ${info.mcap !== undefined && info.mcap !== null ? `$${info.mcap}` : 'N/A'}`,
+        `Liquidity: ${info.liquidity !== undefined && info.liquidity !== null ? `$${info.liquidity}` : 'N/A'}`,
+        `Circ Supply: ${info.circSupply ?? 'N/A'}`,
+        `Total Supply: ${info.totalSupply ?? 'N/A'}`,
+        `1h Change: ${info.stats1h?.priceChange ?? 'N/A'}`,
+        `24h Change: ${info.stats24h?.priceChange ?? 'N/A'}`,
+        `Icon: ${info.icon || 'N/A'}`,
+        `Website: ${info.website || 'N/A'}`,
+        `Twitter: ${info.twitter || 'N/A'}`,
+        `Telegram: ${info.telegram || 'N/A'}`,
+        `Launchpad: ${info.launchpad || 'N/A'}`,
+        `CreatedAt: ${info.createdAt || 'N/A'}`,
+        `First Pool: ${info.firstPoolId || 'N/A'}`,
+      ];
+      await ctx.reply(lines.join('\n'), { parse_mode: 'Markdown' });
     } catch (err) {
       logger.error('Error in /testjup:', err);
       ctx.reply('Error testing Jupiter price.');
