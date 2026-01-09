@@ -44,7 +44,12 @@ const calcPercentDelta = (current?: number | null, entry?: number | null): strin
 };
 
 // Check if this is a duplicate CA for an owner
-export const checkDuplicateCA = async (mint: string, ownerId?: number, groupId?: number): Promise<{
+export const checkDuplicateCA = async (
+  mint: string,
+  ownerId?: number,
+  groupId?: number,
+  excludeSignalId?: number
+): Promise<{
   isDuplicate: boolean;
   firstSignal?: Signal;
   firstGroupName?: string;
@@ -67,8 +72,10 @@ export const checkDuplicateCA = async (mint: string, ownerId?: number, groupId?:
 
   if (existingSignals.length > 0) {
     const firstSignal = existingSignals[0];
+    if (excludeSignalId && firstSignal.id === excludeSignalId) {
+      return { isDuplicate: false };
+    }
     const isDuplicate = true;
-    
     return {
       isDuplicate,
       firstSignal,
@@ -106,6 +113,9 @@ export const generateFirstSignalCard = (
   const icon = meta.image ? `[🖼️ Icon](${meta.image})` : 'N/A';
   const priceDelta = calcPercentDelta(currentPrice, entryPriceVal);
   const mcDelta = calcPercentDelta(currentMc ?? null, entryMcVal);
+  const chain = meta.chain || 'Solana';
+  const name = meta.name || 'Unknown';
+  const symbol = meta.symbol || 'N/A';
 
   // Build social links
   let socialLinks = '';
@@ -122,8 +132,7 @@ export const generateFirstSignalCard = (
 
   return `
 🚀 *NEW CA SIGNAL*
-${icon}
-*${meta.name || 'Unknown'}* (${meta.symbol || 'N/A'}) · ${meta.chain || 'Solana'}
+${icon} *${name}* (${symbol}) · ${chain}
 \`${signal.mint}\`
 
 *Price*  ${formatPrice(entryPriceVal)} → ${livePrice || 'N/A'} (${priceDelta})
@@ -131,11 +140,8 @@ ${icon}
 *Age*    ${age} ${meta.launchpad ? `· Launchpad: ${meta.launchpad}` : ''}
 
 *Market*
-• Vol 24h: ${volume}
-• LP: ${lp}
-• Supply: ${supply}
-• 1h: ${change1h} · 24h: ${change24h}
-• ATH: ${ath}
+• Vol 24h: ${volume}   • LP: ${lp}   • Supply: ${supply}
+• 1h: ${change1h}   • 24h: ${change24h}   • ATH: ${ath}
 
 *Source* • ${groupName} · @${userName}
 ${socialLinks}
@@ -166,20 +172,20 @@ export const generateDuplicateSignalCard = (
   const lp = formatNumber(meta.liquidity);
   const change1h = formatPercent(meta.priceChange1h);
   const icon = meta.image ? `[🖼️ Icon](${meta.image})` : 'N/A';
+  const chain = meta.chain || 'Solana';
+  const name = meta.name || 'Unknown';
+  const symbol = meta.symbol || 'N/A';
 
   return `
 🔁 *CA POSTED AGAIN*
-${icon}
-*${meta.name || 'Unknown'}* (${meta.symbol || 'N/A'}) · ${meta.chain || 'Solana'}
+${icon} *${name}* (${symbol}) · ${chain}
 \`${signal.mint}\`
 
 *Price*  ${entryPrice} (vs first: ${priceChange})
 *MC*     ${mc} (vs first: ${mcChange})
 
 *Market*
-• Vol 24h: ${volume}
-• LP: ${lp}
-• Supply: ${supply}
+• Vol 24h: ${volume}   • LP: ${lp}   • Supply: ${supply}
 • 1h: ${change1h}
 
 *First Mention* • ${firstGroupName} • ${firstSignal.detectedAt.toLocaleString()}

@@ -169,8 +169,8 @@ export const processMessage = async (message: RawMessage) => {
 
     logger.info(`Signal created: ${signal.id} for ${mint} at ${entryPrice} from group ${chatId}`);
 
-    // Check if this is a duplicate CA
-    const duplicateCheck = await checkDuplicateCA(mint, ownerForDuplicate, groupId || undefined);
+    // Check if this is a duplicate CA (group-scoped, exclude this signal)
+    const duplicateCheck = await checkDuplicateCA(mint, ownerForDuplicate, groupId || undefined, signal.id);
 
     // Fetch a fresh quote for current stats (for notification only)
     let livePrice: number | null = null;
