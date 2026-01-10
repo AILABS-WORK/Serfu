@@ -240,4 +240,27 @@ export class HeliusProvider implements MarketDataProvider {
       return [];
     }
   }
+
+  // --- NEW: Transaction History Analysis ---
+  async getWalletHistory(address: string, limit: number = 50): Promise<any[]> {
+      try {
+          if (!this.helius) {
+              await this.initHelius();
+          }
+
+          // Fetch parsed transactions (enriched)
+          // Look for SWAP type primarily
+          const response = await this.helius.rpc.getEnrichedTransactions({
+              account: address,
+              type: 'SWAP', // Filter for swaps to find "good trades"
+              limit: limit,
+          });
+
+          return response || [];
+
+      } catch (error) {
+          logger.error(`Error fetching history for ${address}:`, error);
+          return [];
+      }
+  }
 }

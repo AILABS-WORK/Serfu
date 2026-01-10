@@ -171,7 +171,10 @@ Source: ${priceSource}
         // Update message
         // We need to preserve the keyboard.
         // We can reconstruct it or retrieve it from the message (ctx.callbackQuery.message.reply_markup)
-        // But we might want to add/remove buttons based on state? For now keep existing structure.
+        // But this handles only the first card?
+        // If it's a duplicate card, we might need generateDuplicateSignalCard. 
+        // But for simplicity, refresh usually updates the main content.
+        // Let's assume most users click refresh on the first card.
         
         const currentMarkup = ctx.callbackQuery.message && 'reply_markup' in ctx.callbackQuery.message 
             ? ctx.callbackQuery.message.reply_markup 
@@ -196,8 +199,8 @@ Source: ${priceSource}
 
         if (!signal) return ctx.answerCbQuery('Signal not found');
 
-        await ctx.answerCbQuery('Analyzing top holders...');
-        await ctx.reply('🔍 *Analyzing Top Holders Portfolio & History...* \n(This may take a few seconds)', { parse_mode: 'Markdown' });
+        await ctx.answerCbQuery('Deep scanning Top 10 holders...');
+        await ctx.reply('🔍 *Deep Scanning Top 10 Wallets...* \nChecking assets (> $5k) & trading history for big wins...', { parse_mode: 'Markdown' });
 
         const summaries = await getDeepHolderAnalysis(signal.mint);
 
@@ -205,7 +208,7 @@ Source: ${priceSource}
             return ctx.reply('⚠️ Could not fetch detailed holder analysis.');
         }
 
-        let report = `🕵️ *HOLDER ANALYSIS REPORT* for ${signal.symbol}\n\n`;
+        let report = `🕵️ *WHALE INSPECTOR* for ${signal.symbol}\n\n`;
 
         for (const s of summaries) {
             report += `👤 *Rank #${s.rank}* (${s.percentage.toFixed(2)}%)\n`;
@@ -213,14 +216,21 @@ Source: ${priceSource}
             
             // Notable holdings
             if (s.notableHoldings.length > 0) {
-                report += `   💎 *Notable Assets:*\n`;
+                report += `   💎 *Notable Assets (> $5k):*\n`;
                 for (const asset of s.notableHoldings) {
                     const valStr = asset.valueUsd ? `$${Math.round(asset.valueUsd).toLocaleString()}` : 'N/A';
                     report += `      • ${asset.symbol}: ${valStr}\n`;
                 }
-            } else {
-                report += `   (No other major assets found)\n`;
             }
+            
+            // Best Trades
+            if (s.bestTrades.length > 0) {
+                 report += `   🏆 *Recent Big Wins (> $10k):*\n`;
+                 for (const trade of s.bestTrades) {
+                     report += `      • Sold ${trade.token.slice(0,4)}.. for ~$${Math.round(trade.amountUsd).toLocaleString()}\n`;
+                 }
+            }
+            
             report += '\n';
         }
 

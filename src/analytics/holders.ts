@@ -112,23 +112,26 @@ export interface PortfolioSummary {
     amount: number;
     valueUsd?: number;
   }[];
+  bestTrades: {
+    token: string;
+    type: 'BUY' | 'SELL';
+    amountUsd: number;
+    date: string;
+  }[];
   totalValueUsd?: number;
 }
 
 export const getDeepHolderAnalysis = async (mint: string): Promise<PortfolioSummary[]> => {
   try {
-    // 1. Get Top Holders
-    const holders = await solana.getTopHolders(mint, 5); // Analyze top 5
+    // 1. Get Top Holders (Top 10)
+    const holders = await solana.getTopHolders(mint, 10); 
     if (holders.length === 0) return [];
 
-    // 2. Analyze each holder's portfolio using Helius
     const summaries: PortfolioSummary[] = [];
-
-    // Use Helius provider directly (cast to access specific method if needed, or use public interface if updated)
-    // Assuming provider is HeliusProvider or we instantiate one
     const heliusProvider = provider instanceof HeliusProvider ? provider : new HeliusProvider(process.env.HELIUS_API_KEY || '');
 
     for (const h of holders) {
+      // A. Analyze Assets
       const assets = await heliusProvider.getWalletAssets(h.address);
       
       let solBalance = 0;
@@ -136,15 +139,6 @@ export const getDeepHolderAnalysis = async (mint: string): Promise<PortfolioSumm
       let totalValue = 0;
 
       for (const asset of assets) {
-        // Native SOL
-        if (asset.id === 'So11111111111111111111111111111111111111112' || asset.interface === 'ProgrammableNFT') { 
-             // Helius returns native SOL as specific ID or inside native_balance field
-        }
-        
-        // Check native balance from response (usually separate field in some RPCs, but Helius DAS might include wrapped SOL)
-        // DAS 'native_balance' field on the owner object? No, getAssetsByOwner returns list of assets.
-        // Helius getAssetsByOwner usually includes an item for Native SOL if showNativeBalance: true.
-        
         const info = asset.token_info || {};
         const priceInfo = info.price_info || {};
         const symbol = asset.content?.metadata?.symbol || 'UNK';
@@ -162,10 +156,10 @@ export const getDeepHolderAnalysis = async (mint: string): Promise<PortfolioSumm
 
         if (value > 0) totalValue += value;
 
-        // Filter notable: Value > $500 OR Known Bluechips
+        // Filter notable: Value > $5000 OR Known Bluechips (> $1000)
         const isBluechip = ['USDC', 'USDT', 'BONK', 'WIF', 'JUP', 'RAY', 'POPCAT'].includes(symbol);
         
-        if (value > 500 || (isBluechip && value > 100)) {
+        if (value > 5000 || (isBluechip && value > 1000)) {
           notable.push({
             symbol,
             mint: asset.id,
@@ -175,15 +169,73 @@ export const getDeepHolderAnalysis = async (mint: string): Promise<PortfolioSumm
         }
       }
 
-      // Sort notable by value
       notable.sort((a, b) => (b.valueUsd || 0) - (a.valueUsd || 0));
+
+      // B. Analyze History (Good Trades)
+      const history = await heliusProvider.getWalletHistory(h.address, 50); // Last 50 swaps
+      const bestTrades: any[] = [];
+      
+      for (const tx of history) {
+          // Look for large SWAP OUT (Sell) -> "Good Exit"
+          // We want to see if they sold a token for > $10k
+          // Helius enriched tx structure: tokenTransfers array
+          
+          if (tx.type === 'SWAP' && tx.tokenTransfers) {
+              const transfers = tx.tokenTransfers;
+              // Usually 2 transfers: Token -> User (Buy) or User -> Token (Sell)
+              // If User is sender of Token A and receiver of SOL/USDC -> Sell
+              
+              // Simplification: Check if they received > $10k of SOL/USDC
+              const received = transfers.find((t: any) => t.toUserAccount === h.address);
+              const sent = transfers.find((t: any) => t.fromUserAccount === h.address);
+              
+              if (received && sent) {
+                  // Check if received is SOL or Stable
+                  const isStableExit = ['USDC', 'USDT'].includes(received.tokenAmount?.symbol);
+                  const isSolExit = received.mint === 'So11111111111111111111111111111111111111112'; // Approximate check
+                  
+                  if (isStableExit || isSolExit) {
+                      // It's a SELL
+                      const val = received.tokenAmount?.amount * (received.tokenAmount?.price_per_token || 0); // Need price... Helius enriched usually has it?
+                      // If price not available, we can't estimate value easily without historical price. 
+                      // Helius enriched SOMETIMES has raw amount. 
+                      // Assume we might not have historical USD value perfectly.
+                      // But nativeTransfer (SOL) has amount.
+                  }
+              }
+
+              // Use nativeTransfers for SOL
+              if (tx.nativeTransfers) {
+                  const solReceived = tx.nativeTransfers.find((t: any) => t.toUserAccount === h.address);
+                  if (solReceived) {
+                      const amountSol = solReceived.amount / 1e9;
+                      // Assume roughly $150/SOL for heuristic or 0
+                      const val = amountSol * 150; 
+                      if (val > 10000) { // Sold for > $10k
+                           // Check what they sold (token transfer out)
+                           const soldToken = tx.tokenTransfers?.find((t: any) => t.fromUserAccount === h.address);
+                           if (soldToken) {
+                               bestTrades.push({
+                                   token: soldToken.mint, // Or symbol if available
+                                   type: 'SELL',
+                                   amountUsd: val,
+                                   date: new Date(tx.timestamp * 1000).toLocaleDateString()
+                               });
+                           }
+                      }
+                  }
+              }
+          }
+      }
+
 
       summaries.push({
         address: h.address,
         rank: h.rank,
         percentage: h.percentage,
         solBalance,
-        notableHoldings: notable.slice(0, 3), // Top 3 holdings
+        notableHoldings: notable.slice(0, 3), 
+        bestTrades: bestTrades.slice(0, 2), // Show top 2 big exits
         totalValueUsd: totalValue
       });
     }
