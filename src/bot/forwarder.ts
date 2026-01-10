@@ -4,7 +4,9 @@ import { prisma } from '../db';
 import { getBotInstance } from './instance';
 import { logger } from '../utils/logger';
 import { scheduleAutoDelete } from '../utils/messageCleanup';
-import { checkDuplicateCA } from './signalCard';
+import { checkDuplicateCA, generateFirstSignalCard, generateDuplicateSignalCard } from './signalCard';
+import { provider } from '../providers';
+import { TokenMeta } from '../providers/types';
 
 export const forwardSignalToDestination = async (signal: Signal) => {
   try {
@@ -42,8 +44,17 @@ export const forwardSignalToDestination = async (signal: Signal) => {
 
     const bot = getBotInstance();
     const groupName = sourceGroup.name || 'Unknown Group';
-    const originType = sourceGroup.chatType === 'channel' ? 'Channel' : 'Group';
     const userName = signalWithRelations.user?.username || signalWithRelations.user?.firstName || 'Unknown User';
+
+    // Fetch fresh meta for the card
+    const meta = await provider.getTokenMeta(signal.mint);
+    const quote = await provider.getQuote(signal.mint);
+    const supply = meta?.supply ?? signal.entrySupply ?? undefined;
+    const metaWithLive: TokenMeta = {
+      ...meta,
+      livePrice: quote.price,
+      liveMarketCap: supply ? quote.price * supply : meta.marketCap,
+    };
 
     for (const destGroup of destinationGroups) {
       // Skip if forwarding to same group
@@ -61,7 +72,6 @@ export const forwardSignalToDestination = async (signal: Signal) => {
         },
       });
       if (existing) {
-        logger.debug(`Forward skip: already sent signal ${signal.id} to ${destGroup.chatId}`);
         continue; // Already forwarded this signal instance
       }
 
@@ -78,74 +88,84 @@ export const forwardSignalToDestination = async (signal: Signal) => {
         include: { signal: true },
       });
       if (alreadySentFromSource) {
-        logger.debug(`Forward skip: already sent CA ${signal.mint} from source ${signal.chatId} to ${destGroup.chatId}`);
         continue; // Avoid spamming destination from the same source group for the same CA
       }
 
       // Check duplicate across this owner (to label first vs new group mention)
+      // Exclude current signal ID to avoid self-match if checking broadly, but checkDuplicateCA handles it
       const duplicateCheck = await checkDuplicateCA(signal.mint, ownerId || undefined, undefined, signal.id);
       const isDup = duplicateCheck.isDuplicate;
 
-      // Format forwarded message
-      const header = isDup ? '🆕 New group mention' : '🚨 NEW CA SIGNAL';
-      const originLine = `*Source ${originType}:* ${groupName}`;
-      const userLine = `*From:* @${userName}`;
-      const entryLine = `*Entry:* $${signal.entryPrice?.toFixed(6) || 'Pending'}`;
-      const mintLine = `*Mint:* \`${signal.mint}\``;
-      const tokenLine = `*Token:* ${signal.name} (${signal.symbol})`;
-      const duplicateExtra = isDup
-        ? `\n*First mention:* ${duplicateCheck.firstGroupName || 'Unknown'}`
-        : '';
+      // Generate card
+      let message: string;
+      let keyboard: any;
 
-      const message = `
-${header}
-
-${tokenLine}
-${mintLine}
-${entryLine}
-${originLine}
-${userLine}${duplicateExtra}
-
-[View on Solscan](https://solscan.io/token/${signal.mint})
-      `;
-
-      // Forward to destination group
-      const sent = await bot.telegram.sendMessage(Number(destGroup.chatId), message, {
-        parse_mode: 'Markdown',
-        reply_markup: {
-          inline_keyboard: [
-            [
-              { text: '📊 Chart', callback_data: `chart:${signal.id}` },
-              { text: '📈 Stats', callback_data: `stats:${signal.id}` },
-            ],
-            [
-              { text: '🔍 View Source', callback_data: `source:${signal.id}` },
-            ],
-          ],
-        },
-      });
-      // Apply hide button based on destination prefs
-      const hideAllowed = destGroup.showHideButton ?? true;
-      if (hideAllowed) {
-        await bot.telegram.editMessageReplyMarkup(
-          Number(destGroup.chatId),
-          sent.message_id,
-          undefined,
-          {
-            inline_keyboard: [
-              [
-                { text: '📊 Chart', callback_data: `chart:${signal.id}` },
-                { text: '📈 Stats', callback_data: `stats:${signal.id}` },
-              ],
-              [
-                { text: '🔍 View Source', callback_data: `source:${signal.id}` },
-                { text: '🙈 Hide', callback_data: 'hide' },
-              ],
-            ],
-          }
+      if (isDup && duplicateCheck.firstSignal) {
+        message = generateDuplicateSignalCard(
+          signal,
+          metaWithLive,
+          duplicateCheck.firstSignal,
+          duplicateCheck.firstGroupName || 'Unknown Group',
+          groupName,
+          userName
         );
+        // Add header for new group mention context
+        message = `🆕 *NEW GROUP MENTION*\n\n` + message;
+      } else {
+        // First time seeing this CA in ANY of owner's groups
+        message = generateFirstSignalCard(signal, metaWithLive, groupName, userName);
       }
-      scheduleAutoDelete(bot, destGroup.chatId, sent.message_id, destGroup.autoDeleteSeconds ?? null);
+
+      keyboard = {
+        inline_keyboard: [
+          [
+            { text: '📈 Chart', callback_data: `chart:${signal.id}` },
+            { text: '📊 Stats', callback_data: `stats:${signal.id}` },
+          ],
+          [
+            { text: '🔍 View Source', callback_data: `source:${signal.id}` },
+            { text: '🔄 Refresh', callback_data: `refresh:${signal.id}` },
+          ],
+        ],
+      };
+
+      const destPrefs = {
+        autoDeleteSeconds: destGroup.autoDeleteSeconds ?? null,
+        showHideButton: destGroup.showHideButton ?? true
+      };
+
+      if (destPrefs.showHideButton) {
+        keyboard.inline_keyboard.push([{ text: '🙈 Hide', callback_data: 'hide' }]);
+      }
+
+      let sent;
+      // Prefer photo if available
+      if (metaWithLive.image) {
+        try {
+          sent = await bot.telegram.sendPhoto(Number(destGroup.chatId), metaWithLive.image, {
+            caption: message,
+            parse_mode: 'Markdown',
+            reply_markup: keyboard,
+          });
+        } catch (err) {
+          logger.warn(`Forwarder: failed to send photo, fallback to text: ${err}`);
+          sent = await bot.telegram.sendMessage(Number(destGroup.chatId), message, {
+            parse_mode: 'Markdown',
+            reply_markup: keyboard,
+            link_preview_options: { is_disabled: false },
+          });
+        }
+      } else {
+        sent = await bot.telegram.sendMessage(Number(destGroup.chatId), message, {
+          parse_mode: 'Markdown',
+          reply_markup: keyboard,
+          link_preview_options: { is_disabled: false },
+        });
+      }
+
+      if (sent) {
+        scheduleAutoDelete(bot, destGroup.chatId, sent.message_id, destPrefs.autoDeleteSeconds);
+      }
 
       // Record forwarding
       await prisma.forwardedSignal.create({
@@ -162,4 +182,3 @@ ${userLine}${duplicateExtra}
     logger.error(`Error forwarding signal ${signal.id}:`, error);
   }
 };
-
