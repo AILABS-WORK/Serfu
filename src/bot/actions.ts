@@ -112,17 +112,6 @@ Current vs Entry: ${(m.currentMultiple * 100).toFixed(1)}%
       const signal = await prisma.signal.findUnique({ where: { id: signalId } });
       if (signal) {
         const meta = await provider.getTokenMeta(signal.mint);
-        // We can't edit the message photo media easily if it was a photo message,
-        // but we can resend or update text if it was text.
-        // For now, let's just send a new notification reply to the user? 
-        // Or better, re-render the card and edit the caption if it's a photo.
-        
-        // Simpler: Just trigger a new notification (maybe to DM) or update the current message caption.
-        // Updating caption requires regenerating the card text.
-        // Let's rely on notifySignal logic but customized for edit.
-        // Actually, notifySignal sends a NEW message.
-        // To edit, we need `ctx.editMessageCaption`.
-        
         // Re-fetch price
         const quote = await provider.getQuote(signal.mint);
         const metaWithLive = {
@@ -132,9 +121,6 @@ Current vs Entry: ${(m.currentMultiple * 100).toFixed(1)}%
         };
 
         const { generateFirstSignalCard } = await import('./signalCard');
-        // We need group/user name which might be in DB or context?
-        // Context clicker is the user refreshing, but the card should show original source.
-        // Let's fetch signal with relations.
         const sigRel = await prisma.signal.findUnique({
             where: { id: signalId },
             include: { group: true, user: true }
@@ -266,109 +252,45 @@ Current vs Entry: ${(m.currentMultiple * 100).toFixed(1)}%
 
   // Analytics Actions
   bot.action('analytics', handleAnalyticsCommand);
+  bot.action('leaderboards_menu', async (ctx) => {
+    await ctx.answerCbQuery();
+    await ctx.reply('🏆 *Select Leaderboard*', {
+        parse_mode: 'Markdown',
+        reply_markup: {
+            inline_keyboard: [
+                [{ text: '👥 Top Groups', callback_data: 'leaderboard_groups:30D' }],
+                [{ text: '👤 Top Callers', callback_data: 'leaderboard_users:30D' }],
+                [{ text: '🔙 Back', callback_data: 'analytics' }]
+            ]
+        }
+    });
+  });
+
   bot.action('analytics_recent', async (ctx) => {
     await ctx.answerCbQuery();
     await handleRecentCalls(ctx);
   });
   bot.action('analytics_groups', async (ctx) => {
     await ctx.answerCbQuery();
-    const userId = ctx.from?.id ? BigInt(ctx.from.id) : null;
-    if (!userId) {
-      return ctx.reply('❌ Unable to identify user.');
-    }
-    
     const { getAllGroups } = require('../db/groups');
-    const groups = await getAllGroups(userId);
+    if (!ctx.from?.id) return;
     
-    // Filter to active groups and get metrics
-    const activeGroups = groups.filter((g: any) => g.isActive);
-    
-    if (activeGroups.length === 0) {
-      return ctx.reply('No active groups found. Add the bot to a group first!');
-    }
+    const groups = await getAllGroups(BigInt(ctx.from.id));
+    if (groups.length === 0) return ctx.reply('No active groups found.');
 
-    const groupsWithMetrics = await Promise.all(
-      activeGroups.slice(0, 10).map(async (group: any) => {
-        const metrics = await prisma.groupMetric.findFirst({
-          where: { groupId: group.id, window: '30D' },
-        });
-        return { ...group, metric: metrics };
-      })
-    );
+    const buttons = groups.map((g: any) => ([{ text: g.name || `Group ${g.chatId}`, callback_data: `group_stats:${g.id}` }]));
+    buttons.push([{ text: '🔙 Back', callback_data: 'analytics' }]);
 
-    if (groupsWithMetrics.length === 0) {
-      return ctx.reply('No active groups found. Add the bot to a group first!');
-    }
-
-    let message = '👥 *Your Groups Overview*\n\n';
-    groupsWithMetrics.forEach((group: any, index: number) => {
-      const metric = group.metric;
-      message += `${index + 1}. *${group.name || `Group ${group.chatId}`}*\n`;
-      if (metric) {
-        message += `   Win Rate: ${(metric.hit2Rate * 100).toFixed(1)}% | `;
-        message += `Signals: ${metric.totalSignals}\n\n`;
-      } else {
-        message += `   No metrics yet\n\n`;
-      }
-    });
-
-    await ctx.reply(message, {
-      parse_mode: 'Markdown',
-      reply_markup: {
-        inline_keyboard: [
-          [
-            { text: '🏆 Leaderboard', callback_data: 'leaderboard_groups:30D' },
-          ],
-          [
-            { text: '🔙 Back', callback_data: 'analytics' },
-          ],
-        ],
-      },
+    await ctx.reply('👥 *Select Group for Stats*', {
+        parse_mode: 'Markdown',
+        reply_markup: { inline_keyboard: buttons }
     });
   });
 
-  bot.action('analytics_users', async (ctx) => {
+  bot.action('analytics_users_input', async (ctx) => {
     await ctx.answerCbQuery();
-    const users = await prisma.user.findMany({
-      include: {
-        userMetrics: {
-          where: { window: '30D' },
-          take: 1,
-        },
-      },
-      take: 10,
-    });
-
-    if (users.length === 0) {
-      return ctx.reply('No users found.');
-    }
-
-    let message = '👤 *Users Overview*\n\n';
-    users.forEach((user: any, index: number) => {
-      const metric = user.userMetrics[0];
-      const userName = user.username || user.firstName || user.userId;
-      message += `${index + 1}. *@${userName}*\n`;
-      if (metric) {
-        message += `   Win Rate: ${(metric.hit2Rate * 100).toFixed(1)}% | `;
-        message += `Signals: ${metric.totalSignals}\n\n`;
-      } else {
-        message += `   No metrics yet\n\n`;
-      }
-    });
-
-    await ctx.reply(message, {
-      parse_mode: 'Markdown',
-      reply_markup: {
-        inline_keyboard: [
-          [
-            { text: '🏆 Leaderboard', callback_data: 'leaderboard_users:30D' },
-          ],
-          [
-            { text: '🔙 Back', callback_data: 'analytics' },
-          ],
-        ],
-      },
-    });
+    await ctx.reply('👤 To view user stats, send /userstats <userID> or check the Leaderboard.');
+    // Or we could list top users if we wanted
   });
 
   bot.action('analytics_copytrade', async (ctx) => {
@@ -385,13 +307,6 @@ Current vs Entry: ${(m.currentMultiple * 100).toFixed(1)}%
   bot.action('analytics_confirms', async (ctx) => {
     await ctx.answerCbQuery();
     await handleCrossGroupConfirms(ctx);
-  });
-
-  bot.action(/^copytrade:(7D|30D|ALL)$/, async (ctx) => {
-    const window = ctx.match[1] as '7D' | '30D' | 'ALL';
-    await ctx.answerCbQuery();
-    const { handleCopyTradingCommand } = await import('./commands/copyTrading');
-    await handleCopyTradingCommand(ctx, window);
   });
 
   bot.action('analytics_strategies', async (ctx) => {
@@ -428,9 +343,25 @@ Current vs Entry: ${(m.currentMultiple * 100).toFixed(1)}%
     await ctx.answerCbQuery();
     const group = await prisma.group.findUnique({ where: { id: groupId } });
     if (group) {
-      await handleGroupStatsCommand(ctx, group.chatId.toString());
+      // Use the newly implemented detailed stats
+      await handleGroupStatsCommand(ctx, group.id.toString());
     }
   });
+
+  // Window selectors for detailed stats
+  bot.action(/^group_stats_window:(\d+):(7D|30D|ALL)$/, async (ctx) => {
+    await ctx.answerCbQuery();
+    // Re-render group stats with new window - need to refactor command slightly to accept window
+    // For now, command uses 'ALL' as default. We can expand this later.
+    // Let's just re-call command for now.
+    await ctx.reply('Window selection coming soon. Currently showing All Time.');
+  });
+  
+  bot.action(/^user_stats_window:(\d+):(7D|30D|ALL)$/, async (ctx) => {
+    await ctx.answerCbQuery();
+    await ctx.reply('Window selection coming soon. Currently showing All Time.');
+  });
+
 
   // User stats callbacks
   bot.action(/^user_stats:(\d+)$/, async (ctx) => {
@@ -438,7 +369,7 @@ Current vs Entry: ${(m.currentMultiple * 100).toFixed(1)}%
     await ctx.answerCbQuery();
     const user = await prisma.user.findUnique({ where: { id: userId } });
     if (user) {
-      await handleUserStatsCommand(ctx, user.userId.toString());
+      await handleUserStatsCommand(ctx, user.id.toString());
     }
   });
 
