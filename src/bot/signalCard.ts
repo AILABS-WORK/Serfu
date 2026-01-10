@@ -1,6 +1,7 @@
 import { Signal } from '../generated/client/client';
 import { TokenMeta } from '../providers/types';
 import { prisma } from '../db';
+import { analyzeHolders, WhaleAlert } from '../analytics/holders';
 
 // Formatting helpers
 const formatNumber = (num: number | undefined | null): string => {
@@ -73,12 +74,12 @@ export const checkDuplicateCA = async (
 
 // --- NEW LAYOUT GENERATORS ---
 
-export const generateFirstSignalCard = (
+export const generateFirstSignalCard = async (
   signal: Signal,
   meta: TokenMeta,
   groupName: string,
   userName: string
-): string => {
+): Promise<string> => {
   // Data prep
   const currentPrice = meta.livePrice ?? (meta.marketCap && meta.supply ? meta.marketCap / meta.supply : signal.entryPrice ?? null);
   const currentMc = meta.liveMarketCap ?? meta.marketCap ?? (currentPrice && meta.supply ? currentPrice * meta.supply : undefined);
@@ -102,17 +103,47 @@ export const generateFirstSignalCard = (
 📈 5m: \`${formatPercent(meta.priceChange5m ?? meta.stats5m?.priceChange)}\` • 1h: \`${formatPercent(meta.priceChange1h ?? meta.stats1h?.priceChange)}\` • 24h: \`${formatPercent(meta.priceChange24h ?? meta.stats24h?.priceChange)}\`
   `.trim();
 
-  // Security block
+  // Security & Holders Block
   const audit = meta.audit || {};
   const isMintDisabled = audit.mintAuthorityDisabled ? '✅' : '⚠️';
   const isFreezeDisabled = audit.freezeAuthorityDisabled ? '✅' : '⚠️';
-  const top10 = audit.topHoldersPercentage ? `${audit.topHoldersPercentage.toFixed(1)}%` : '—';
-  const devBal = audit.devBalancePercentage ? `${audit.devBalancePercentage.toFixed(1)}%` : '—';
   
+  // Analyze Holders asynchronously (fetching Top 10)
+  // This might delay card generation by ~1s but provides the requested data
+  let whaleAlerts: WhaleAlert[] = [];
+  let topHoldersText = '';
+  
+  try {
+    const { solana } = await import('../providers/solana');
+    const holders = await solana.getTopHolders(signal.mint, 5); // Get top 5 for display
+    
+    if (holders.length > 0) {
+        topHoldersText = '\n👑 *TOP HOLDERS*\n';
+        holders.forEach(h => {
+            topHoldersText += `${h.rank}. \`${h.percentage.toFixed(2)}%\` (${h.address.slice(0, 4)}..${h.address.slice(-4)})\n`;
+        });
+    }
+
+    // Run deep analysis (Whale Cross-Check)
+    // We do this after displaying basic holders to not block too long, or do we want alerts IN the card?
+    // User asked for it IN the card.
+    whaleAlerts = await analyzeHolders(signal.id, signal.mint);
+
+  } catch (err) {
+    // Ignore holder fetch errors to not break card
+  }
+
+  let alertBlock = '';
+  if (whaleAlerts.length > 0) {
+    alertBlock = '\n⚠️ *WHALE ALERT*\n';
+    whaleAlerts.slice(0, 3).forEach(alert => {
+        alertBlock += `• Top Holder #${alert.rankInCurrent} also held *${alert.matchedSignalName}* (${alert.matchedAthMultiple.toFixed(1)}x)\n`;
+    });
+  }
+
   const securityBlock = `
 🛡️ *SECURITY*
 🔒 Auth: Mint ${isMintDisabled} • Freeze ${isFreezeDisabled}
-👥 Top 10: \`${top10}\` • Dev: \`${devBal}\`
 ✅ Verified: ${meta.isVerified ? 'Yes' : 'No'}
   `.trim();
 
@@ -133,34 +164,28 @@ Sells: \`${sells}\` ($${formatNumber(volSell)})
 
   // Links block
   const linkList: string[] = [];
-  
-  // Essential Tools
   linkList.push(`[Solscan](https://solscan.io/token/${signal.mint})`);
   linkList.push(`[Axiom](https://app.axiom.xyz/token/${signal.mint})`);
   linkList.push(`[GMGN](https://gmgn.ai/sol/token/${signal.mint})`);
   linkList.push(`[Photon](https://photon-sol.tinyastro.io/en/lp/${signal.mint})`);
   linkList.push(`[BullX](https://bullx.io/terminal?chainId=1399811149&address=${signal.mint})`);
 
-  // Socials
   if (meta.socialLinks) {
     if (meta.socialLinks.twitter) linkList.push(`[Twitter](${meta.socialLinks.twitter})`);
     if (meta.socialLinks.telegram) linkList.push(`[Telegram](${meta.socialLinks.telegram})`);
     if (meta.socialLinks.website) linkList.push(`[Website](${meta.socialLinks.website})`);
   }
 
-  // Launchpad (PumpFun / Moonshot)
   if (meta.launchpad === 'pump.fun' || meta.tags?.includes('pump')) {
     linkList.push(`[PumpFun](https://pump.fun/${signal.mint})`);
   } else if (meta.launchpad === 'moonshot') {
     linkList.push(`[Moonshot](https://moonshot.money/token/${signal.mint})`);
   }
 
-  // Format links (compact rows)
   const linksBlock = linkList.length > 0 
     ? `🔗 ${linkList.join(' • ')}`
     : '';
 
-  // Header
   const header = `🚀 *NEW SIGNAL DETECTED*`;
   const tokenIdent = `*${meta.name || 'Unknown'}* (${meta.symbol || 'N/A'})`;
   const caLine = `\`${signal.mint}\``;
@@ -174,6 +199,7 @@ ${caLine}
 ${statsBlock}
 
 ${securityBlock}
+${topHoldersText}${alertBlock}
 ${flowBlock ? '\n' + flowBlock : ''}
 
 ${sourceLine}
@@ -189,13 +215,11 @@ export const generateDuplicateSignalCard = (
   currentGroupName: string,
   currentUserName: string
 ): string => {
-  // Reuse logic but simpler header
   const currentPrice = meta.livePrice ?? (meta.marketCap && meta.supply ? meta.marketCap / meta.supply : signal.entryPrice ?? null);
   const currentMc = meta.liveMarketCap ?? meta.marketCap ?? (currentPrice && meta.supply ? currentPrice * meta.supply : undefined);
   const firstPrice = firstSignal.entryPrice || null;
   const priceChange = calcPercentDelta(currentPrice, firstPrice);
   
-  // Stats block
   const statsBlock = `
 📊 *LIVE STATS*
 💰 Price: \`${formatPrice(currentPrice)}\` (vs First: ${priceChange})
@@ -203,7 +227,6 @@ export const generateDuplicateSignalCard = (
 📈 1h: \`${formatPercent(meta.priceChange1h ?? meta.stats1h?.priceChange)}\` • 24h: \`${formatPercent(meta.priceChange24h ?? meta.stats24h?.priceChange)}\`
   `.trim();
 
-  // Links block
   const linkList: string[] = [];
   linkList.push(`[Solscan](https://solscan.io/token/${signal.mint})`);
   linkList.push(`[GMGN](https://gmgn.ai/sol/token/${signal.mint})`);
