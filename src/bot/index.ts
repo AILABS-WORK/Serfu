@@ -41,7 +41,7 @@ export const setupBot = () => {
       reply_markup: {
         inline_keyboard: [
           [{ text: '🟢 Live Signals', callback_data: 'live_signals' }],
-          [{ text: '🏆 Leaderboards', callback_data: 'leaderboard' }],
+          [{ text: '🏆 Leaderboards', callback_data: 'leaderboards_menu' }], // Changed data to match actions.ts
           [{ text: '📊 Distributions', callback_data: 'distributions' }],
           [{ text: '📈 Analytics', callback_data: 'analytics' }],
           [{ text: '👥 Groups', callback_data: 'groups_menu' }],
@@ -206,4 +206,3 @@ export const launchBot = async (bot: Telegraf) => {
   await bot.launch();
   logger.info('Bot launched!');
 };
-
