@@ -131,12 +131,40 @@ Sells: \`${sells}\` ($${formatNumber(volSell)})
     `.trim();
   }
 
+  // Links block
+  const linkList: string[] = [];
+  
+  // Essential Tools
+  linkList.push(`[Solscan](https://solscan.io/token/${signal.mint})`);
+  linkList.push(`[Axiom](https://app.axiom.xyz/token/${signal.mint})`);
+  linkList.push(`[GMGN](https://gmgn.ai/sol/token/${signal.mint})`);
+  linkList.push(`[Photon](https://photon-sol.tinyastro.io/en/lp/${signal.mint})`);
+  linkList.push(`[BullX](https://bullx.io/terminal?chainId=1399811149&address=${signal.mint})`);
+
+  // Socials
+  if (meta.socialLinks) {
+    if (meta.socialLinks.twitter) linkList.push(`[Twitter](${meta.socialLinks.twitter})`);
+    if (meta.socialLinks.telegram) linkList.push(`[Telegram](${meta.socialLinks.telegram})`);
+    if (meta.socialLinks.website) linkList.push(`[Website](${meta.socialLinks.website})`);
+  }
+
+  // Launchpad (PumpFun / Moonshot)
+  if (meta.launchpad === 'pump.fun' || meta.tags?.includes('pump')) {
+    linkList.push(`[PumpFun](https://pump.fun/${signal.mint})`);
+  } else if (meta.launchpad === 'moonshot') {
+    linkList.push(`[Moonshot](https://moonshot.money/token/${signal.mint})`);
+  }
+
+  // Format links (compact rows)
+  const linksBlock = linkList.length > 0 
+    ? `🔗 ${linkList.join(' • ')}`
+    : '';
+
   // Header
   const header = `🚀 *NEW SIGNAL DETECTED*`;
   const tokenIdent = `*${meta.name || 'Unknown'}* (${meta.symbol || 'N/A'})`;
   const caLine = `\`${signal.mint}\``;
   const sourceLine = `Source: ${groupName} • @${userName}`;
-  const links = `[Solscan](https://solscan.io/token/${signal.mint}) • [Axiom](https://app.axiom.xyz/token/${signal.mint}) • [GMGN](https://gmgn.ai/sol/token/${signal.mint})`;
 
   return `
 ${header}
@@ -149,7 +177,7 @@ ${securityBlock}
 ${flowBlock ? '\n' + flowBlock : ''}
 
 ${sourceLine}
-${links}
+${linksBlock}
   `.trim();
 };
 
@@ -175,6 +203,19 @@ export const generateDuplicateSignalCard = (
 📈 1h: \`${formatPercent(meta.priceChange1h ?? meta.stats1h?.priceChange)}\` • 24h: \`${formatPercent(meta.priceChange24h ?? meta.stats24h?.priceChange)}\`
   `.trim();
 
+  // Links block
+  const linkList: string[] = [];
+  linkList.push(`[Solscan](https://solscan.io/token/${signal.mint})`);
+  linkList.push(`[GMGN](https://gmgn.ai/sol/token/${signal.mint})`);
+  linkList.push(`[Photon](https://photon-sol.tinyastro.io/en/lp/${signal.mint})`);
+  
+  if (meta.socialLinks) {
+    if (meta.socialLinks.twitter) linkList.push(`[Twitter](${meta.socialLinks.twitter})`);
+    if (meta.socialLinks.telegram) linkList.push(`[Telegram](${meta.socialLinks.telegram})`);
+  }
+
+  const linksBlock = linkList.length > 0 ? `🔗 ${linkList.join(' • ')}` : '';
+
   return `
 🔁 *MENTIONED AGAIN*
 *${meta.name || 'Unknown'}* (${meta.symbol || 'N/A'})
@@ -185,6 +226,6 @@ ${statsBlock}
 First: ${firstGroupName} (${firstSignal.detectedAt.toLocaleTimeString()})
 Now: ${currentGroupName} • @${currentUserName}
 
-[Solscan](https://solscan.io/token/${signal.mint}) • [GMGN](https://gmgn.ai/sol/token/${signal.mint})
+${linksBlock}
   `.trim();
 };
