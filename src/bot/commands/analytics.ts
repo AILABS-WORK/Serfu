@@ -2,9 +2,9 @@ import { Context } from 'telegraf';
 import { prisma } from '../../db';
 import { logger } from '../../utils/logger';
 import { getAllGroups, getGroupByChatId } from '../../db/groups';
-import { getAllUsers } from '../../db/users';
 import { subDays } from 'date-fns';
 import { provider } from '../../providers';
+import { getGroupStats, getUserStats, getLeaderboard, EntityStats } from '../../analytics/aggregator';
 
 export const handleAnalyticsCommand = async (ctx: Context) => {
   try {
@@ -13,19 +13,16 @@ export const handleAnalyticsCommand = async (ctx: Context) => {
       reply_markup: {
         inline_keyboard: [
           [
-            { text: '👥 Groups', callback_data: 'analytics_groups' },
-            { text: '👤 Users', callback_data: 'analytics_users' },
+            { text: '🏆 Leaderboards', callback_data: 'leaderboards_menu' },
+            { text: '👥 My Groups', callback_data: 'analytics_groups' },
           ],
           [
-            { text: '📈 Copy Trading', callback_data: 'analytics_copytrade' },
-            { text: '🎯 Strategies', callback_data: 'analytics_strategies' },
+             { text: '📜 Recent Calls', callback_data: 'analytics_recent' },
+             { text: '👤 User Stats', callback_data: 'analytics_users_input' },
           ],
           [
             { text: '🚀 Earliest Callers', callback_data: 'analytics_earliest' },
             { text: '🔁 Cross-Group Confirms', callback_data: 'analytics_confirms' },
-          ],
-          [
-            { text: '📜 Recent Calls', callback_data: 'analytics_recent' },
           ],
         ],
       },
@@ -36,82 +33,59 @@ export const handleAnalyticsCommand = async (ctx: Context) => {
   }
 };
 
+const formatEntityStats = (stats: EntityStats, type: 'GROUP' | 'USER'): string => {
+  let msg = `📊 *${type === 'GROUP' ? 'Group' : 'User'} Analytics: ${stats.name}*\n\n`;
+  msg += `*Overall Performance*\n`;
+  msg += `Signals: \`${stats.totalSignals}\`\n`;
+  msg += `Win Rate (>2x): \`${(stats.winRate * 100).toFixed(1)}%\`\n`;
+  msg += `Avg ATH: \`${stats.avgMultiple.toFixed(2)}x\`\n`;
+  msg += `Avg Drawdown: \`${(stats.avgDrawdown * 100).toFixed(1)}%\`\n`;
+  msg += `Reliability Score: \`${stats.score.toFixed(0)}\`\n\n`;
+
+  if (stats.bestCall) {
+    msg += `*Best Call (ATH)*\n`;
+    msg += `Token: ${stats.bestCall.symbol} (\`${stats.bestCall.mint}\`)\n`;
+    msg += `Peak: \`${stats.bestCall.multiple.toFixed(2)}x\`\n`;
+  }
+
+  return msg;
+};
+
 export const handleGroupStatsCommand = async (ctx: Context, groupIdStr?: string) => {
   try {
     const userId = ctx.from?.id ? BigInt(ctx.from.id) : null;
-    if (!userId) {
-      return ctx.reply('❌ Unable to identify user.');
+    if (!userId) return ctx.reply('❌ Unable to identify user.');
+
+    // Logic: If groupIdStr is provided (from button), use it.
+    // If not, check if command is used inside a group.
+    // If user is in private chat and no ID, prompt/fail.
+
+    let targetGroupId: number | null = null;
+    if (groupIdStr) {
+      targetGroupId = parseInt(groupIdStr);
+    } else if (ctx.chat?.type !== 'private') {
+      const group = await prisma.group.findFirst({ where: { chatId: BigInt(ctx.chat!.id) } });
+      if (group) targetGroupId = group.id;
     }
 
-    const chatId = ctx.chat?.id;
-    const targetChatId = groupIdStr ? BigInt(groupIdStr) : (chatId ? BigInt(chatId) : null);
-
-    if (!targetChatId) {
-      return ctx.reply('Please specify a group ID or use this command in a group.');
+    if (!targetGroupId) {
+      return ctx.reply('Please use this command in a group or select one from the menu.');
     }
 
-    const group = await getGroupByChatId(targetChatId, userId);
+    const stats = await getGroupStats(targetGroupId, 'ALL'); // Default to ALL time for overview
+    if (!stats) {
+      return ctx.reply('Group not found or no data available.');
+    }
+
+    const message = formatEntityStats(stats, 'GROUP');
     
-    if (!group) {
-      return ctx.reply('❌ Group not found. Make sure you own this group or the bot is in it.');
-    }
-
-    const groupWithMetrics = await prisma.group.findUnique({
-      where: { id: group.id },
-      include: {
-        groupMetrics: {
-          orderBy: { window: 'asc' },
-        },
-        signals: {
-          take: 10,
-          orderBy: { detectedAt: 'desc' },
-          include: {
-            metrics: true,
-          },
-        },
-      },
-    });
-
-    if (!groupWithMetrics) {
-      return ctx.reply('Group not found.');
-    }
-
-    const allTime = groupWithMetrics.groupMetrics.find((m: any) => m.window === 'ALL');
-    const last30d = groupWithMetrics.groupMetrics.find((m: any) => m.window === '30D');
-    const last7d = groupWithMetrics.groupMetrics.find((m: any) => m.window === '7D');
-
-    let message = `📊 *Your Group Analytics: ${groupWithMetrics.name || groupWithMetrics.chatId}*\n\n`;
-    
-    if (allTime) {
-      message += `*All Time Stats:*\n`;
-      message += `Signals: ${allTime.totalSignals}\n`;
-      message += `Win Rate (2x+): ${(allTime.hit2Rate * 100).toFixed(1)}%\n`;
-      message += `Win Rate (5x+): ${(allTime.hit5Rate * 100).toFixed(1)}%\n`;
-      message += `Median ATH: ${allTime.medianAth.toFixed(2)}x\n`;
-      message += `P75 ATH: ${allTime.p75Ath.toFixed(2)}x\n`;
-      message += `Median Drawdown: ${(allTime.medianDrawdown * 100).toFixed(1)}%\n\n`;
-    }
-
-    if (last30d) {
-      message += `*Last 30 Days:*\n`;
-      message += `Signals: ${last30d.totalSignals}\n`;
-      message += `Win Rate: ${(last30d.hit2Rate * 100).toFixed(1)}%\n`;
-      message += `Median ATH: ${last30d.medianAth.toFixed(2)}x\n\n`;
-    }
-
-    if (last7d) {
-      message += `*Last 7 Days:*\n`;
-      message += `Signals: ${last7d.totalSignals}\n`;
-      message += `Win Rate: ${(last7d.hit2Rate * 100).toFixed(1)}%\n`;
-    }
-
     await ctx.reply(message, {
       parse_mode: 'Markdown',
       reply_markup: {
         inline_keyboard: [
           [
-            { text: '📈 View Signals', callback_data: `group_signals:${groupWithMetrics.id}` },
-            { text: '📊 Compare', callback_data: `group_compare:${groupWithMetrics.id}` },
+            { text: '7D Stats', callback_data: `group_stats_window:${targetGroupId}:7D` },
+            { text: '30D Stats', callback_data: `group_stats_window:${targetGroupId}:30D` },
           ],
           [
             { text: '🔙 Back', callback_data: 'analytics_groups' },
@@ -127,78 +101,32 @@ export const handleGroupStatsCommand = async (ctx: Context, groupIdStr?: string)
 
 export const handleUserStatsCommand = async (ctx: Context, userIdStr?: string) => {
   try {
-    const senderId = ctx.from?.id;
-    const targetUserId = userIdStr ? BigInt(userIdStr) : (senderId ? BigInt(senderId) : null);
-
-    if (!targetUserId) {
-      return ctx.reply('Please specify a user ID.');
+    if (!userIdStr) {
+        // If called without arg, show own stats
+        const user = await prisma.user.findUnique({ where: { userId: BigInt(ctx.from!.id) }});
+        if (user) userIdStr = user.id.toString();
+        else return ctx.reply("You are not registered in the system yet.");
     }
-
-    const user = await prisma.user.findUnique({
-      where: { userId: targetUserId },
-      include: {
-        userMetrics: {
-          orderBy: { window: 'asc' },
-        },
-        signals: {
-          take: 10,
-          orderBy: { detectedAt: 'desc' },
-          include: {
-            metrics: true,
-          },
-        },
-      },
-    });
-
-    if (!user) {
-      return ctx.reply('User not found.');
-    }
-
-    const allTime = user.userMetrics.find((m: any) => m.window === 'ALL');
-    const last30d = user.userMetrics.find((m: any) => m.window === '30D');
-    const last7d = user.userMetrics.find((m: any) => m.window === '7D');
-
-    let message = `👤 *User Analytics: @${user.username || user.firstName || user.userId}*\n\n`;
     
-    if (allTime) {
-      message += `*All Time Stats:*\n`;
-      message += `Signals: ${allTime.totalSignals}\n`;
-      message += `Win Rate (2x+): ${(allTime.hit2Rate * 100).toFixed(1)}%\n`;
-      message += `Win Rate (5x+): ${(allTime.hit5Rate * 100).toFixed(1)}%\n`;
-      message += `Median ATH: ${allTime.medianAth.toFixed(2)}x\n`;
-      message += `P75 ATH: ${allTime.p75Ath.toFixed(2)}x\n`;
-      if (allTime.consistencyScore !== null) {
-        message += `Consistency: ${(allTime.consistencyScore * 100).toFixed(1)}%\n`;
-      }
-      if (allTime.riskScore !== null) {
-        message += `Risk Score: ${(allTime.riskScore * 100).toFixed(1)}%\n`;
-      }
-      message += `\n`;
+    const targetUserId = parseInt(userIdStr);
+    const stats = await getUserStats(targetUserId, 'ALL');
+
+    if (!stats) {
+      return ctx.reply('User not found or no data available.');
     }
 
-    if (last30d) {
-      message += `*Last 30 Days:*\n`;
-      message += `Signals: ${last30d.totalSignals}\n`;
-      message += `Win Rate: ${(last30d.hit2Rate * 100).toFixed(1)}%\n`;
-      message += `Median ATH: ${last30d.medianAth.toFixed(2)}x\n\n`;
-    }
-
-    if (last7d) {
-      message += `*Last 7 Days:*\n`;
-      message += `Signals: ${last7d.totalSignals}\n`;
-      message += `Win Rate: ${(last7d.hit2Rate * 100).toFixed(1)}%\n`;
-    }
+    const message = formatEntityStats(stats, 'USER');
 
     await ctx.reply(message, {
       parse_mode: 'Markdown',
       reply_markup: {
         inline_keyboard: [
-          [
-            { text: '📈 View Signals', callback_data: `user_signals:${user.id}` },
-            { text: '📊 Compare', callback_data: `user_compare:${user.id}` },
+           [
+            { text: '7D Stats', callback_data: `user_stats_window:${targetUserId}:7D` },
+            { text: '30D Stats', callback_data: `user_stats_window:${targetUserId}:30D` },
           ],
           [
-            { text: '🔙 Back', callback_data: 'analytics_users' },
+            { text: '🔙 Back', callback_data: 'analytics' },
           ],
         ],
       },
@@ -211,59 +139,34 @@ export const handleUserStatsCommand = async (ctx: Context, userIdStr?: string) =
 
 export const handleGroupLeaderboardCommand = async (ctx: Context, window: '7D' | '30D' | 'ALL' = '30D') => {
   try {
-    const userId = ctx.from?.id ? BigInt(ctx.from.id) : null;
-    if (!userId) {
-      return ctx.reply('❌ Unable to identify user.');
-    }
-
-    // Get user's groups first
-    const userGroups = await getAllGroups(userId);
-    const userGroupIds = userGroups.map((g: any) => g.id);
-
-    if (userGroupIds.length === 0) {
-      return ctx.reply('No groups found. Add the bot to a group first!');
-    }
-
-    const metrics = await prisma.groupMetric.findMany({
-      where: { 
-        window,
-        groupId: { in: userGroupIds }, // Only user's groups
-      },
-      include: { group: true },
-      orderBy: { hit2Rate: 'desc' },
-      take: 20,
-    });
-
-    if (metrics.length === 0) {
-      return ctx.reply(`No group metrics available for ${window} window. Add groups and wait for signals!`);
-    }
-
-    let message = `🏆 *Your Group Leaderboard (${window})*\n\n`;
+    const statsList = await getLeaderboard('GROUP', window, 'SCORE', 10);
     
-    metrics.forEach((metric: any, index: number) => {
-      const rank = index + 1;
-      const emoji = rank === 1 ? '🥇' : rank === 2 ? '🥈' : rank === 3 ? '🥉' : `${rank}.`;
-      message += `${emoji} *${metric.group.name || metric.group.chatId}*\n`;
-      message += `   Win Rate: ${(metric.hit2Rate * 100).toFixed(1)}% | `;
-      message += `Signals: ${metric.totalSignals} | `;
-      message += `Median ATH: ${metric.medianAth.toFixed(2)}x\n\n`;
+    if (statsList.length === 0) {
+        return ctx.reply(`No group data available for ${window}.`);
+    }
+
+    let message = `🏆 *Top Groups (${window})*\n_Sorted by Reliability Score_\n\n`;
+    statsList.forEach((s, i) => {
+        const rank = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `${i+1}.`;
+        message += `${rank} *${s.name}*\n`;
+        message += `   💎 ${s.avgMultiple.toFixed(2)}x Avg | 🎯 ${(s.winRate*100).toFixed(0)}% WR | Score: ${s.score.toFixed(0)}\n\n`;
     });
 
     await ctx.reply(message, {
-      parse_mode: 'Markdown',
-      reply_markup: {
-        inline_keyboard: [
-          [
-            { text: '7D', callback_data: `leaderboard_groups:7D` },
-            { text: '30D', callback_data: `leaderboard_groups:30D` },
-            { text: 'ALL', callback_data: `leaderboard_groups:ALL` },
-          ],
-          [
-            { text: '🔙 Back', callback_data: 'analytics_groups' },
-          ],
-        ],
-      },
+        parse_mode: 'Markdown',
+        reply_markup: {
+            inline_keyboard: [
+                [
+                    { text: '7D', callback_data: 'leaderboard_groups:7D' },
+                    { text: '30D', callback_data: 'leaderboard_groups:30D' },
+                    { text: 'ALL', callback_data: 'leaderboard_groups:ALL' },
+                ],
+                [{ text: '👤 User Leaderboard', callback_data: 'leaderboard_users:30D' }],
+                [{ text: '🔙 Analytics', callback_data: 'analytics' }],
+            ]
+        }
     });
+
   } catch (error) {
     logger.error('Error in group leaderboard:', error);
     ctx.reply('Error loading leaderboard.');
@@ -272,70 +175,32 @@ export const handleGroupLeaderboardCommand = async (ctx: Context, window: '7D' |
 
 export const handleUserLeaderboardCommand = async (ctx: Context, window: '7D' | '30D' | 'ALL' = '30D') => {
   try {
-    const ownerTelegramId = ctx.from?.id ? BigInt(ctx.from.id) : null;
-    if (!ownerTelegramId) {
-      return ctx.reply('❌ Unable to identify user.');
-    }
-
-    // Limit to users who have signals in groups owned by the caller
-    const userIds = await prisma.user.findMany({
-      where: {
-        signals: {
-          some: {
-            group: {
-              owner: { userId: ownerTelegramId },
-            },
-          },
-        },
-      },
-      select: { id: true },
-    });
-
-    if (userIds.length === 0) {
-      return ctx.reply('No users found for your workspace yet.');
-    }
-
-    const metrics = await prisma.userMetric.findMany({
-      where: { window, userId: { in: userIds.map((u) => u.id) } },
-      include: { user: true },
-      orderBy: { hit2Rate: 'desc' },
-      take: 20,
-    });
-
-    if (metrics.length === 0) {
-      return ctx.reply(`No user metrics available for ${window} window.`);
-    }
-
-    let message = `🏆 *User Leaderboard (${window})*\n\n`;
+    const statsList = await getLeaderboard('USER', window, 'SCORE', 10);
     
-    metrics.forEach((metric: any, index: number) => {
-      const rank = index + 1;
-      const emoji = rank === 1 ? '🥇' : rank === 2 ? '🥈' : rank === 3 ? '🥉' : `${rank}.`;
-      const userName = metric.user.username || metric.user.firstName || metric.user.userId;
-      message += `${emoji} *@${userName}*\n`;
-      message += `   Win Rate: ${(metric.hit2Rate * 100).toFixed(1)}% | `;
-      message += `Signals: ${metric.totalSignals} | `;
-      message += `Median ATH: ${metric.medianAth.toFixed(2)}x\n`;
-      if (metric.consistencyScore !== null) {
-        message += `   Consistency: ${(metric.consistencyScore * 100).toFixed(1)}%\n`;
-      }
-      message += `\n`;
+    if (statsList.length === 0) {
+        return ctx.reply(`No user data available for ${window}.`);
+    }
+
+    let message = `🏆 *Top Callers (${window})*\n_Sorted by Reliability Score_\n\n`;
+    statsList.forEach((s, i) => {
+        const rank = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `${i+1}.`;
+        message += `${rank} *${s.name}*\n`;
+        message += `   💎 ${s.avgMultiple.toFixed(2)}x Avg | 🎯 ${(s.winRate*100).toFixed(0)}% WR | Score: ${s.score.toFixed(0)}\n\n`;
     });
 
     await ctx.reply(message, {
-      parse_mode: 'Markdown',
-      reply_markup: {
-        inline_keyboard: [
-          [
-            { text: '7D', callback_data: `leaderboard_users:7D` },
-            { text: '30D', callback_data: `leaderboard_users:30D` },
-            { text: 'ALL', callback_data: `leaderboard_users:ALL` },
-          ],
-          [
-            { text: '🔙 Back', callback_data: 'analytics_users' },
-          ],
-        ],
-      },
+        parse_mode: 'Markdown',
+        reply_markup: {
+            inline_keyboard: [
+                [
+                    { text: '7D', callback_data: 'leaderboard_users:7D' },
+                    { text: '30D', callback_data: 'leaderboard_users:30D' },
+                    { text: 'ALL', callback_data: 'leaderboard_users:ALL' },
+                ],
+                [{ text: '👥 Group Leaderboard', callback_data: 'leaderboard_groups:30D' }],
+                [{ text: '🔙 Analytics', callback_data: 'analytics' }],
+            ]
+        }
     });
   } catch (error) {
     logger.error('Error in user leaderboard:', error);
@@ -454,6 +319,7 @@ export const handleRecentCalls = async (ctx: Context) => {
       take: 6,
       include: {
         group: true,
+        metrics: true, // Fetch metrics
       },
     });
 
@@ -461,7 +327,7 @@ export const handleRecentCalls = async (ctx: Context) => {
       return ctx.reply('No signals yet in your workspace.');
     }
 
-    let message = '📜 *Recent Calls (live multiples)*\n\n';
+    let message = '📜 *Recent Calls*\n\n';
     for (const sig of signals) {
       let currentPrice: number | null = null;
       try {
@@ -472,14 +338,17 @@ export const handleRecentCalls = async (ctx: Context) => {
       }
 
       const entryPrice = sig.entryPrice || null;
+      // Calculate current multiple live
       const multiple = currentPrice && entryPrice ? currentPrice / entryPrice : null;
-      const entryMc = sig.entryMarketCap ?? (sig.entryPrice && sig.entrySupply ? sig.entryPrice * sig.entrySupply : null);
-      const currentMc = currentPrice && sig.entrySupply ? currentPrice * sig.entrySupply : null;
+      
+      // Get historical ATH/Drawdown from metrics
+      const athMult = sig.metrics?.athMultiple ?? multiple ?? 1;
+      const drawdown = sig.metrics?.maxDrawdown ?? 0;
 
       message += `• *${sig.name || sig.symbol || sig.mint}* (${sig.symbol || 'N/A'})\n`;
       message += `  Group: ${sig.group?.name || sig.group?.chatId || 'N/A'}\n`;
-      message += `  Entry: $${entryPrice ? entryPrice.toFixed(6) : 'Pending'} | Current: ${currentPrice ? `$${currentPrice.toFixed(6)}` : 'N/A'}\n`;
-      message += `  Multiple: ${multiple ? `${multiple.toFixed(2)}x` : 'N/A'} | MC: ${entryMc ? `$${entryMc.toFixed(2)}` : 'N/A'} → ${currentMc ? `$${currentMc.toFixed(2)}` : 'N/A'}\n`;
+      message += `  Entry: $${entryPrice ? entryPrice.toFixed(6) : 'Pending'} | Cur: ${multiple ? `${multiple.toFixed(2)}x` : 'N/A'}\n`;
+      message += `  ATH: \`${athMult.toFixed(2)}x\` | DD: \`${(drawdown * 100).toFixed(0)}%\`\n`;
       message += `  Mint: \`${sig.mint}\`\n\n`;
     }
 
@@ -489,4 +358,3 @@ export const handleRecentCalls = async (ctx: Context) => {
     ctx.reply('Error loading recent calls.');
   }
 };
-
