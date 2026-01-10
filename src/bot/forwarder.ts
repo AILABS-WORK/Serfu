@@ -83,7 +83,7 @@ export const forwardSignalToDestination = async (signal: Signal) => {
       }
 
       // Check duplicate across this owner (to label first vs new group mention)
-      const duplicateCheck = await checkDuplicateCA(signal.mint, ownerId || undefined, undefined);
+      const duplicateCheck = await checkDuplicateCA(signal.mint, ownerId || undefined, undefined, signal.id);
       const isDup = duplicateCheck.isDuplicate;
 
       // Format forwarded message

@@ -47,7 +47,8 @@ export const createOrUpdateGroup = async (
     },
     update: {
       name: data.name,
-      type: data.type,
+      // Don't overwrite type if it's already set to destination and we are setting source (default)
+      ...(data.type === 'source' ? {} : { type: data.type }),
       isActive: data.isActive,
       chatType: (data as any).chatType ?? undefined,
       ownerId: ownerId, // Update owner if it was null
@@ -151,11 +152,8 @@ export const getDestinationGroups = async (ownerTelegramId: bigint) => {
     return prisma.group.findMany({
       where: { 
         ownerId,
-        isActive: true,
-        OR: [
-          { type: 'destination' },
-          { type: null },
-        ],
+        type: 'destination', 
+        isActive: true 
       },
       orderBy: { createdAt: 'desc' },
     });

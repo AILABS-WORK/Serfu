@@ -36,6 +36,7 @@ export const checkPriceAlerts = async () => {
             },
           },
         },
+        metrics: true,
       },
     });
 
@@ -49,6 +50,48 @@ export const checkPriceAlerts = async () => {
         const quote = await provider.getQuote(signal.mint);
         const currentPrice = quote.price;
         const multiplier = currentPrice / signal.entryPrice;
+
+        // Update metrics (ATH, Drawdown)
+        const metrics = signal.metrics;
+        const currentAth = metrics?.athPrice || signal.entryPrice;
+        const isNewAth = currentPrice > currentAth;
+        const athPrice = isNewAth ? currentPrice : currentAth;
+        const athMultiple = athPrice / signal.entryPrice;
+        
+        // Approx drawdown from entry (v1) or from ATH if we had granular history
+        // For now, track max drawdown from entry as simple negative %
+        // Or if we want Drawdown from ATH: (Current - ATH) / ATH
+        // PRD usually implies max drawdown experienced. 
+        // Let's stick to simple: Lowest point seen vs Entry.
+        // We don't have full tick history here, so we update maxDrawdown if current < previous maxDrawdown
+        // Actually maxDrawdown is usually "Max loss from peak".
+        // Let's store "Max Drawdown from Entry" for simplicity in this MVP iteration.
+        // If currentPrice < entryPrice, calculate % loss.
+        const currentDrawdown = (currentPrice - signal.entryPrice) / signal.entryPrice;
+        const storedDrawdown = metrics?.maxDrawdown || 0;
+        const maxDrawdown = currentDrawdown < storedDrawdown ? currentDrawdown : storedDrawdown;
+
+        await prisma.signalMetric.upsert({
+          where: { signalId: signal.id },
+          create: {
+            signalId: signal.id,
+            currentPrice,
+            currentMultiple: multiplier,
+            athPrice,
+            athMultiple,
+            athAt: new Date(),
+            maxDrawdown,
+          },
+          update: {
+            currentPrice,
+            currentMultiple: multiplier,
+            athPrice,
+            athMultiple,
+            athAt: isNewAth ? new Date() : undefined,
+            maxDrawdown,
+            updatedAt: new Date(),
+          }
+        });
 
         // Get notification settings (prefer user's, fallback to group owner's)
         const settings = signal.user?.notificationSettings || 
