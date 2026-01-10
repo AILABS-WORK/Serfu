@@ -14,6 +14,8 @@ import {
 } from './commands/analytics';
 import { handleGroupsCommand } from './commands/groups';
 import { handleSettingsCommand, setHomeChat, setTtl, toggleHideForChat, toggleHomeFirst, toggleHomeRepost, toggleMcAlerts, togglePriceAlerts } from './commands/settings';
+import { notifySignal } from './notifier';
+import { provider } from '../providers';
 
 export const registerActions = (bot: Telegraf) => {
   // Hide action: delete the bot message if possible
@@ -100,6 +102,59 @@ Current vs Entry: ${(m.currentMultiple * 100).toFixed(1)}%
 
     } catch (error) {
        logger.error('Error showing stats:', error);
+    }
+  });
+
+  bot.action(/^refresh:(\d+)$/, async (ctx) => {
+    const signalId = parseInt(ctx.match[1]);
+    try {
+      await ctx.answerCbQuery('Refreshing...');
+      const signal = await prisma.signal.findUnique({ where: { id: signalId } });
+      if (signal) {
+        const meta = await provider.getTokenMeta(signal.mint);
+        // We can't edit the message photo media easily if it was a photo message,
+        // but we can resend or update text if it was text.
+        // For now, let's just send a new notification reply to the user? 
+        // Or better, re-render the card and edit the caption if it's a photo.
+        
+        // Simpler: Just trigger a new notification (maybe to DM) or update the current message caption.
+        // Updating caption requires regenerating the card text.
+        // Let's rely on notifySignal logic but customized for edit.
+        // Actually, notifySignal sends a NEW message.
+        // To edit, we need `ctx.editMessageCaption`.
+        
+        // Re-fetch price
+        const quote = await provider.getQuote(signal.mint);
+        const metaWithLive = {
+          ...meta,
+          livePrice: quote.price,
+          liveMarketCap: (meta.supply || signal.entrySupply) ? quote.price * (meta.supply || signal.entrySupply!) : meta.marketCap
+        };
+
+        const { generateFirstSignalCard } = await import('./signalCard');
+        // We need group/user name which might be in DB or context?
+        // Context clicker is the user refreshing, but the card should show original source.
+        // Let's fetch signal with relations.
+        const sigRel = await prisma.signal.findUnique({
+            where: { id: signalId },
+            include: { group: true, user: true }
+        });
+        
+        const cardText = generateFirstSignalCard(
+            signal, 
+            metaWithLive, 
+            sigRel?.group?.name || 'Unknown Group', 
+            sigRel?.user?.username || 'Unknown User'
+        );
+        
+        await ctx.editMessageCaption(cardText, {
+            parse_mode: 'Markdown',
+            reply_markup: ctx.callbackQuery.message && 'reply_markup' in ctx.callbackQuery.message ? ctx.callbackQuery.message.reply_markup : undefined
+        });
+      }
+    } catch (error) {
+      logger.error('Error refreshing signal:', error);
+      ctx.reply('Failed to refresh.');
     }
   });
 
@@ -400,4 +455,3 @@ Current vs Entry: ${(m.currentMultiple * 100).toFixed(1)}%
     await handleUserLeaderboardCommand(ctx, window);
   });
 };
-

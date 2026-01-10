@@ -56,6 +56,7 @@ export interface TokenMeta {
     twitter?: string;
     telegram?: string;
     discord?: string;
+    description?: string;
   };
   launchpad?: string;
   createdAt?: Date; // Token creation date
@@ -66,6 +67,8 @@ export interface TokenMeta {
   // Live overrides (fresh quote for notifications)
   livePrice?: number | null;
   liveMarketCap?: number | null;
+  graduatedPool?: string;
+  graduatedAt?: Date;
 }
 
 export interface PriceQuote {
@@ -89,6 +92,3 @@ export interface MarketDataProvider {
   getTokenMeta(mint: string): Promise<TokenMeta>;
   getOHLCV(mint: string, timeframe: string, start: number, end: number): Promise<OHLCV[] | null>;
 }
-
-
-

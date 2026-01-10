@@ -131,6 +131,8 @@ export class HeliusProvider implements MarketDataProvider {
           firstPoolCreatedAt: jupInfo.firstPoolCreatedAt ? new Date(jupInfo.firstPoolCreatedAt) : undefined,
           priceBlockId: jupInfo.priceBlockId,
           chain: 'Solana',
+          graduatedPool: jupInfo.graduatedPool,
+          graduatedAt: jupInfo.graduatedAt ? new Date(jupInfo.graduatedAt) : undefined,
         };
       }
 

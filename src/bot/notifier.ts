@@ -57,6 +57,17 @@ export const notifySignal = async (
       chain: meta?.chain,
       livePrice: meta?.livePrice,
       liveMarketCap: meta?.liveMarketCap,
+      // Pass through new fields
+      audit: meta?.audit,
+      stats5m: meta?.stats5m,
+      stats1h: meta?.stats1h,
+      stats6h: meta?.stats6h,
+      stats24h: meta?.stats24h,
+      holderCount: meta?.holderCount,
+      fdv: meta?.fdv,
+      isVerified: meta?.isVerified,
+      organicScore: meta?.organicScore,
+      organicScoreLabel: meta?.organicScoreLabel,
     };
     let metaWithLive: TokenMeta = baseMeta;
     try {
@@ -93,7 +104,7 @@ export const notifySignal = async (
           ],
           [
             { text: '🔍 View First Call', callback_data: `signal:${duplicateCheck.firstSignal.id}` },
-            { text: '⭐ Watchlist', callback_data: `watchlist:${signal.id}` },
+            { text: '🔄 Refresh', callback_data: `refresh:${signal.id}` },
             { text: '🙈 Hide', callback_data: 'hide' },
           ],
         ],
@@ -109,7 +120,7 @@ export const notifySignal = async (
           ],
           [
             { text: '⭐ Watchlist', callback_data: `watchlist:${signal.id}` },
-            { text: '🔔 Alerts', callback_data: `alerts:${signal.id}` },
+            { text: '🔄 Refresh', callback_data: `refresh:${signal.id}` },
             { text: '🙈 Hide', callback_data: 'hide' },
           ],
         ],
@@ -142,11 +153,34 @@ export const notifySignal = async (
     }
 
     const sendWithCleanup = async (targetChatId: bigint, ttlSeconds?: number | null, hideButton = true) => {
-      const sent = await bot.telegram.sendMessage(Number(targetChatId), message, {
-        parse_mode: 'Markdown',
-        reply_markup: keyboard,
-      });
-      scheduleAutoDelete(bot, targetChatId, sent.message_id, ttlSeconds);
+      let sent;
+      // Prefer sendPhoto if image available
+      if (metaWithLive?.image) {
+        try {
+          sent = await bot.telegram.sendPhoto(Number(targetChatId), metaWithLive.image, {
+            caption: message,
+            parse_mode: 'Markdown',
+            reply_markup: keyboard,
+          });
+        } catch (err) {
+          logger.warn(`Failed to send photo for signal ${signal.id}, fallback to text: ${err}`);
+          // Fallback
+          sent = await bot.telegram.sendMessage(Number(targetChatId), message, {
+            parse_mode: 'Markdown',
+            reply_markup: keyboard,
+            link_preview_options: { is_disabled: false }, // show preview if possible
+          });
+        }
+      } else {
+        sent = await bot.telegram.sendMessage(Number(targetChatId), message, {
+          parse_mode: 'Markdown',
+          reply_markup: keyboard,
+        });
+      }
+      
+      if (sent) {
+        scheduleAutoDelete(bot, targetChatId, sent.message_id, ttlSeconds);
+      }
     };
 
     // Send to source chat always
@@ -158,7 +192,7 @@ export const notifySignal = async (
       // remove hide buttons
       if (keyboard?.inline_keyboard) {
         keyboard.inline_keyboard = keyboard.inline_keyboard.map((row: any[]) =>
-          row.filter((btn) => btn.callback_data !== 'hide')
+          row.filter((btn: any) => btn.callback_data !== 'hide')
         );
       }
     }
@@ -175,10 +209,10 @@ export const notifySignal = async (
           where: { chatId: homeChatId },
           select: { autoDeleteSeconds: true, showHideButton: true },
         });
-        let homeKeyboard = keyboard;
+        let homeKeyboard = JSON.parse(JSON.stringify(keyboard)); // clone
         if (homePrefs?.showHideButton === false && homeKeyboard?.inline_keyboard) {
           homeKeyboard.inline_keyboard = homeKeyboard.inline_keyboard.map((row: any[]) =>
-            row.filter((btn) => btn.callback_data !== 'hide')
+            row.filter((btn: any) => btn.callback_data !== 'hide')
           );
         }
         // Avoid duplicate send of same signal to the same home chat
@@ -191,7 +225,12 @@ export const notifySignal = async (
           },
         });
         if (!exists) {
+          // Use the homeKeyboard for home chat
+          const originalKeyboard = keyboard;
+          keyboard = homeKeyboard; // swap temporarily
           await sendWithCleanup(homeChatId, homePrefs?.autoDeleteSeconds ?? null, homePrefs?.showHideButton ?? true);
+          keyboard = originalKeyboard; // swap back
+          
           await prisma.forwardedSignal.create({
             data: {
               signalId: signal.id,
@@ -208,4 +247,3 @@ export const notifySignal = async (
     logger.error(`Failed to send notification for signal ${signal.id}:`, error);
   }
 };
-

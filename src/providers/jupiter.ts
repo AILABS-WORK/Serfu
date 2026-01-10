@@ -105,6 +105,8 @@ export interface JupiterTokenInfo {
   isVerified?: boolean;
   cexes?: string[];
   tags?: string[];
+  graduatedPool?: string;
+  graduatedAt?: string;
 }
 
 export const getJupiterTokenInfo = async (mint: string): Promise<JupiterTokenInfo | null> => {
@@ -154,11 +156,11 @@ export const getJupiterTokenInfo = async (mint: string): Promise<JupiterTokenInf
       isVerified: t.isVerified,
       cexes: t.cexes,
       tags: t.tags,
+      graduatedPool: t.graduatedPool,
+      graduatedAt: t.graduatedAt,
     };
   } catch (err: any) {
     logger.debug('Jupiter search error:', err);
     return null;
   }
 };
-
-
