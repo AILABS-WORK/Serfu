@@ -59,3 +59,10 @@ This plan addresses the broken behaviors you observed (settings not working, des
 - Run test matrix above; capture logs for forwarder/notifier/settings actions.
 - If stable, promote to production.
 
+## Latest updates (Jan 9)
+- Providers: Jupiter search typing extended (audit, organic, stats windows, holders, FDV) and mapped into TokenMeta.
+- Cards: New/repost cards show richer sections (price/MC deltas, flow/buys, organic, audit, holders/FDV, 5m/1h/24h).
+- Alerts: Destination lookup tolerates null type; price/MC threshold alerts respect per-chat TTL/hide.
+- Analytics: Added “Recent Calls” view (live multiples) to analytics dashboard.
+
+

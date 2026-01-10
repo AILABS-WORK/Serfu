@@ -3,6 +3,7 @@ import { provider } from '../providers';
 import { logger } from '../utils/logger';
 import { getBotInstance } from '../bot/instance';
 import { scheduleAutoDelete } from '../utils/messageCleanup';
+import { getChatPreferences } from '../db/groups';
 
 // Multipliers to check
 const PRICE_MULTIPLIERS = [2, 3, 4, 5, 10, 15, 20, 30, 50, 100];
@@ -172,10 +173,12 @@ const sendPriceAlert = async (
       const ownerTelegramId = signal.group.owner.userId;
       const destinations = await getDestinationGroups(ownerTelegramId);
       for (const dest of destinations) {
+        const prefs = await getChatPreferences(dest.chatId);
         const sent = await bot.telegram.sendMessage(Number(dest.chatId), message, {
           parse_mode: 'Markdown',
+          reply_markup: prefs.showHideButton ? { inline_keyboard: [[{ text: '🙈 Hide', callback_data: 'hide' }]] } : undefined,
         });
-        scheduleAutoDelete(bot, dest.chatId, sent.message_id, dest.autoDeleteSeconds ?? null);
+        scheduleAutoDelete(bot, dest.chatId, sent.message_id, prefs.autoDeleteSeconds ?? dest.autoDeleteSeconds ?? null);
       }
     }
 
@@ -189,10 +192,12 @@ const sendPriceAlert = async (
 
     // Send in group if enabled
     if (settings.notifyInGroup && signal.chatId) {
+    const prefs = await getChatPreferences(BigInt(signal.chatId));
     const sent = await bot.telegram.sendMessage(Number(signal.chatId), message, {
         parse_mode: 'Markdown',
+        reply_markup: prefs.showHideButton ? { inline_keyboard: [[{ text: '🙈 Hide', callback_data: 'hide' }]] } : undefined,
       });
-    scheduleAutoDelete(bot, signal.chatId, sent.message_id);
+    scheduleAutoDelete(bot, signal.chatId, sent.message_id, prefs.autoDeleteSeconds ?? null);
     }
 
     logger.info(`Sent ${threshold}x alert for signal ${signal.id}`);
@@ -232,10 +237,12 @@ const sendMcAlert = async (
       const ownerTelegramId = signal.group.owner.userId;
       const destinations = await getDestinationGroups(ownerTelegramId);
       for (const dest of destinations) {
+        const prefs = await getChatPreferences(dest.chatId);
         const sent = await bot.telegram.sendMessage(Number(dest.chatId), message, {
           parse_mode: 'Markdown',
+          reply_markup: prefs.showHideButton ? { inline_keyboard: [[{ text: '🙈 Hide', callback_data: 'hide' }]] } : undefined,
         });
-        scheduleAutoDelete(bot, dest.chatId, sent.message_id);
+        scheduleAutoDelete(bot, dest.chatId, sent.message_id, prefs.autoDeleteSeconds ?? dest.autoDeleteSeconds ?? null);
       }
     }
 
@@ -249,20 +256,24 @@ const sendMcAlert = async (
 
     // Send in group if enabled
     if (settings.notifyInGroup && signal.chatId) {
+      const prefs = await getChatPreferences(BigInt(signal.chatId));
       const sent = await bot.telegram.sendMessage(Number(signal.chatId), message, {
         parse_mode: 'Markdown',
+        reply_markup: prefs.showHideButton ? { inline_keyboard: [[{ text: '🙈 Hide', callback_data: 'hide' }]] } : undefined,
       });
-      scheduleAutoDelete(bot, signal.chatId, sent.message_id);
+      scheduleAutoDelete(bot, signal.chatId, sent.message_id, prefs.autoDeleteSeconds ?? null);
     }
 
     // Send to home chat if configured and allowed (reuse repost toggle)
     if (settings.homeChatId) {
       const allowHome = settings.notifyHomeOnRepost || settings.notifyHomeOnFirstCa;
       if (allowHome && settings.homeChatId !== signal.chatId) {
+        const prefs = await getChatPreferences(BigInt(settings.homeChatId));
         const sent = await bot.telegram.sendMessage(Number(settings.homeChatId), message, {
           parse_mode: 'Markdown',
+          reply_markup: prefs.showHideButton ? { inline_keyboard: [[{ text: '🙈 Hide', callback_data: 'hide' }]] } : undefined,
         });
-        scheduleAutoDelete(bot, settings.homeChatId, sent.message_id);
+        scheduleAutoDelete(bot, settings.homeChatId, sent.message_id, prefs.autoDeleteSeconds ?? null);
       }
     }
 

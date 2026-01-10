@@ -10,6 +10,7 @@ import {
   handleUserLeaderboardCommand,
   handleEarliestCallers,
   handleCrossGroupConfirms,
+  handleRecentCalls,
 } from './commands/analytics';
 import { handleGroupsCommand } from './commands/groups';
 import { handleSettingsCommand, setHomeChat, setTtl, toggleHideForChat, toggleHomeFirst, toggleHomeRepost, toggleMcAlerts, togglePriceAlerts } from './commands/settings';
@@ -210,6 +211,10 @@ Current vs Entry: ${(m.currentMultiple * 100).toFixed(1)}%
 
   // Analytics Actions
   bot.action('analytics', handleAnalyticsCommand);
+  bot.action('analytics_recent', async (ctx) => {
+    await ctx.answerCbQuery();
+    await handleRecentCalls(ctx);
+  });
   bot.action('analytics_groups', async (ctx) => {
     await ctx.answerCbQuery();
     const userId = ctx.from?.id ? BigInt(ctx.from.id) : null;

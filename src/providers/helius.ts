@@ -85,6 +85,10 @@ export class HeliusProvider implements MarketDataProvider {
         const marketCap =
           jupInfo.mcap ??
           (jupInfo.usdPrice && adjustedSupply ? jupInfo.usdPrice * adjustedSupply : undefined);
+        const volume24h =
+          jupInfo.stats24h && (jupInfo.stats24h.buyVolume || jupInfo.stats24h.sellVolume)
+            ? (jupInfo.stats24h.buyVolume || 0) + (jupInfo.stats24h.sellVolume || 0)
+            : undefined;
 
         const socialLinks: any = {};
         if (jupInfo.website) socialLinks.website = jupInfo.website;
@@ -97,16 +101,35 @@ export class HeliusProvider implements MarketDataProvider {
           symbol: jupInfo.symbol || 'UNKNOWN',
           decimals: jupInfo.decimals || 9,
           image: jupInfo.icon,
-          marketCap: marketCap,
+          marketCap,
+          fdv: jupInfo.fdv,
           liquidity: jupInfo.liquidity,
           supply: adjustedSupply,
+          circSupply: jupInfo.circSupply,
+          totalSupply: jupInfo.totalSupply,
+          priceChange5m: jupInfo.stats5m?.priceChange,
           priceChange1h: jupInfo.stats1h?.priceChange,
           priceChange24h: jupInfo.stats24h?.priceChange,
+          stats5m: jupInfo.stats5m,
+          stats1h: jupInfo.stats1h,
+          stats6h: jupInfo.stats6h,
+          stats24h: jupInfo.stats24h,
+          volume24h,
+          holderCount: jupInfo.holderCount,
+          audit: jupInfo.audit,
+          organicScore: jupInfo.organicScore,
+          organicScoreLabel: jupInfo.organicScoreLabel,
+          isVerified: jupInfo.isVerified,
+          tags: jupInfo.tags,
+          cexes: jupInfo.cexes,
           ath: undefined,
           athDate: undefined,
           socialLinks: Object.keys(socialLinks).length ? socialLinks : undefined,
           launchpad: jupInfo.launchpad,
           createdAt: jupInfo.createdAt ? new Date(jupInfo.createdAt) : undefined,
+          firstPoolId: jupInfo.firstPoolId,
+          firstPoolCreatedAt: jupInfo.firstPoolCreatedAt ? new Date(jupInfo.firstPoolCreatedAt) : undefined,
+          priceBlockId: jupInfo.priceBlockId,
           chain: 'Solana',
         };
       }

@@ -1,5 +1,6 @@
 import fetch from 'node-fetch';
 import { logger } from '../utils/logger';
+import { StatsWindow } from './types';
 
 const JUP_URL = 'https://quote-api.jup.ag/v6/quote';
 const JUP_PRICE_URL = 'https://api.jup.ag/price/v3';
@@ -76,15 +77,34 @@ export interface JupiterTokenInfo {
   totalSupply?: number;
   usdPrice?: number;
   mcap?: number;
+  fdv?: number;
   liquidity?: number;
-  stats1h?: { priceChange?: number };
-  stats24h?: { priceChange?: number };
+  holderCount?: number;
+  priceBlockId?: number;
+  stats5m?: StatsWindow;
+  stats1h?: StatsWindow;
+  stats6h?: StatsWindow;
+  stats24h?: StatsWindow;
   twitter?: string;
   telegram?: string;
   website?: string;
   launchpad?: string;
   createdAt?: string;
   firstPoolId?: string;
+  firstPoolCreatedAt?: string;
+  audit?: {
+    isSus?: boolean;
+    mintAuthorityDisabled?: boolean;
+    freezeAuthorityDisabled?: boolean;
+    topHoldersPercentage?: number;
+    devBalancePercentage?: number;
+    devMigrations?: number;
+  };
+  organicScore?: number;
+  organicScoreLabel?: string;
+  isVerified?: boolean;
+  cexes?: string[];
+  tags?: string[];
 }
 
 export const getJupiterTokenInfo = async (mint: string): Promise<JupiterTokenInfo | null> => {
@@ -113,8 +133,13 @@ export const getJupiterTokenInfo = async (mint: string): Promise<JupiterTokenInf
       totalSupply: t.totalSupply,
       usdPrice: t.usdPrice,
       mcap: t.mcap,
+      fdv: t.fdv,
       liquidity: t.liquidity,
+      holderCount: t.holderCount,
+      priceBlockId: t.priceBlockId,
+      stats5m: t.stats5m,
       stats1h: t.stats1h,
+      stats6h: t.stats6h,
       stats24h: t.stats24h,
       twitter: t.twitter,
       telegram: t.telegram,
@@ -122,6 +147,13 @@ export const getJupiterTokenInfo = async (mint: string): Promise<JupiterTokenInf
       launchpad: t.launchpad,
       createdAt: t.createdAt,
       firstPoolId: t?.firstPool?.id,
+      firstPoolCreatedAt: t?.firstPool?.createdAt,
+      audit: t.audit,
+      organicScore: t.organicScore,
+      organicScoreLabel: t.organicScoreLabel,
+      isVerified: t.isVerified,
+      cexes: t.cexes,
+      tags: t.tags,
     };
   } catch (err: any) {
     logger.debug('Jupiter search error:', err);

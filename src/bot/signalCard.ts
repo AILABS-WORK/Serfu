@@ -100,14 +100,20 @@ export const generateFirstSignalCard = (
   const entryPriceVal = signal.entryPrice ?? null;
   const entryMcVal = signal.entryMarketCap ?? (signal.entryPrice && signal.entrySupply ? signal.entryPrice * signal.entrySupply : null);
   const entryMc = formatNumber(entryMcVal);
-  const volume = formatNumber(meta.volume24h);
+  const vol24 =
+    meta.volume24h ??
+    (meta.stats24h && (meta.stats24h.buyVolume || meta.stats24h.sellVolume)
+      ? (meta.stats24h.buyVolume || 0) + (meta.stats24h.sellVolume || 0)
+      : undefined);
+  const volume = formatNumber(vol24);
   const lp = formatNumber(meta.liquidity);
   const supplyVal = meta.supply ?? signal.entrySupply ?? null;
   const supply = supplyVal
     ? supplyVal.toLocaleString(undefined, { maximumFractionDigits: 2 })
     : 'N/A';
-  const change1h = formatPercent(meta.priceChange1h);
-  const change24h = formatPercent(meta.priceChange24h);
+  const change5m = formatPercent(meta.priceChange5m ?? meta.stats5m?.priceChange);
+  const change1h = formatPercent(meta.priceChange1h ?? meta.stats1h?.priceChange);
+  const change24h = formatPercent(meta.priceChange24h ?? meta.stats24h?.priceChange);
   const livePrice = currentPrice ? formatPrice(currentPrice) : undefined;
   const ath = formatNumber(meta.ath);
   const icon = meta.image ? `[🖼️ Icon](${meta.image})` : 'N/A';
@@ -116,6 +122,40 @@ export const generateFirstSignalCard = (
   const chain = meta.chain || 'Solana';
   const name = meta.name || 'Unknown';
   const symbol = meta.symbol || 'N/A';
+  const holders = meta.holderCount ? meta.holderCount.toLocaleString() : 'N/A';
+  const fdv = meta.fdv ? formatNumber(meta.fdv) : 'N/A';
+  const organic =
+    meta.organicScoreLabel || meta.organicScore !== undefined
+      ? `${meta.organicScoreLabel || ''}${meta.organicScore !== undefined ? ` (${meta.organicScore.toFixed(0)})` : ''}`
+      : 'N/A';
+  const auditLines: string[] = [];
+  if (meta.audit) {
+    if (meta.audit.topHoldersPercentage !== undefined) auditLines.push(`Top Holders: ${meta.audit.topHoldersPercentage.toFixed(2)}%`);
+    if (meta.audit.devBalancePercentage !== undefined) auditLines.push(`Dev Balance: ${meta.audit.devBalancePercentage.toFixed(2)}%`);
+    if (meta.audit.devMigrations !== undefined) auditLines.push(`Dev Migrations: ${meta.audit.devMigrations}`);
+    if (meta.audit.mintAuthorityDisabled !== undefined)
+      auditLines.push(`Mint Auth: ${meta.audit.mintAuthorityDisabled ? '✅ disabled' : '⚠️ enabled'}`);
+    if (meta.audit.freezeAuthorityDisabled !== undefined)
+      auditLines.push(`Freeze Auth: ${meta.audit.freezeAuthorityDisabled ? '✅ disabled' : '⚠️ enabled'}`);
+    if (meta.audit.isSus !== undefined) auditLines.push(`Risk: ${meta.audit.isSus ? '⚠️ Suspicious' : '✅ Clean'}`);
+  }
+
+  const flowLines: string[] = [];
+  const flow = meta.stats1h || meta.stats5m || meta.stats24h;
+  if (flow) {
+    const shortTerm = meta.stats5m || meta.stats1h;
+    const buys = shortTerm?.numBuys;
+    const sells = shortTerm?.numSells;
+    const orgBuyers = shortTerm?.numOrganicBuyers;
+    const netBuyers = shortTerm?.numNetBuyers;
+    const buyVol = shortTerm?.buyVolume;
+    const sellVol = shortTerm?.sellVolume;
+    if (buys !== undefined || sells !== undefined) flowLines.push(`Buys/Sells: ${buys ?? '–'}/${sells ?? '–'}`);
+    if (buyVol !== undefined || sellVol !== undefined)
+      flowLines.push(`Buy/Sell Vol: ${buyVol?.toFixed(2) ?? '–'}/${sellVol?.toFixed(2) ?? '–'}`);
+    if (orgBuyers !== undefined || netBuyers !== undefined)
+      flowLines.push(`Organic/Net Buyers: ${orgBuyers ?? '–'}/${netBuyers ?? '–'}`);
+  }
 
   // Build social links
   let socialLinks = '';
@@ -141,7 +181,15 @@ ${icon} *${name}* (${symbol}) · ${chain}
 
 *Market*
 • Vol 24h: ${volume}   • LP: ${lp}   • Supply: ${supply}
-• 1h: ${change1h}   • 24h: ${change24h}   • ATH: ${ath}
+• FDV: ${fdv}   • Holders: ${holders}   • ATH: ${ath}
+• 5m: ${change5m}   • 1h: ${change1h}   • 24h: ${change24h}
+
+*Flow*
+${flowLines.length ? flowLines.join('\n') : 'No recent flow data'}
+
+*Security*
+${auditLines.length ? auditLines.join('\n') : 'No audit signals'}
+• Organic: ${organic}   • Verified: ${meta.isVerified ? '✅' : '—'}
 
 *Source* • ${groupName} · @${userName}
 ${socialLinks}
@@ -168,13 +216,49 @@ export const generateDuplicateSignalCard = (
   const entryMcVal = firstSignal.entryMarketCap ?? (firstSignal.entryPrice && firstSignal.entrySupply ? firstSignal.entryPrice * firstSignal.entrySupply : null);
   const mcChange = calcPercentDelta(currentMcVal, entryMcVal);
   const supply = meta.supply ? meta.supply.toLocaleString(undefined, { maximumFractionDigits: 2 }) : 'N/A';
-  const volume = formatNumber(meta.volume24h);
+  const vol24 =
+    meta.volume24h ??
+    (meta.stats24h && (meta.stats24h.buyVolume || meta.stats24h.sellVolume)
+      ? (meta.stats24h.buyVolume || 0) + (meta.stats24h.sellVolume || 0)
+      : undefined);
+  const volume = formatNumber(vol24);
   const lp = formatNumber(meta.liquidity);
-  const change1h = formatPercent(meta.priceChange1h);
+  const change5m = formatPercent(meta.priceChange5m ?? meta.stats5m?.priceChange);
+  const change1h = formatPercent(meta.priceChange1h ?? meta.stats1h?.priceChange);
+  const change24h = formatPercent(meta.priceChange24h ?? meta.stats24h?.priceChange);
   const icon = meta.image ? `[🖼️ Icon](${meta.image})` : 'N/A';
   const chain = meta.chain || 'Solana';
   const name = meta.name || 'Unknown';
   const symbol = meta.symbol || 'N/A';
+  const holders = meta.holderCount ? meta.holderCount.toLocaleString() : 'N/A';
+  const fdv = meta.fdv ? formatNumber(meta.fdv) : 'N/A';
+  const auditLines: string[] = [];
+  if (meta.audit) {
+    if (meta.audit.topHoldersPercentage !== undefined) auditLines.push(`Top Holders: ${meta.audit.topHoldersPercentage.toFixed(2)}%`);
+    if (meta.audit.devBalancePercentage !== undefined) auditLines.push(`Dev Balance: ${meta.audit.devBalancePercentage.toFixed(2)}%`);
+    if (meta.audit.devMigrations !== undefined) auditLines.push(`Dev Migrations: ${meta.audit.devMigrations}`);
+    if (meta.audit.mintAuthorityDisabled !== undefined)
+      auditLines.push(`Mint Auth: ${meta.audit.mintAuthorityDisabled ? '✅ disabled' : '⚠️ enabled'}`);
+    if (meta.audit.freezeAuthorityDisabled !== undefined)
+      auditLines.push(`Freeze Auth: ${meta.audit.freezeAuthorityDisabled ? '✅ disabled' : '⚠️ enabled'}`);
+    if (meta.audit.isSus !== undefined) auditLines.push(`Risk: ${meta.audit.isSus ? '⚠️ Suspicious' : '✅ Clean'}`);
+  }
+  const flowLines: string[] = [];
+  const flow = meta.stats1h || meta.stats5m || meta.stats24h;
+  if (flow) {
+    const shortTerm = meta.stats5m || meta.stats1h;
+    const buys = shortTerm?.numBuys;
+    const sells = shortTerm?.numSells;
+    const orgBuyers = shortTerm?.numOrganicBuyers;
+    const netBuyers = shortTerm?.numNetBuyers;
+    const buyVol = shortTerm?.buyVolume;
+    const sellVol = shortTerm?.sellVolume;
+    if (buys !== undefined || sells !== undefined) flowLines.push(`Buys/Sells: ${buys ?? '–'}/${sells ?? '–'}`);
+    if (buyVol !== undefined || sellVol !== undefined)
+      flowLines.push(`Buy/Sell Vol: ${buyVol?.toFixed(2) ?? '–'}/${sellVol?.toFixed(2) ?? '–'}`);
+    if (orgBuyers !== undefined || netBuyers !== undefined)
+      flowLines.push(`Organic/Net Buyers: ${orgBuyers ?? '–'}/${netBuyers ?? '–'}`);
+  }
 
   return `
 🔁 *CA POSTED AGAIN*
@@ -186,7 +270,14 @@ ${icon} *${name}* (${symbol}) · ${chain}
 
 *Market*
 • Vol 24h: ${volume}   • LP: ${lp}   • Supply: ${supply}
-• 1h: ${change1h}
+• FDV: ${fdv}   • Holders: ${holders}
+• 5m: ${change5m}   • 1h: ${change1h}   • 24h: ${change24h}
+
+*Flow*
+${flowLines.length ? flowLines.join('\n') : 'No recent flow data'}
+
+*Security*
+${auditLines.length ? auditLines.join('\n') : 'No audit signals'}
 
 *First Mention* • ${firstGroupName} • ${firstSignal.detectedAt.toLocaleString()}
 *This Mention*  • ${currentGroupName} • @${currentUserName}

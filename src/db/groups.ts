@@ -151,8 +151,11 @@ export const getDestinationGroups = async (ownerTelegramId: bigint) => {
     return prisma.group.findMany({
       where: { 
         ownerId,
-        type: 'destination', 
-        isActive: true 
+        isActive: true,
+        OR: [
+          { type: 'destination' },
+          { type: null },
+        ],
       },
       orderBy: { createdAt: 'desc' },
     });

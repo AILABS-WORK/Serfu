@@ -4,6 +4,7 @@ import { logger } from '../../utils/logger';
 import { getAllGroups, getGroupByChatId } from '../../db/groups';
 import { getAllUsers } from '../../db/users';
 import { subDays } from 'date-fns';
+import { provider } from '../../providers';
 
 export const handleAnalyticsCommand = async (ctx: Context) => {
   try {
@@ -22,6 +23,9 @@ export const handleAnalyticsCommand = async (ctx: Context) => {
           [
             { text: '🚀 Earliest Callers', callback_data: 'analytics_earliest' },
             { text: '🔁 Cross-Group Confirms', callback_data: 'analytics_confirms' },
+          ],
+          [
+            { text: '📜 Recent Calls', callback_data: 'analytics_recent' },
           ],
         ],
       },
@@ -434,6 +438,55 @@ export const handleCrossGroupConfirms = async (ctx: Context) => {
   } catch (error) {
     logger.error('Error in cross-group confirmations:', error);
     ctx.reply('Error computing cross-group confirmations.');
+  }
+};
+
+export const handleRecentCalls = async (ctx: Context) => {
+  try {
+    const ownerTelegramId = ctx.from?.id ? BigInt(ctx.from.id) : null;
+    if (!ownerTelegramId) return ctx.reply('❌ Unable to identify user.');
+
+    const signals = await prisma.signal.findMany({
+      where: {
+        group: { owner: { userId: ownerTelegramId } },
+      },
+      orderBy: { detectedAt: 'desc' },
+      take: 6,
+      include: {
+        group: true,
+      },
+    });
+
+    if (signals.length === 0) {
+      return ctx.reply('No signals yet in your workspace.');
+    }
+
+    let message = '📜 *Recent Calls (live multiples)*\n\n';
+    for (const sig of signals) {
+      let currentPrice: number | null = null;
+      try {
+        const quote = await provider.getQuote(sig.mint);
+        currentPrice = quote.price;
+      } catch (err) {
+        logger.debug(`Recent calls quote failed for ${sig.mint}:`, err);
+      }
+
+      const entryPrice = sig.entryPrice || null;
+      const multiple = currentPrice && entryPrice ? currentPrice / entryPrice : null;
+      const entryMc = sig.entryMarketCap ?? (sig.entryPrice && sig.entrySupply ? sig.entryPrice * sig.entrySupply : null);
+      const currentMc = currentPrice && sig.entrySupply ? currentPrice * sig.entrySupply : null;
+
+      message += `• *${sig.name || sig.symbol || sig.mint}* (${sig.symbol || 'N/A'})\n`;
+      message += `  Group: ${sig.group?.name || sig.group?.chatId || 'N/A'}\n`;
+      message += `  Entry: $${entryPrice ? entryPrice.toFixed(6) : 'Pending'} | Current: ${currentPrice ? `$${currentPrice.toFixed(6)}` : 'N/A'}\n`;
+      message += `  Multiple: ${multiple ? `${multiple.toFixed(2)}x` : 'N/A'} | MC: ${entryMc ? `$${entryMc.toFixed(2)}` : 'N/A'} → ${currentMc ? `$${currentMc.toFixed(2)}` : 'N/A'}\n`;
+      message += `  Mint: \`${sig.mint}\`\n\n`;
+    }
+
+    await ctx.reply(message.trim(), { parse_mode: 'Markdown' });
+  } catch (error) {
+    logger.error('Error loading recent calls:', error);
+    ctx.reply('Error loading recent calls.');
   }
 };
 
