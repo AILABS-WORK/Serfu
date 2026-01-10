@@ -113,7 +113,7 @@ export const forwardSignalToDestination = async (signal: Signal) => {
         message = `🆕 *NEW GROUP MENTION*\n\n` + message;
       } else {
         // First time seeing this CA in ANY of owner's groups
-        message = generateFirstSignalCard(signal, metaWithLive, groupName, userName);
+        message = await generateFirstSignalCard(signal, metaWithLive, groupName, userName);
       }
 
       keyboard = {
@@ -121,6 +121,9 @@ export const forwardSignalToDestination = async (signal: Signal) => {
           [
             { text: '📈 Chart', callback_data: `chart:${signal.id}` },
             { text: '📊 Stats', callback_data: `stats:${signal.id}` },
+          ],
+          [
+            { text: '🐋 Analyze Holders', callback_data: `analyze_holders:${signal.id}` },
           ],
           [
             { text: '🔍 View Source', callback_data: `source:${signal.id}` },

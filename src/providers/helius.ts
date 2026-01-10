@@ -216,4 +216,28 @@ export class HeliusProvider implements MarketDataProvider {
   async getOHLCV(mint: string, timeframe: string, start: number, end: number): Promise<OHLCV[] | null> {
     return null;
   }
+
+  // --- NEW: Wallet Asset Analysis ---
+  async getWalletAssets(ownerAddress: string): Promise<any[]> {
+    try {
+      if (!this.helius) {
+        await this.initHelius();
+      }
+      
+      const response = await this.helius.rpc.getAssetsByOwner({
+        ownerAddress,
+        page: 1,
+        limit: 100, // Check top 100 assets
+        displayOptions: {
+          showFungible: true,
+          showNativeBalance: true,
+        },
+      });
+
+      return response.items || [];
+    } catch (error) {
+      logger.error(`Error fetching assets for ${ownerAddress}:`, error);
+      return [];
+    }
+  }
 }

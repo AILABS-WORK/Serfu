@@ -111,12 +111,15 @@ export const notifySignal = async (
       };
     } else if (metaWithLive) {
       // Generate rich first signal card
-      message = generateFirstSignalCard(signal, metaWithLive, groupName, userName);
+      message = await generateFirstSignalCard(signal, metaWithLive, groupName, userName);
       keyboard = {
         inline_keyboard: [
           [
             { text: '📈 Chart', callback_data: `chart:${signal.id}` },
             { text: '📊 Stats', callback_data: `stats:${signal.id}` },
+          ],
+          [
+            { text: '🐋 Analyze Holders', callback_data: `analyze_holders:${signal.id}` },
           ],
           [
             { text: '⭐ Watchlist', callback_data: `watchlist:${signal.id}` },
@@ -143,6 +146,9 @@ export const notifySignal = async (
           [
             { text: '📈 Chart', callback_data: `chart:${signal.id}` },
             { text: '📊 Stats', callback_data: `stats:${signal.id}` },
+          ],
+          [
+            { text: '🐋 Analyze Holders', callback_data: `analyze_holders:${signal.id}` },
           ],
           [
             { text: '⭐ Watchlist', callback_data: `watchlist:${signal.id}` },
