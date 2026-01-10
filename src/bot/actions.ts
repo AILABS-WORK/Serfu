@@ -11,6 +11,7 @@ import {
   handleEarliestCallers,
   handleCrossGroupConfirms,
   handleRecentCalls,
+  handleRefreshMetrics,
 } from './commands/analytics';
 import { handleGroupsCommand } from './commands/groups';
 import { handleSettingsCommand, setHomeChat, setTtl, toggleHideForChat, toggleHomeFirst, toggleHomeRepost, toggleMcAlerts, togglePriceAlerts } from './commands/settings';
@@ -252,6 +253,12 @@ Current vs Entry: ${(m.currentMultiple * 100).toFixed(1)}%
 
   // Analytics Actions
   bot.action('analytics', handleAnalyticsCommand);
+  
+  bot.action('analytics_refresh', async (ctx) => {
+    await ctx.answerCbQuery();
+    await handleRefreshMetrics(ctx);
+  });
+
   bot.action('leaderboards_menu', async (ctx) => {
     await ctx.answerCbQuery();
     await ctx.reply('🏆 *Select Leaderboard*', {

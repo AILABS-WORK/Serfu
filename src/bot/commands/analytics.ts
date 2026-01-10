@@ -5,9 +5,14 @@ import { getAllGroups, getGroupByChatId } from '../../db/groups';
 import { subDays } from 'date-fns';
 import { provider } from '../../providers';
 import { getGroupStats, getUserStats, getLeaderboard, EntityStats } from '../../analytics/aggregator';
+import { updateHistoricalMetrics } from '../../jobs/historicalMetrics';
 
 export const handleAnalyticsCommand = async (ctx: Context) => {
   try {
+    // Trigger background update if requested or maybe just always async update?
+    // Let's not block the UI but start an update if it hasn't run recently.
+    // For now, we rely on the job.
+    
     await ctx.reply('📊 *Analytics Dashboard*', {
       parse_mode: 'Markdown',
       reply_markup: {
@@ -24,6 +29,9 @@ export const handleAnalyticsCommand = async (ctx: Context) => {
             { text: '🚀 Earliest Callers', callback_data: 'analytics_earliest' },
             { text: '🔁 Cross-Group Confirms', callback_data: 'analytics_confirms' },
           ],
+          [
+            { text: '🔄 Refresh Metrics', callback_data: 'analytics_refresh' },
+          ]
         ],
       },
     });
@@ -53,14 +61,12 @@ const formatEntityStats = (stats: EntityStats, type: 'GROUP' | 'USER'): string =
   return msg;
 };
 
+// ... existing handler code ...
+
 export const handleGroupStatsCommand = async (ctx: Context, groupIdStr?: string) => {
   try {
     const userId = ctx.from?.id ? BigInt(ctx.from.id) : null;
     if (!userId) return ctx.reply('❌ Unable to identify user.');
-
-    // Logic: If groupIdStr is provided (from button), use it.
-    // If not, check if command is used inside a group.
-    // If user is in private chat and no ID, prompt/fail.
 
     let targetGroupId: number | null = null;
     if (groupIdStr) {
@@ -74,7 +80,7 @@ export const handleGroupStatsCommand = async (ctx: Context, groupIdStr?: string)
       return ctx.reply('Please use this command in a group or select one from the menu.');
     }
 
-    const stats = await getGroupStats(targetGroupId, 'ALL'); // Default to ALL time for overview
+    const stats = await getGroupStats(targetGroupId, 'ALL');
     if (!stats) {
       return ctx.reply('Group not found or no data available.');
     }
@@ -104,7 +110,6 @@ export const handleGroupStatsCommand = async (ctx: Context, groupIdStr?: string)
 export const handleUserStatsCommand = async (ctx: Context, userIdStr?: string) => {
   try {
     if (!userIdStr) {
-        // If called without arg, show own stats
         const user = await prisma.user.findUnique({ where: { userId: BigInt(ctx.from!.id) }});
         if (user) userIdStr = user.id.toString();
         else return ctx.reply("You are not registered in the system yet.");
@@ -313,6 +318,10 @@ export const handleRecentCalls = async (ctx: Context) => {
     const ownerTelegramId = ctx.from?.id ? BigInt(ctx.from.id) : null;
     if (!ownerTelegramId) return ctx.reply('❌ Unable to identify user.');
 
+    // Trigger update for active signals in background
+    // Don't await this to keep UI responsive
+    updateHistoricalMetrics().catch(err => logger.error('Background metric update failed:', err));
+
     const signals = await prisma.signal.findMany({
       where: {
         group: { owner: { userId: ownerTelegramId } },
@@ -364,4 +373,15 @@ export const handleRecentCalls = async (ctx: Context) => {
     logger.error('Error loading recent calls:', error);
     ctx.reply('Error loading recent calls.');
   }
+};
+
+export const handleRefreshMetrics = async (ctx: Context) => {
+    try {
+        await ctx.reply('🔄 Refreshing historical metrics... This may take a moment.');
+        await updateHistoricalMetrics();
+        await ctx.reply('✅ Metrics refreshed. Check Leaderboards or Stats again.');
+    } catch (error) {
+        logger.error('Manual refresh failed:', error);
+        ctx.reply('❌ Refresh failed.');
+    }
 };
