@@ -16,6 +16,7 @@ const sentAlerts = new Map<number, Set<string>>(); // signalId -> Set of alert k
 export const checkPriceAlerts = async () => {
   try {
     // Get all active signals with entry prices
+    // Optimized to fetch related data once
     const activeSignals = await prisma.signal.findMany({
       where: {
         trackingStatus: 'ACTIVE',
@@ -58,16 +59,13 @@ export const checkPriceAlerts = async () => {
         const athPrice = isNewAth ? currentPrice : currentAth;
         const athMultiple = athPrice / signal.entryPrice;
         
-        // Approx drawdown from entry (v1) or from ATH if we had granular history
-        // For now, track max drawdown from entry as simple negative %
-        // Or if we want Drawdown from ATH: (Current - ATH) / ATH
-        // PRD usually implies max drawdown experienced. 
-        // Let's stick to simple: Lowest point seen vs Entry.
-        // We don't have full tick history here, so we update maxDrawdown if current < previous maxDrawdown
-        // Actually maxDrawdown is usually "Max loss from peak".
-        // Let's store "Max Drawdown from Entry" for simplicity in this MVP iteration.
-        // If currentPrice < entryPrice, calculate % loss.
+        // Calculate Drawdown
+        // Drawdown logic: Calculate the lowest point relative to ENTRY price (simple version)
+        // (Current - Entry) / Entry
         const currentDrawdown = (currentPrice - signal.entryPrice) / signal.entryPrice;
+        
+        // Stored max drawdown is usually the lowest number (e.g. -0.5 is lower than -0.2)
+        // We initialize maxDrawdown to 0. If currentDrawdown is -0.1, it becomes new max.
         const storedDrawdown = metrics?.maxDrawdown || 0;
         const maxDrawdown = currentDrawdown < storedDrawdown ? currentDrawdown : storedDrawdown;
 
@@ -97,7 +95,7 @@ export const checkPriceAlerts = async () => {
         const settings = signal.user?.notificationSettings || 
                         signal.group?.owner?.notificationSettings;
 
-        if (!settings) continue; // No settings, skip
+        if (!settings) continue; // No settings, skip alerts but metrics updated
 
         // Ensure alert set
         if (!sentAlerts.has(signal.id)) {
@@ -108,11 +106,13 @@ export const checkPriceAlerts = async () => {
         // Price thresholds
         for (const threshold of PRICE_MULTIPLIERS) {
           const key = `price_${threshold}`;
+          // Check if multiplier >= threshold AND we haven't sent this alert yet
           if (multiplier >= threshold && !sentKeys.has(key)) {
             const alertEnabled = getAlertEnabled(settings, threshold, 'price');
             if (alertEnabled) {
               await sendPriceAlert(signal, threshold, currentPrice, multiplier);
             }
+            // Mark as sent regardless of enabled status to avoid re-checking logic
             sentKeys.add(key);
           }
         }
@@ -208,7 +208,7 @@ const sendPriceAlert = async (
 *Multiplier:* ${multiplier.toFixed(2)}x
 
 [View on Solscan](https://solscan.io/token/${signal.mint})
-    `;
+    `.trim();
 
     // Send to destination groups if enabled
     if (settings.notifyDestination && signal.group?.owner?.userId) {
@@ -272,7 +272,7 @@ const sendMcAlert = async (
 *Multiplier:* ${info.multiplier.toFixed(2)}x
 
 [View on Solscan](https://solscan.io/token/${signal.mint})
-    `;
+    `.trim();
 
     // Send to destination groups if enabled
     if (settings.notifyDestination && signal.group?.owner?.userId) {
@@ -325,4 +325,3 @@ const sendMcAlert = async (
     logger.error(`Error sending MC alert:`, error);
   }
 };
-
