@@ -7,16 +7,25 @@ export interface EntityStats {
   totalSignals: number;
   avgMultiple: number; // e.g. 3.5x
   winRate: number; // % of signals > 2x
+  winRate5x: number; // % of signals > 5x
   bestCall: {
     mint: string;
     symbol: string;
     multiple: number;
   } | null;
   avgDrawdown: number;
+  avgTimeToAth: number; // in minutes
   score: number; // Reliability score
 }
 
 type TimeFrame = '7D' | '30D' | 'ALL';
+
+// Type alias for signal with metrics loaded (and optional relations allowed)
+type SignalWithMetrics = Signal & { 
+  metrics: SignalMetric | null;
+  // Allow other relations to pass through
+  [key: string]: any; 
+};
 
 const getDateFilter = (timeframe: TimeFrame) => {
   const now = new Date();
@@ -25,7 +34,7 @@ const getDateFilter = (timeframe: TimeFrame) => {
   return new Date(0); // ALL
 };
 
-const calculateStats = (signals: (Signal & { metrics: SignalMetric | null })[]): EntityStats => {
+const calculateStats = (signals: SignalWithMetrics[]): EntityStats => {
   if (!signals.length) {
     return {
       id: 0,
@@ -33,15 +42,20 @@ const calculateStats = (signals: (Signal & { metrics: SignalMetric | null })[]):
       totalSignals: 0,
       avgMultiple: 0,
       winRate: 0,
+      winRate5x: 0,
       bestCall: null,
       avgDrawdown: 0,
+      avgTimeToAth: 0,
       score: 0
     };
   }
 
   let totalMult = 0;
   let wins = 0;
+  let wins5x = 0;
   let totalDrawdown = 0;
+  let totalTime = 0; // minutes
+  let timeCount = 0;
   let bestSignal: any = null;
   let maxMult = 0;
 
@@ -52,6 +66,7 @@ const calculateStats = (signals: (Signal & { metrics: SignalMetric | null })[]):
     const mult = s.metrics.athMultiple || 0;
     totalMult += mult;
     if (mult > 2) wins++;
+    if (mult > 5) wins5x++;
     if (mult > maxMult) {
       maxMult = mult;
       bestSignal = s;
@@ -59,19 +74,36 @@ const calculateStats = (signals: (Signal & { metrics: SignalMetric | null })[]):
 
     // Drawdown (stored as negative decimal e.g. -0.4)
     totalDrawdown += s.metrics.maxDrawdown || 0;
+
+    // Time to ATH
+    // We compare detectedAt (signal creation) with athAt
+    if (s.metrics.athAt && s.detectedAt) {
+      const diffMs = new Date(s.metrics.athAt).getTime() - new Date(s.detectedAt).getTime();
+      if (diffMs > 0) {
+        totalTime += diffMs / (1000 * 60); // minutes
+        timeCount++;
+      }
+    }
   }
 
   const count = signals.length;
   const avgMultiple = count ? totalMult / count : 0;
   const winRate = count ? wins / count : 0;
+  const winRate5x = count ? wins5x / count : 0;
   const avgDrawdown = count ? totalDrawdown / count : 0; // e.g. -0.25
+  const avgTimeToAth = timeCount ? totalTime / timeCount : 0;
 
-  // Simple Score: (WinRate * 50) + (AvgMult * 10) - (Drawdown * 10)
-  // WinRate 0.5 -> 25
-  // AvgMult 3x -> 30
-  // Drawdown -0.3 -> +3 (minus negative)
-  // Total ~ 58
-  const score = (winRate * 50) + (avgMultiple * 10) - (avgDrawdown * 100);
+  // Improved Score: 
+  // Base: WinRate * 40
+  // Bonus: AvgMult * 5
+  // Bonus: WinRate5x * 20 (reward moonshots)
+  // Penalty: Drawdown * 50 (punish rekt calls heavily)
+  // WinRate 0.5 -> 20
+  // WinRate5x 0.1 -> 2
+  // AvgMult 3x -> 15
+  // Drawdown -0.3 -> +15
+  // Total ~ 52
+  const score = (winRate * 40) + (winRate5x * 20) + (avgMultiple * 5) - (avgDrawdown * 50);
 
   return {
     id: 0, // Placeholder
@@ -79,7 +111,9 @@ const calculateStats = (signals: (Signal & { metrics: SignalMetric | null })[]):
     totalSignals: count,
     avgMultiple,
     winRate,
+    winRate5x,
     avgDrawdown,
+    avgTimeToAth,
     bestCall: bestSignal ? {
       mint: bestSignal.mint,
       symbol: bestSignal.symbol || 'Unknown',
@@ -97,7 +131,7 @@ export const getGroupStats = async (groupId: number, timeframe: TimeFrame): Prom
   const signals = await prisma.signal.findMany({
     where: {
       groupId,
-      createdAt: { gte: since },
+      detectedAt: { gte: since },
       metrics: { isNot: null }
     },
     include: { metrics: true }
@@ -118,7 +152,7 @@ export const getUserStats = async (userId: number, timeframe: TimeFrame): Promis
   const signals = await prisma.signal.findMany({
     where: {
       userId,
-      createdAt: { gte: since },
+      detectedAt: { gte: since },
       metrics: { isNot: null }
     },
     include: { metrics: true }
@@ -142,7 +176,7 @@ export const getLeaderboard = async (
   // 1. Fetch all signals in window with metrics
   const signals = await prisma.signal.findMany({
     where: {
-      createdAt: { gte: since },
+      detectedAt: { gte: since },
       metrics: { isNot: null }
     },
     include: { metrics: true, group: true, user: true }
@@ -186,4 +220,3 @@ export const getLeaderboard = async (
     return b.score - a.score;
   }).slice(0, limit);
 };
-

@@ -38,7 +38,9 @@ const formatEntityStats = (stats: EntityStats, type: 'GROUP' | 'USER'): string =
   msg += `*Overall Performance*\n`;
   msg += `Signals: \`${stats.totalSignals}\`\n`;
   msg += `Win Rate (>2x): \`${(stats.winRate * 100).toFixed(1)}%\`\n`;
+  msg += `Win Rate (>5x): \`${(stats.winRate5x * 100).toFixed(1)}%\`\n`;
   msg += `Avg ATH: \`${stats.avgMultiple.toFixed(2)}x\`\n`;
+  msg += `Avg Time to ATH: \`${stats.avgTimeToAth.toFixed(0)} min\`\n`;
   msg += `Avg Drawdown: \`${(stats.avgDrawdown * 100).toFixed(1)}%\`\n`;
   msg += `Reliability Score: \`${stats.score.toFixed(0)}\`\n\n`;
 
