@@ -321,7 +321,8 @@ export const handleRecentCalls = async (ctx: Context) => {
       take: 6,
       include: {
         group: true,
-        metrics: true, // Fetch metrics
+        user: true, // Include user relation
+        metrics: true, 
       },
     });
 
@@ -347,8 +348,12 @@ export const handleRecentCalls = async (ctx: Context) => {
       const athMult = sig.metrics?.athMultiple ?? multiple ?? 1;
       const drawdown = sig.metrics?.maxDrawdown ?? 0;
 
+      // User name
+      const callerName = sig.user?.username || sig.user?.firstName || 'Unknown';
+
       message += `• *${sig.name || sig.symbol || sig.mint}* (${sig.symbol || 'N/A'})\n`;
       message += `  Group: ${sig.group?.name || sig.group?.chatId || 'N/A'}\n`;
+      message += `  Caller: @${callerName}\n`;
       message += `  Entry: $${entryPrice ? entryPrice.toFixed(6) : 'Pending'} | Cur: ${multiple ? `${multiple.toFixed(2)}x` : 'N/A'}\n`;
       message += `  ATH: \`${athMult.toFixed(2)}x\` | DD: \`${(drawdown * 100).toFixed(0)}%\`\n`;
       message += `  Mint: \`${sig.mint}\`\n\n`;
