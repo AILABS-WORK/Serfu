@@ -1,4 +1,4 @@
-import { Signal } from '@prisma/client';
+import { Signal, Prisma } from '../generated/client';
 import { getBotInstance } from './instance';
 import { logger } from '../utils/logger';
 import { prisma } from '../db';

@@ -1,5 +1,5 @@
 import { prisma } from './index';
-import { Prisma } from '@prisma/client';
+import { Prisma } from '../generated/client';
 
 export type UserCreateInput = Prisma.UserCreateInput;
 

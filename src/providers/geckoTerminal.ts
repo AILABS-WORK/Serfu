@@ -1,7 +1,8 @@
 import axios from 'axios';
 import { logger } from '../utils/logger';
 
-const BASE_URL = 'https://api.geckoterminal.com/api/v2';
+const GECKO_BASE_URL = 'https://api.geckoterminal.com/api/v2';
+const DEXSCREENER_BASE_URL = 'https://api.dexscreener.com/latest/dex/tokens';
 
 export interface OHLCV {
   timestamp: number;
@@ -15,20 +16,23 @@ export interface OHLCV {
 export class GeckoTerminalProvider {
   /**
    * Fetch OHLCV data for a token on Solana
+   * Hybrid approach: GeckoTerminal lookup -> DexScreener lookup -> GeckoTerminal OHLCV
    * @param mint Token mint address
    * @param timeframe 'day', 'hour', 'minute'
    * @param limit Number of candles (max 1000)
    */
   async getOHLCV(mint: string, timeframe: 'day' | 'hour' | 'minute' = 'hour', limit = 100): Promise<OHLCV[]> {
     try {
-      // GeckoTerminal uses pool addresses for OHLCV, but also supports token lookups in some endpoints.
-      // However, /tokens/{address}/ohlcv is not a standard documented endpoint, usually it's /pools/{address}/ohlcv.
-      // We first need to find the top pool for the token.
+      let poolAddress = await this.getTopPool(mint);
       
-      const poolAddress = await this.getTopPool(mint);
+      // Fallback to DexScreener if Gecko lookup fails
+      if (!poolAddress) {
+        poolAddress = await this.getPoolFromDexScreener(mint);
+      }
+
       if (!poolAddress) return [];
 
-      const url = `${BASE_URL}/networks/solana/pools/${poolAddress}/ohlcv/${timeframe}`;
+      const url = `${GECKO_BASE_URL}/networks/solana/pools/${poolAddress}/ohlcv/${timeframe}`;
       const response = await axios.get(url, {
         params: { limit }
       });
@@ -46,10 +50,13 @@ export class GeckoTerminalProvider {
         low: item[3],
         close: item[4],
         volume: item[5]
-      }));
+      })).reverse(); // Gecko returns newest first, we usually want chronological? 
+      // Actually standard is often newest first or oldest first. 
+      // Let's return Chronological (Oldest -> Newest) for easier processing logic.
+      // Gecko returns [Newest, ..., Oldest]. So reverse() makes it [Oldest, ..., Newest].
 
     } catch (error) {
-      logger.error(`GeckoTerminal OHLCV error for ${mint}:`, error);
+      // logger.error(`GeckoTerminal OHLCV error for ${mint}:`, error);
       return [];
     }
   }
@@ -57,7 +64,7 @@ export class GeckoTerminalProvider {
   private async getTopPool(mint: string): Promise<string | null> {
     try {
       // Endpoint to get pools for a token: /networks/solana/tokens/{token_address}/pools
-      const url = `${BASE_URL}/networks/solana/tokens/${mint}/pools`;
+      const url = `${GECKO_BASE_URL}/networks/solana/tokens/${mint}/pools`;
       const response = await axios.get(url, {
         params: { page: 1, limit: 1 } // Get top 1 pool
       });
@@ -68,11 +75,25 @@ export class GeckoTerminalProvider {
       }
       return null;
     } catch (error) {
-      // logger.warn(`GeckoTerminal pool lookup failed for ${mint}`);
+      return null;
+    }
+  }
+
+  private async getPoolFromDexScreener(mint: string): Promise<string | null> {
+    try {
+      const url = `${DEXSCREENER_BASE_URL}/${mint}`;
+      const response = await axios.get(url);
+      const pairs = response.data?.pairs;
+      
+      if (pairs && pairs.length > 0) {
+        // Return the address of the most liquid pair
+        return pairs[0].pairAddress;
+      }
+      return null;
+    } catch (error) {
       return null;
     }
   }
 }
 
 export const geckoTerminal = new GeckoTerminalProvider();
-

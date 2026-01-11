@@ -1,5 +1,5 @@
 import { prisma } from '../db';
-import { Signal, SignalMetric } from '@prisma/client';
+import { Prisma, Signal, SignalMetric } from '../generated/client';
 
 export interface EntityStats {
   id: number;

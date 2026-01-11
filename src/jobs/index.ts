@@ -27,3 +27,5 @@ export const startJobs = () => {
   logger.info('Background jobs started (Price Alerts: 1m, Historical Metrics: 30m)');
 };
 
+
+
