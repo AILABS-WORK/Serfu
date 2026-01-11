@@ -14,7 +14,9 @@ export class SolanaProvider {
   private connection: Connection;
 
   constructor() {
-    this.connection = new Connection(RPC_URL);
+    this.connection = new Connection(process.env.HELIUS_API_KEY 
+      ? `https://mainnet.helius-rpc.com/?api-key=${process.env.HELIUS_API_KEY}`
+      : RPC_URL);
   }
 
   async getTopHolders(mintAddress: string, limit: number = 10): Promise<TokenHolderInfo[]> {

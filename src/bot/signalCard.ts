@@ -115,13 +115,13 @@ export const generateFirstSignalCard = async (
   
   try {
     const { solana } = await import('../providers/solana');
-    const holders = await solana.getTopHolders(signal.mint, 5); // Get top 5 for display
+    const holders = await solana.getTopHolders(signal.mint, 10); // Get top 10 for display
     
     if (holders.length > 0) {
         topHoldersText = '\n👑 *TOP HOLDERS*\n';
-        holders.forEach(h => {
-            topHoldersText += `${h.rank}. \`${h.percentage.toFixed(2)}%\` (${h.address.slice(0, 4)}..${h.address.slice(-4)})\n`;
-        });
+        // Display top 10 inline
+        const percentages = holders.map(h => `\`${h.percentage.toFixed(1)}%\``).join(', ');
+        topHoldersText += `${percentages}\n`;
     }
 
     // Run deep analysis (Whale Cross-Check)
