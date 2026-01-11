@@ -242,7 +242,7 @@ export class HeliusProvider implements MarketDataProvider {
   }
 
   // --- NEW: Transaction History Analysis ---
-  async getWalletHistory(address: string, limit: number = 50): Promise<any[]> {
+  async getWalletHistory(address: string, limit: number = 100): Promise<any[]> {
       try {
           if (!this.helius) {
               await this.initHelius();

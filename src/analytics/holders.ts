@@ -114,9 +114,12 @@ export interface PortfolioSummary {
   }[];
   bestTrades: {
     token: string;
-    type: 'BUY' | 'SELL';
-    amountUsd: number;
-    date: string;
+    symbol: string;
+    buyUsd: number;
+    sellUsd: number;
+    pnl: number;
+    pnlPercent: number;
+    lastTradeDate: string;
   }[];
   totalValueUsd?: number;
 }
@@ -171,63 +174,93 @@ export const getDeepHolderAnalysis = async (mint: string): Promise<PortfolioSumm
 
       notable.sort((a, b) => (b.valueUsd || 0) - (a.valueUsd || 0));
 
-      // B. Analyze History (Good Trades)
-      const history = await heliusProvider.getWalletHistory(h.address, 50); // Last 50 swaps
-      const bestTrades: any[] = [];
+      // B. Analyze History (Good Trades / PnL)
+      const history = await heliusProvider.getWalletHistory(h.address, 100); // Last 100 swaps
       
-      for (const tx of history) {
-          // Look for large SWAP OUT (Sell) -> "Good Exit"
-          // We want to see if they sold a token for > $10k
-          // Helius enriched tx structure: tokenTransfers array
-          
-          if (tx.type === 'SWAP' && tx.tokenTransfers) {
-              const transfers = tx.tokenTransfers;
-              // Usually 2 transfers: Token -> User (Buy) or User -> Token (Sell)
-              // If User is sender of Token A and receiver of SOL/USDC -> Sell
-              
-              // Simplification: Check if they received > $10k of SOL/USDC
-              const received = transfers.find((t: any) => t.toUserAccount === h.address);
-              const sent = transfers.find((t: any) => t.fromUserAccount === h.address);
-              
-              if (received && sent) {
-                  // Check if received is SOL or Stable
-                  const isStableExit = ['USDC', 'USDT'].includes(received.tokenAmount?.symbol);
-                  const isSolExit = received.mint === 'So11111111111111111111111111111111111111112'; // Approximate check
-                  
-                  if (isStableExit || isSolExit) {
-                      // It's a SELL
-                      const val = received.tokenAmount?.amount * (received.tokenAmount?.price_per_token || 0); // Need price... Helius enriched usually has it?
-                      // If price not available, we can't estimate value easily without historical price. 
-                      // Helius enriched SOMETIMES has raw amount. 
-                      // Assume we might not have historical USD value perfectly.
-                      // But nativeTransfer (SOL) has amount.
-                  }
-              }
+      const tokenStats = new Map<string, { 
+        symbol: string, 
+        buyUsd: number, 
+        sellUsd: number, 
+        lastDate: number 
+      }>();
 
-              // Use nativeTransfers for SOL
-              if (tx.nativeTransfers) {
-                  const solReceived = tx.nativeTransfers.find((t: any) => t.toUserAccount === h.address);
-                  if (solReceived) {
-                      const amountSol = solReceived.amount / 1e9;
-                      // Assume roughly $150/SOL for heuristic or 0
-                      const val = amountSol * 150; 
-                      if (val > 10000) { // Sold for > $10k
-                           // Check what they sold (token transfer out)
-                           const soldToken = tx.tokenTransfers?.find((t: any) => t.fromUserAccount === h.address);
-                           if (soldToken) {
-                               bestTrades.push({
-                                   token: soldToken.mint, // Or symbol if available
-                                   type: 'SELL',
-                                   amountUsd: val,
-                                   date: new Date(tx.timestamp * 1000).toLocaleDateString()
-                               });
-                           }
-                      }
-                  }
-              }
-          }
+      for (const tx of history) {
+        if (tx.type === 'SWAP' && tx.tokenTransfers && tx.timestamp) {
+            const transfers = tx.tokenTransfers;
+            // Determine if BUY or SELL relative to the User (h.address)
+            
+            // Check for outgoing token (Sell)
+            const sent = transfers.find((t: any) => t.fromUserAccount === h.address);
+            // Check for incoming token (Buy)
+            const received = transfers.find((t: any) => t.toUserAccount === h.address);
+
+            // Estimate Value in USD
+            // Priority 1: Check native SOL transfer (if involved)
+            // Priority 2: Check stablecoin transfer
+            let usdValue = 0;
+            
+            if (tx.nativeTransfers) {
+                const solTx = tx.nativeTransfers.find((t: any) => t.fromUserAccount === h.address || t.toUserAccount === h.address);
+                if (solTx) {
+                    usdValue = (solTx.amount / 1e9) * 150; // Approx $150/SOL
+                }
+            }
+
+            // Refine USD Value if stablecoin involved
+            if (sent && ['USDC', 'USDT'].includes(sent.tokenAmount?.symbol)) {
+                usdValue = sent.tokenAmount?.amount || 0;
+            } else if (received && ['USDC', 'USDT'].includes(received.tokenAmount?.symbol)) {
+                usdValue = received.tokenAmount?.amount || 0;
+            }
+
+            if (usdValue === 0) continue; // Can't estimate PnL without USD anchor
+
+            // Case 1: Selling Token A for SOL/Stable
+            if (sent && !['USDC', 'USDT', 'SOL'].includes(sent.tokenAmount?.symbol || '')) {
+                // Selling 'sent.mint'
+                const mint = sent.mint;
+                const stats = tokenStats.get(mint) || { symbol: sent.tokenAmount?.symbol || 'UNK', buyUsd: 0, sellUsd: 0, lastDate: 0 };
+                stats.sellUsd += usdValue;
+                if (tx.timestamp > stats.lastDate) stats.lastDate = tx.timestamp;
+                tokenStats.set(mint, stats);
+            }
+
+            // Case 2: Buying Token B with SOL/Stable
+            if (received && !['USDC', 'USDT', 'SOL'].includes(received.tokenAmount?.symbol || '')) {
+                // Buying 'received.mint'
+                const mint = received.mint;
+                const stats = tokenStats.get(mint) || { symbol: received.tokenAmount?.symbol || 'UNK', buyUsd: 0, sellUsd: 0, lastDate: 0 };
+                stats.buyUsd += usdValue;
+                if (tx.timestamp > stats.lastDate) stats.lastDate = tx.timestamp;
+                tokenStats.set(mint, stats);
+            }
+        }
       }
 
+      // Convert Map to Array and Sort by Profit
+      const trades: any[] = [];
+      tokenStats.forEach((stats, mint) => {
+          if (stats.sellUsd > 1000) { // Only consider significant exits > $1k
+             const pnl = stats.sellUsd - stats.buyUsd;
+             const pnlPercent = stats.buyUsd > 0 ? (pnl / stats.buyUsd) * 100 : 0;
+             
+             // We want "Sold High, Bought Low" => High PnL
+             if (pnl > 500 || (stats.buyUsd > 0 && stats.sellUsd > stats.buyUsd * 2)) {
+                 trades.push({
+                     token: mint,
+                     symbol: stats.symbol,
+                     buyUsd: stats.buyUsd,
+                     sellUsd: stats.sellUsd,
+                     pnl,
+                     pnlPercent,
+                     lastTradeDate: new Date(stats.lastDate * 1000).toLocaleDateString()
+                 });
+             }
+          }
+      });
+
+      // Sort by Realized PnL (desc)
+      trades.sort((a, b) => b.pnl - a.pnl);
 
       summaries.push({
         address: h.address,
@@ -235,7 +268,7 @@ export const getDeepHolderAnalysis = async (mint: string): Promise<PortfolioSumm
         percentage: h.percentage,
         solBalance,
         notableHoldings: notable.slice(0, 3), 
-        bestTrades: bestTrades.slice(0, 2), // Show top 2 big exits
+        bestTrades: trades.slice(0, 3), // Show top 3 best realized trades
         totalValueUsd: totalValue
       });
     }

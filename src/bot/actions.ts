@@ -200,7 +200,7 @@ Source: ${priceSource}
         if (!signal) return ctx.answerCbQuery('Signal not found');
 
         await ctx.answerCbQuery('Deep scanning Top 10 holders...');
-        await ctx.reply('🔍 *Deep Scanning Top 10 Wallets...* \nChecking assets (> $5k) & trading history for big wins...', { parse_mode: 'Markdown' });
+        await ctx.reply('🔍 *Deep Scanning Top 10 Wallets...* \nChecking PnL on recent trades & assets...', { parse_mode: 'Markdown' });
 
         const summaries = await getDeepHolderAnalysis(signal.mint);
 
@@ -225,9 +225,15 @@ Source: ${priceSource}
             
             // Best Trades
             if (s.bestTrades.length > 0) {
-                 report += `   🏆 *Recent Big Wins (> $10k):*\n`;
+                 report += `   🏆 *Best Realized Trades (Recent):*\n`;
                  for (const trade of s.bestTrades) {
-                     report += `      • Sold ${trade.token.slice(0,4)}.. for ~$${Math.round(trade.amountUsd).toLocaleString()}\n`;
+                     const profit = Math.round(trade.pnl).toLocaleString();
+                     const bought = Math.round(trade.buyUsd).toLocaleString();
+                     const sold = Math.round(trade.sellUsd).toLocaleString();
+                     const percent = Math.round(trade.pnlPercent);
+                     
+                     report += `      • ${trade.symbol}: +$${profit} (${percent}%)\n`;
+                     report += `        (In: $${bought} ➔ Out: $${sold})\n`;
                  }
             }
             
