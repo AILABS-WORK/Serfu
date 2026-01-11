@@ -319,32 +319,45 @@ export const handleRecentCalls = async (ctx: Context) => {
     const ownerTelegramId = ctx.from?.id ? BigInt(ctx.from.id) : null;
     if (!ownerTelegramId) return ctx.reply('❌ Unable to identify user.');
 
-    // Trigger update for active signals in background
-    // Don't await this to keep UI responsive
-    updateHistoricalMetrics().catch(err => logger.error('Background metric update failed:', err));
-
-    const signals = await prisma.signal.findMany({
+    // 1. First, fetch the top recent signals to identify what we need to update
+    const recentSignals = await prisma.signal.findMany({
       where: {
         group: { owner: { userId: ownerTelegramId } },
       },
       orderBy: { detectedAt: 'desc' },
       take: 6,
+      select: { id: true, mint: true }
+    });
+
+    if (recentSignals.length === 0) {
+      return ctx.reply('No signals yet in your workspace.');
+    }
+
+    // 2. Notify user we are loading fresh data
+    const loadingMsg = await ctx.reply('⏳ Calculating latest metrics (ATH/DD)... please wait.');
+
+    // 3. Force synchronous update for these specific signals
+    // This ensures we have the latest Bitquery data before displaying
+    try {
+        const signalIds = recentSignals.map(s => s.id);
+        await updateHistoricalMetrics(signalIds);
+    } catch (err) {
+        logger.error('Targeted update failed during recent calls view:', err);
+        // Continue anyway to show what we have
+    }
+
+    // 4. Fetch full data (now with updated metrics)
+    const signals = await prisma.signal.findMany({
+      where: {
+        id: { in: recentSignals.map(s => s.id) }
+      },
+      orderBy: { detectedAt: 'desc' },
       include: {
         group: true,
-        user: true, // Include user relation
+        user: true, 
         metrics: true, 
       },
     });
-
-    if (signals.length > 0) {
-        // Trigger immediate targeted update for these signals
-        const signalIds = signals.map(s => s.id);
-        updateHistoricalMetrics(signalIds).catch(err => logger.error('Targeted update failed:', err));
-    }
-
-    if (signals.length === 0) {
-      return ctx.reply('No signals yet in your workspace.');
-    }
 
     let message = '📜 *Recent Calls*\n\n';
     for (const sig of signals) {
@@ -384,7 +397,14 @@ export const handleRecentCalls = async (ctx: Context) => {
       message += `  Mint: \`${sig.mint}\`\n\n`;
     }
 
-    await ctx.reply(message.trim(), { parse_mode: 'Markdown' });
+    // 5. Update the loading message with the result
+    // We use editMessageText because we sent a text message earlier.
+    // If handleRecentCalls is called via callback, we might want to edit that instead, 
+    // but usually we reply a new message for "Loading...". 
+    // If called via callback (ctx.callbackQuery), we should delete loadingMsg and send new one, or edit loadingMsg.
+    
+    await ctx.telegram.editMessageText(loadingMsg.chat.id, loadingMsg.message_id, undefined, message.trim(), { parse_mode: 'Markdown' });
+    
   } catch (error) {
     logger.error('Error loading recent calls:', error);
     ctx.reply('Error loading recent calls.');
