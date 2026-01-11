@@ -4,7 +4,7 @@
   "main": "index.js",
   "scripts": {
     "dev": "nodemon",
-    "build": "prisma generate && tsc",
+    "build": "prisma generate && tsc && cp -r src/generated/client dist/generated/",
     "start": "prisma migrate deploy && node dist/index.js",
     "start:no-migrate": "node dist/index.js",
     "migrate": "prisma migrate deploy",
