@@ -30,9 +30,22 @@ export const updateHistoricalMetrics = async () => {
         // Let's use 'minute' if < 24h old, 'hour' if older.
         const now = Date.now();
         const ageHours = (now - signal.detectedAt.getTime()) / (1000 * 60 * 60);
-        const timeframe = ageHours > 24 ? 'hour' : 'minute';
-
-        const ohlcv = await geckoTerminal.getOHLCV(signal.mint, timeframe, 1000);
+        
+        // Strategy: Use 'minute' if possible for precision, but switch to 'hour' if signal is older than 16h (1000 mins)
+        // because GeckoTerminal only returns last 1000 candles.
+        let timeframe: 'minute' | 'hour' = ageHours > 16 ? 'hour' : 'minute';
+        let ohlcv = await geckoTerminal.getOHLCV(signal.mint, timeframe, 1000);
+        
+        // Fallback: If we used 'minute' but didn't reach the detection time, switch to 'hour'
+        if (timeframe === 'minute' && ohlcv && ohlcv.length > 0) {
+            const oldestCandle = ohlcv[0];
+            const signalTime = signal.detectedAt.getTime();
+            if (oldestCandle.timestamp > signalTime + 300000) { // Gap > 5 mins
+                 logger.info(`Gap in minute data for ${signal.mint} (Age: ${ageHours.toFixed(1)}h), switching to hourly...`);
+                 timeframe = 'hour';
+                 ohlcv = await geckoTerminal.getOHLCV(signal.mint, timeframe, 1000);
+            }
+        }
         
         if (!ohlcv || ohlcv.length === 0) continue;
 
@@ -111,4 +124,5 @@ export const updateHistoricalMetrics = async () => {
     logger.error('Error in updateHistoricalMetrics:', error);
   }
 };
+
 
