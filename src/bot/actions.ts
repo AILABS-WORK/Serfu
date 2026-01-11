@@ -272,6 +272,8 @@ Source: ${priceSource}
 
   // --- ANALYTICS ACTIONS (Existing) ---
   
+  bot.action('analytics', handleAnalyticsCommand);
+  
   bot.action('analytics_recent', handleRecentCalls);
   
   bot.action('analytics_refresh', async (ctx) => {
