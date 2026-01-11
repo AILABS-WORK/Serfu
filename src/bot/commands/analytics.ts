@@ -258,7 +258,8 @@ export const handleEarliestCallers = async (ctx: Context) => {
     let message = '🚀 *Earliest Callers (7d, your workspace)*\n\n';
     top.forEach(([uid, cnt], idx) => {
       const u = userMap.get(uid);
-      const name = u?.username || u?.firstName || u?.userId || uid;
+      // Use "as any" to access dynamic properties if User type is incomplete in context
+      const name = (u as any)?.username || (u as any)?.firstName || (u as any)?.userId || uid;
       const emoji = idx === 0 ? '🥇' : idx === 1 ? '🥈' : idx === 2 ? '🥉' : `${idx + 1}.`;
       message += `${emoji} @${name} — ${cnt} first calls\n`;
     });
