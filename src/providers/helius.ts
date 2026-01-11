@@ -224,17 +224,47 @@ export class HeliusProvider implements MarketDataProvider {
         await this.initHelius();
       }
       
-      const response = await this.helius.rpc.getAssetsByOwner({
-        ownerAddress,
-        page: 1,
-        limit: 100, // Check top 100 assets
-        displayOptions: {
-          showFungible: true,
-          showNativeBalance: true,
-        },
-      });
-
-      return response.items || [];
+      // Helius SDK v2 exposes RPC methods directly on the rpc property?
+      // Or maybe it's just this.helius.getAssetsByOwner?
+      // Based on docs, it is helius.rpc.getAssetsByOwner but maybe the object structure is different.
+      // Let's try direct call or DAS API specifically if available.
+      
+      // Attempt 1: Standard RPC method if available
+      if (this.helius.rpc?.getAssetsByOwner) {
+          const response = await this.helius.rpc.getAssetsByOwner({
+            ownerAddress,
+            page: 1,
+            limit: 100,
+            displayOptions: {
+              showFungible: true,
+              showNativeBalance: true,
+            },
+          });
+          return response.items || [];
+      } else {
+          // Attempt 2: Maybe DAS is separate? Or fallback to direct fetch?
+          // Using fetch if SDK fails
+          const response = await fetch(`https://mainnet.helius-rpc.com/?api-key=${this.apiKey}`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                  jsonrpc: '2.0',
+                  id: 'get-assets',
+                  method: 'getAssetsByOwner',
+                  params: {
+                      ownerAddress,
+                      page: 1,
+                      limit: 100,
+                      displayOptions: {
+                          showFungible: true,
+                          showNativeBalance: true,
+                      }
+                  },
+              }),
+          });
+          const data = await response.json();
+          return data.result?.items || [];
+      }
     } catch (error) {
       logger.error(`Error fetching assets for ${ownerAddress}:`, error);
       return [];
@@ -256,12 +286,21 @@ export class HeliusProvider implements MarketDataProvider {
           while (fetched < limit) {
               const batchLimit = Math.min(100, limit - fetched);
               
-              const response: any[] = await this.helius.rpc.getEnrichedTransactions({
-                  account: address,
-                  type: 'SWAP', // Filter for swaps
-                  limit: batchLimit,
-                  before: lastSignature,
-              });
+              let response: any[] = [];
+              
+              if (this.helius.rpc?.getEnrichedTransactions) {
+                  response = await this.helius.rpc.getEnrichedTransactions({
+                      account: address,
+                      type: 'SWAP', // Filter for swaps
+                      limit: batchLimit,
+                      before: lastSignature,
+                  });
+              } else {
+                  // Fallback to HTTP API
+                  const url = `https://api.helius.xyz/v0/addresses/${address}/transactions?api-key=${this.apiKey}&type=SWAP&limit=${batchLimit}${lastSignature ? `&before=${lastSignature}` : ''}`;
+                  const res = await fetch(url);
+                  response = await res.json();
+              }
 
               if (!response || response.length === 0) break;
 
