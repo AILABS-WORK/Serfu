@@ -336,6 +336,12 @@ export const handleRecentCalls = async (ctx: Context) => {
       },
     });
 
+    if (signals.length > 0) {
+        // Trigger immediate targeted update for these signals
+        const signalIds = signals.map(s => s.id);
+        updateHistoricalMetrics(signalIds).catch(err => logger.error('Targeted update failed:', err));
+    }
+
     if (signals.length === 0) {
       return ctx.reply('No signals yet in your workspace.');
     }
@@ -356,9 +362,13 @@ export const handleRecentCalls = async (ctx: Context) => {
       
       // Get historical ATH/Drawdown from metrics
       // Ensure ATH is at least the current multiple
-      let athMult = sig.metrics?.athMultiple ?? multiple ?? 1;
+      let athMult = sig.metrics?.athMultiple || 1.0;
       if (multiple && athMult < multiple) {
           athMult = multiple;
+      }
+      // If we are down bad (multiple < 1) and no metrics exist, default ATH to 1.0x (Entry)
+      if (!sig.metrics && (!multiple || multiple < 1)) {
+          athMult = 1.0;
       }
       
       const drawdown = sig.metrics?.maxDrawdown ?? 0;
