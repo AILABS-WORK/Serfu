@@ -354,7 +354,12 @@ export const handleRecentCalls = async (ctx: Context) => {
       const multiple = currentPrice && entryPrice ? currentPrice / entryPrice : null;
       
       // Get historical ATH/Drawdown from metrics
-      const athMult = sig.metrics?.athMultiple ?? multiple ?? 1;
+      // Ensure ATH is at least the current multiple
+      let athMult = sig.metrics?.athMultiple ?? multiple ?? 1;
+      if (multiple && athMult < multiple) {
+          athMult = multiple;
+      }
+      
       const drawdown = sig.metrics?.maxDrawdown ?? 0;
 
       // User name

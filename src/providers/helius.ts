@@ -248,15 +248,31 @@ export class HeliusProvider implements MarketDataProvider {
               await this.initHelius();
           }
 
-          // Fetch parsed transactions (enriched)
-          // Helius Enriched Transactions are powerful for this
-          const response = await this.helius.rpc.getEnrichedTransactions({
-              account: address,
-              type: 'SWAP', // Filter for swaps
-              limit: limit,
-          });
+          let allTransactions: any[] = [];
+          let lastSignature: string | undefined = undefined;
+          let fetched = 0;
 
-          return response || [];
+          // Fetch in batches of 100 until limit reached
+          while (fetched < limit) {
+              const batchLimit = Math.min(100, limit - fetched);
+              
+              const response = await this.helius.rpc.getEnrichedTransactions({
+                  account: address,
+                  type: 'SWAP', // Filter for swaps
+                  limit: batchLimit,
+                  before: lastSignature,
+              });
+
+              if (!response || response.length === 0) break;
+
+              allTransactions = [...allTransactions, ...response];
+              fetched += response.length;
+              lastSignature = response[response.length - 1].signature;
+
+              if (response.length < batchLimit) break; // End of history
+          }
+
+          return allTransactions;
 
       } catch (error) {
           logger.error(`Error fetching history for ${address}:`, error);

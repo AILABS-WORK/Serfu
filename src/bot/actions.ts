@@ -192,23 +192,23 @@ Source: ${priceSource}
   });
 
   // --- NEW: Analyze Holders Action ---
-  bot.action(/^analyze_holders:(\d+)$/, async (ctx) => {
-    try {
-        const signalId = parseInt(ctx.match[1]);
+  const handleHolderAnalysis = async (ctx: Context, signalId: number, mode: 'standard' | 'deep') => {
+      try {
         const signal = await prisma.signal.findUnique({ where: { id: signalId } });
 
         if (!signal) return ctx.answerCbQuery('Signal not found');
 
-        await ctx.answerCbQuery('Deep scanning Top 10 holders...');
-        await ctx.reply('🔍 *Scanning Top 10 Wallets (Helius)...* \nAnalyzing last 100 trades for major wins...', { parse_mode: 'Markdown' });
+        const scanText = mode === 'deep' ? 'Deep Scanning Top 10 Wallets (Last 1000 Txs)... ⏳' : 'Scanning Top 10 Wallets (Last 100 Txs)...';
+        await ctx.answerCbQuery(mode === 'deep' ? 'Starting deep scan...' : 'Scanning...');
+        await ctx.reply(`🔍 *${scanText}*\nAnalyzing realized profits...`, { parse_mode: 'Markdown' });
 
-        const summaries = await getDeepHolderAnalysis(signal.mint);
+        const summaries = await getDeepHolderAnalysis(signal.mint, mode);
 
         if (summaries.length === 0) {
             return ctx.reply('⚠️ Could not fetch detailed holder analysis.');
         }
 
-        let report = `🕵️ *WHALE INSPECTOR* for ${signal.symbol}\n\n`;
+        let report = `🕵️ *WHALE INSPECTOR* for ${signal.symbol} (${mode === 'deep' ? 'DEEP' : 'Standard'})\n\n`;
 
         for (const s of summaries) {
             report += `👤 *Rank #${s.rank}* (${s.percentage.toFixed(2)}%)\n`;
@@ -216,7 +216,7 @@ Source: ${priceSource}
             
             // Notable holdings
             if (s.notableHoldings.length > 0) {
-                report += `   💎 *Current Assets (> $5k):*\n`;
+                report += `   💎 *Assets (> $5k):*\n`;
                 for (const asset of s.notableHoldings) {
                     const valStr = asset.valueUsd ? `$${Math.round(asset.valueUsd).toLocaleString()}` : 'N/A';
                     report += `      • ${asset.symbol}: ${valStr}\n`;
@@ -225,7 +225,7 @@ Source: ${priceSource}
             
             // Best Trades (Helius Derived)
             if (s.bestTrades.length > 0) {
-                 report += `   🏆 *Best Recent Wins (Last 100 Txs):*\n`;
+                 report += `   🏆 *Best Wins (Last ${mode === 'deep' ? '1000' : '100'} Txs):*\n`;
                  for (const trade of s.bestTrades) {
                      const profit = Math.round(trade.pnl).toLocaleString();
                      const bought = Math.round(trade.buyUsd).toLocaleString();
@@ -241,10 +241,15 @@ Source: ${priceSource}
             report += '\n';
         }
 
+        const keyboard = [[{ text: '❌ Close', callback_data: 'delete_msg' }]];
+        if (mode === 'standard') {
+            keyboard.unshift([{ text: '🕵️ Deep Scan (1000 Txs) 🐢', callback_data: `analyze_holders_deep:${signalId}` }]);
+        }
+
         await ctx.reply(report, { 
             parse_mode: 'Markdown',
              reply_markup: {
-                inline_keyboard: [[{ text: '❌ Close', callback_data: 'delete_msg' }]]
+                inline_keyboard: keyboard
             }
         });
 
@@ -252,6 +257,16 @@ Source: ${priceSource}
         logger.error('Analyze holders error:', error);
         ctx.reply('❌ Error generating holder analysis.');
     }
+  };
+
+  bot.action(/^analyze_holders:(\d+)$/, async (ctx) => {
+      const signalId = parseInt(ctx.match[1]);
+      await handleHolderAnalysis(ctx, signalId, 'standard');
+  });
+
+  bot.action(/^analyze_holders_deep:(\d+)$/, async (ctx) => {
+      const signalId = parseInt(ctx.match[1]);
+      await handleHolderAnalysis(ctx, signalId, 'deep');
   });
 
 

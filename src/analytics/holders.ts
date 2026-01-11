@@ -123,7 +123,7 @@ export interface PortfolioSummary {
   totalValueUsd?: number;
 }
 
-export const getDeepHolderAnalysis = async (mint: string): Promise<PortfolioSummary[]> => {
+export const getDeepHolderAnalysis = async (mint: string, mode: 'standard' | 'deep' = 'standard'): Promise<PortfolioSummary[]> => {
   try {
     // 1. Get Top Holders (Top 10)
     const holders = await solana.getTopHolders(mint, 10); 
@@ -132,6 +132,9 @@ export const getDeepHolderAnalysis = async (mint: string): Promise<PortfolioSumm
     const summaries: PortfolioSummary[] = [];
     // Ensure we use Helius provider (or instantiate one)
     const heliusProvider = provider instanceof HeliusProvider ? provider : new HeliusProvider(process.env.HELIUS_API_KEY || '');
+
+    // For deep scan, we increase limit. Standard = 100 txs (~1 call). Deep = 1000 txs (~10 calls).
+    const txLimit = mode === 'deep' ? 1000 : 100;
 
     for (const h of holders) {
       // A. Analyze Assets (Current Holdings)
@@ -174,8 +177,7 @@ export const getDeepHolderAnalysis = async (mint: string): Promise<PortfolioSumm
       notable.sort((a, b) => (b.valueUsd || 0) - (a.valueUsd || 0));
 
       // B. Analyze History (Using Helius Enriched Txs)
-      // We scan last 100 transactions to find "Realized Winners"
-      const history = await heliusProvider.getWalletHistory(h.address, 100);
+      const history = await heliusProvider.getWalletHistory(h.address, txLimit);
       
       const tokenStats = new Map<string, { 
         symbol: string, 
