@@ -56,7 +56,7 @@ export const analyzeHolders = async (signalId: number, mint: string): Promise<Wh
 
     // 3. Cross-Reference: Find if these holders are present in HIGH ROI signals
     const alerts: WhaleAlert[] = [];
-    const holderIds = holderRecords.map((h) => h.id);
+    const holderIds = holderRecords.map((h: any) => h.id);
 
     // Find other signals where these holders were top holders
     const matches = await prisma.signalTopHolder.findMany({
