@@ -2,7 +2,6 @@
 
 generator client {
   provider = "prisma-client"
-  output   = "../src/generated/client"
 }
 
 datasource db {
@@ -67,6 +66,7 @@ model Signal {
   thresholdEvents  ThresholdEvent[]
   metrics          SignalMetric?
   forwardedSignals ForwardedSignal[]
+  topHolders       SignalTopHolder[]
 
   @@unique([chatId, messageId])
   @@index([mint])
@@ -329,4 +329,33 @@ model UserNotificationSettings {
 
   @@index([userId])
   @@map("user_notification_settings")
+}
+
+// --- New Models for Top Holders ---
+
+model TokenHolder {
+  id        Int      @id @default(autoincrement())
+  address   String   @unique
+  createdAt DateTime @default(now()) @map("created_at")
+  
+  // Relations
+  signals   SignalTopHolder[]
+
+  @@map("token_holders")
+}
+
+model SignalTopHolder {
+  id        Int      @id @default(autoincrement())
+  signalId  Int      @map("signal_id")
+  holderId  Int      @map("holder_id")
+  rank      Int      // 1-10
+  percentage Float   // Percentage of supply held (0-100)
+  amount    Float    // Raw token amount held
+  
+  signal    Signal      @relation(fields: [signalId], references: [id])
+  holder    TokenHolder @relation(fields: [holderId], references: [id])
+
+  @@unique([signalId, holderId]) // A holder appears once per signal
+  @@index([holderId]) // Fast lookup: "Which other signals did this holder hold?"
+  @@map("signal_top_holders")
 }

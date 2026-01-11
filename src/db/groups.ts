@@ -1,5 +1,5 @@
 import { prisma } from './index';
-import { Prisma } from '../generated/client/client';
+import { Prisma } from '@prisma/client';
 
 export type GroupCreateInput = Prisma.GroupCreateInput;
 
