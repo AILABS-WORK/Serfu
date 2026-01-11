@@ -200,12 +200,12 @@ Source: ${priceSource}
         if (!signal) return ctx.answerCbQuery('Signal not found');
 
         await ctx.answerCbQuery('Deep scanning Top 10 holders...');
-        await ctx.reply('🔍 *Deep Scanning Top 10 Wallets...* \nChecking PnL on recent trades & assets...', { parse_mode: 'Markdown' });
+        await ctx.reply('🔍 *Scanning Top 10 Wallets via Bitquery...* \nChecking realized PnL on all past trades...', { parse_mode: 'Markdown' });
 
         const summaries = await getDeepHolderAnalysis(signal.mint);
 
         if (summaries.length === 0) {
-            return ctx.reply('⚠️ Could not fetch detailed holder analysis.');
+            return ctx.reply('⚠️ Could not fetch holder analysis. Check Bitquery key.');
         }
 
         let report = `🕵️ *WHALE INSPECTOR* for ${signal.symbol}\n\n`;
@@ -216,24 +216,23 @@ Source: ${priceSource}
             
             // Notable holdings
             if (s.notableHoldings.length > 0) {
-                report += `   💎 *Notable Assets (> $5k):*\n`;
+                report += `   💎 *Current Assets (> $5k):*\n`;
                 for (const asset of s.notableHoldings) {
                     const valStr = asset.valueUsd ? `$${Math.round(asset.valueUsd).toLocaleString()}` : 'N/A';
                     report += `      • ${asset.symbol}: ${valStr}\n`;
                 }
             }
             
-            // Best Trades
-            if (s.bestTrades.length > 0) {
-                 report += `   🏆 *Best Realized Trades (Recent):*\n`;
-                 for (const trade of s.bestTrades) {
+            // Top PnL Trades (Bitquery)
+            if (s.topTrades && s.topTrades.length > 0) {
+                 report += `   🏆 *Best PnL History:*\n`;
+                 for (const trade of s.topTrades) {
                      const profit = Math.round(trade.pnl).toLocaleString();
-                     const bought = Math.round(trade.buyUsd).toLocaleString();
-                     const sold = Math.round(trade.sellUsd).toLocaleString();
-                     const percent = Math.round(trade.pnlPercent);
+                     const bought = Math.round(trade.totalBoughtUSD).toLocaleString();
+                     const sold = Math.round(trade.totalSoldUSD).toLocaleString();
+                     const roi = Math.round(trade.roi);
                      
-                     report += `      • ${trade.symbol}: +$${profit} (${percent}%)\n`;
-                     report += `        (In: $${bought} ➔ Out: $${sold})\n`;
+                     report += `      • ${trade.symbol}: +$${profit} (${roi}%) (In $${bought} ➔ Out $${sold})\n`;
                  }
             }
             

@@ -3,6 +3,7 @@ import { solana, TokenHolderInfo } from '../providers/solana';
 import { logger } from '../utils/logger';
 import { provider } from '../providers';
 import { HeliusProvider } from '../providers/helius';
+import { bitquery, TokenPnL } from '../providers/bitquery';
 
 export interface WhaleAlert {
   holderAddress: string;
@@ -112,15 +113,7 @@ export interface PortfolioSummary {
     amount: number;
     valueUsd?: number;
   }[];
-  bestTrades: {
-    token: string;
-    symbol: string;
-    buyUsd: number;
-    sellUsd: number;
-    pnl: number;
-    pnlPercent: number;
-    lastTradeDate: string;
-  }[];
+  topTrades: TokenPnL[];
   totalValueUsd?: number;
 }
 
@@ -134,7 +127,7 @@ export const getDeepHolderAnalysis = async (mint: string): Promise<PortfolioSumm
     const heliusProvider = provider instanceof HeliusProvider ? provider : new HeliusProvider(process.env.HELIUS_API_KEY || '');
 
     for (const h of holders) {
-      // A. Analyze Assets
+      // A. Analyze Assets (Current Holdings) via Helius
       const assets = await heliusProvider.getWalletAssets(h.address);
       
       let solBalance = 0;
@@ -174,93 +167,15 @@ export const getDeepHolderAnalysis = async (mint: string): Promise<PortfolioSumm
 
       notable.sort((a, b) => (b.valueUsd || 0) - (a.valueUsd || 0));
 
-      // B. Analyze History (Good Trades / PnL)
-      const history = await heliusProvider.getWalletHistory(h.address, 100); // Last 100 swaps
+      // B. Analyze PnL History via Bitquery (The requested "Top Trader" logic)
+      const pnlHistory = await bitquery.getWalletPnL(h.address, 20); // Get top 20 traded tokens by volume
       
-      const tokenStats = new Map<string, { 
-        symbol: string, 
-        buyUsd: number, 
-        sellUsd: number, 
-        lastDate: number 
-      }>();
-
-      for (const tx of history) {
-        if (tx.type === 'SWAP' && tx.tokenTransfers && tx.timestamp) {
-            const transfers = tx.tokenTransfers;
-            // Determine if BUY or SELL relative to the User (h.address)
-            
-            // Check for outgoing token (Sell)
-            const sent = transfers.find((t: any) => t.fromUserAccount === h.address);
-            // Check for incoming token (Buy)
-            const received = transfers.find((t: any) => t.toUserAccount === h.address);
-
-            // Estimate Value in USD
-            // Priority 1: Check native SOL transfer (if involved)
-            // Priority 2: Check stablecoin transfer
-            let usdValue = 0;
-            
-            if (tx.nativeTransfers) {
-                const solTx = tx.nativeTransfers.find((t: any) => t.fromUserAccount === h.address || t.toUserAccount === h.address);
-                if (solTx) {
-                    usdValue = (solTx.amount / 1e9) * 150; // Approx $150/SOL
-                }
-            }
-
-            // Refine USD Value if stablecoin involved
-            if (sent && ['USDC', 'USDT'].includes(sent.tokenAmount?.symbol)) {
-                usdValue = sent.tokenAmount?.amount || 0;
-            } else if (received && ['USDC', 'USDT'].includes(received.tokenAmount?.symbol)) {
-                usdValue = received.tokenAmount?.amount || 0;
-            }
-
-            if (usdValue === 0) continue; // Can't estimate PnL without USD anchor
-
-            // Case 1: Selling Token A for SOL/Stable
-            if (sent && !['USDC', 'USDT', 'SOL'].includes(sent.tokenAmount?.symbol || '')) {
-                // Selling 'sent.mint'
-                const mint = sent.mint;
-                const stats = tokenStats.get(mint) || { symbol: sent.tokenAmount?.symbol || 'UNK', buyUsd: 0, sellUsd: 0, lastDate: 0 };
-                stats.sellUsd += usdValue;
-                if (tx.timestamp > stats.lastDate) stats.lastDate = tx.timestamp;
-                tokenStats.set(mint, stats);
-            }
-
-            // Case 2: Buying Token B with SOL/Stable
-            if (received && !['USDC', 'USDT', 'SOL'].includes(received.tokenAmount?.symbol || '')) {
-                // Buying 'received.mint'
-                const mint = received.mint;
-                const stats = tokenStats.get(mint) || { symbol: received.tokenAmount?.symbol || 'UNK', buyUsd: 0, sellUsd: 0, lastDate: 0 };
-                stats.buyUsd += usdValue;
-                if (tx.timestamp > stats.lastDate) stats.lastDate = tx.timestamp;
-                tokenStats.set(mint, stats);
-            }
-        }
-      }
-
-      // Convert Map to Array and Sort by Profit
-      const trades: any[] = [];
-      tokenStats.forEach((stats, mint) => {
-          if (stats.sellUsd > 1000) { // Only consider significant exits > $1k
-             const pnl = stats.sellUsd - stats.buyUsd;
-             const pnlPercent = stats.buyUsd > 0 ? (pnl / stats.buyUsd) * 100 : 0;
-             
-             // We want "Sold High, Bought Low" => High PnL
-             if (pnl > 500 || (stats.buyUsd > 0 && stats.sellUsd > stats.buyUsd * 2)) {
-                 trades.push({
-                     token: mint,
-                     symbol: stats.symbol,
-                     buyUsd: stats.buyUsd,
-                     sellUsd: stats.sellUsd,
-                     pnl,
-                     pnlPercent,
-                     lastTradeDate: new Date(stats.lastDate * 1000).toLocaleDateString()
-                 });
-             }
-          }
-      });
-
-      // Sort by Realized PnL (desc)
-      trades.sort((a, b) => b.pnl - a.pnl);
+      // Filter for significant wins:
+      // 1. Realized Profit > $1000
+      // 2. OR High ROI (> 100%) with decent volume
+      const topTrades = pnlHistory.filter(t => {
+          return (t.pnl > 1000) || (t.roi > 100 && t.totalBoughtUSD > 500);
+      }).sort((a, b) => b.pnl - a.pnl); // Sort by PnL Descending
 
       summaries.push({
         address: h.address,
@@ -268,7 +183,7 @@ export const getDeepHolderAnalysis = async (mint: string): Promise<PortfolioSumm
         percentage: h.percentage,
         solBalance,
         notableHoldings: notable.slice(0, 3), 
-        bestTrades: trades.slice(0, 3), // Show top 3 best realized trades
+        topTrades: topTrades.slice(0, 3), // Show top 3 best realized trades
         totalValueUsd: totalValue
       });
     }
