@@ -45,7 +45,7 @@ export const updateHistoricalMetrics = async () => {
              const timeframe = ageHours > 24 ? 'hour' : 'minute';
              const limit = ageHours > 24 ? 1000 : 1440; // 1000 hours or 1440 mins (24h)
              
-             ohlcv = await bitquery.getOHLCV(signal.mint, timeframe, limit);
+             ohlcv = await (bitquery as any).getOHLCV(signal.mint, timeframe, limit);
              if (ohlcv.length > 0) source = 'bitquery';
         }
 
