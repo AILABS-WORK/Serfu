@@ -262,7 +262,7 @@ export class HeliusProvider implements MarketDataProvider {
                   },
               }),
           });
-          const data = await response.json();
+          const data: any = await response.json();
           return data.result?.items || [];
       }
     } catch (error) {
@@ -299,7 +299,7 @@ export class HeliusProvider implements MarketDataProvider {
                   // Fallback to HTTP API
                   const url = `https://api.helius.xyz/v0/addresses/${address}/transactions?api-key=${this.apiKey}&type=SWAP&limit=${batchLimit}${lastSignature ? `&before=${lastSignature}` : ''}`;
                   const res = await fetch(url);
-                  response = await res.json();
+                  response = await res.json() as any[];
               }
 
               if (!response || response.length === 0) break;

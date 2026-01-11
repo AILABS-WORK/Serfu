@@ -6,7 +6,7 @@ import { generateFirstSignalCard } from './signalCard';
 import { provider } from '../providers';
 import { TokenMeta } from '../providers/types';
 import { getGroupStats, getUserStats, getLeaderboard } from '../analytics/aggregator';
-import { handleRecentCalls } from './commands/analytics';
+import { handleRecentCalls, handleAnalyticsCommand } from './commands/analytics';
 import { updateHistoricalMetrics } from '../jobs/historicalMetrics';
 import { getDeepHolderAnalysis } from '../analytics/holders';
 
