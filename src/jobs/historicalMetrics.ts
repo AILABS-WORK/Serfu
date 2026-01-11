@@ -1,5 +1,6 @@
 import { prisma } from '../db';
 import { geckoTerminal } from '../providers/geckoTerminal';
+import { bitquery } from '../providers/bitquery';
 import { logger } from '../utils/logger';
 
 /**
@@ -11,48 +12,66 @@ export const updateHistoricalMetrics = async () => {
     logger.info('Starting historical metrics update job...');
     
     // Get active signals
+    // OPTIMIZATION: Only check signals created in the last 7 days for detailed "Recent Calls" accuracy
+    // or sort by last updated to prioritize stale ones.
     const signals = await prisma.signal.findMany({
       where: {
         trackingStatus: 'ACTIVE',
         entryPrice: { not: null },
+        detectedAt: {
+             gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) // Last 7 days
+        }
       },
+      orderBy: { detectedAt: 'desc' }
     });
 
-    logger.info(`Checking history for ${signals.length} active signals...`);
+    logger.info(`Checking history for ${signals.length} active signals (last 7 days)...`);
 
     for (const signal of signals) {
       if (!signal.entryPrice || !signal.detectedAt) continue;
 
       try {
-        // Fetch OHLCV since detection
-        // Use minute candles for precision
-        // Max 1000 minutes (~16 hours). If older, we might miss early peaks if we don't use 'hour'.
-        // Let's use 'minute' if < 24h old, 'hour' if older.
         const now = Date.now();
         const ageHours = (now - signal.detectedAt.getTime()) / (1000 * 60 * 60);
         
-        // Strategy: Use 'minute' if possible for precision, but switch to 'hour' if signal is older than 16h (1000 mins)
-        // because GeckoTerminal only returns last 1000 candles.
-        let timeframe: 'minute' | 'hour' = ageHours > 16 ? 'hour' : 'minute';
-        let ohlcv = await geckoTerminal.getOHLCV(signal.mint, timeframe, 1000);
-        
-        // Fallback: If we used 'minute' but didn't reach the detection time, switch to 'hour'
-        if (timeframe === 'minute' && ohlcv && ohlcv.length > 0) {
-            const oldestCandle = ohlcv[0];
-            const signalTime = signal.detectedAt.getTime();
-            if (oldestCandle.timestamp > signalTime + 300000) { // Gap > 5 mins
-                 logger.info(`Gap in minute data for ${signal.mint} (Age: ${ageHours.toFixed(1)}h), switching to hourly...`);
-                 timeframe = 'hour';
-                 ohlcv = await geckoTerminal.getOHLCV(signal.mint, timeframe, 1000);
+        let ohlcv: any[] = [];
+        let source = 'gecko';
+
+        // Priority 1: Bitquery (if API Key exists)
+        if (process.env.BIT_QUERY_API_KEY) {
+             // Use 15-minute intervals if older than 24h to save data points, or 1-minute if recent
+             // Bitquery "minutes" interval count defaults to 1?
+             // Let's use 'minute' (1m) or 'hour' (1h)
+             const timeframe = ageHours > 24 ? 'hour' : 'minute';
+             const limit = ageHours > 24 ? 1000 : 1440; // 1000 hours or 1440 mins (24h)
+             
+             ohlcv = await bitquery.getOHLCV(signal.mint, timeframe, limit);
+             if (ohlcv.length > 0) source = 'bitquery';
+        }
+
+        // Priority 2: GeckoTerminal (Fallback)
+        if (ohlcv.length === 0) {
+            let timeframe: 'minute' | 'hour' = ageHours > 16 ? 'hour' : 'minute';
+            ohlcv = await geckoTerminal.getOHLCV(signal.mint, timeframe, 1000);
+            
+            // Fallback to hourly if minute data has gaps/doesn't reach start
+            if (timeframe === 'minute' && ohlcv && ohlcv.length > 0) {
+                const oldestCandle = ohlcv[0];
+                const signalTime = signal.detectedAt.getTime();
+                if (oldestCandle.timestamp > signalTime + 300000) { 
+                     // logger.info(`Gap in minute data for ${signal.mint}, switching to hourly...`);
+                     timeframe = 'hour';
+                     ohlcv = await geckoTerminal.getOHLCV(signal.mint, timeframe, 1000);
+                }
             }
+            source = 'gecko';
         }
         
         if (!ohlcv || ohlcv.length === 0) continue;
 
         // Filter valid candles (after detection)
         const signalTime = signal.detectedAt.getTime();
-        // Allow a small buffer (e.g. 5 mins before) in case clocks slightly off
-        const validCandles = ohlcv.filter(c => c.timestamp >= signalTime - 300000);
+        const validCandles = ohlcv.filter(c => c.timestamp >= signalTime - 300000); // 5 min buffer
 
         if (validCandles.length === 0) continue;
 
@@ -60,18 +79,9 @@ export const updateHistoricalMetrics = async () => {
         let athAt = signal.detectedAt;
         let minPrice = signal.entryPrice;
 
-        // Get existing metrics to compare
-        const existing = await prisma.signalMetric.findUnique({ where: { signalId: signal.id } });
-        if (existing) {
-          athPrice = existing.athPrice;
-          minPrice = (1 + existing.maxDrawdown) * signal.entryPrice; // Convert % back to price approx
-          // Actually better to track minPrice separately if we could, 
-          // but reconstruction from maxDrawdown is okay-ish.
-          // Let's just reset scan from entry price to be safe and true to history.
-          athPrice = signal.entryPrice; 
-          minPrice = signal.entryPrice;
-        }
-
+        // We re-calculate from scratch based on the fetched history to find the absolute truth
+        // (Don't rely on potentially stale or incorrect DB state for ATH, trust the OHLCV)
+        
         for (const candle of validCandles) {
             if (candle.high > athPrice) {
                 athPrice = candle.high;
@@ -82,37 +92,51 @@ export const updateHistoricalMetrics = async () => {
             }
         }
 
-        // Update if different
+        // Safety check: ATH can't be lower than entry (logic wise, unless bad data)
+        // If candle data is weirdly low, ensure athPrice >= entryPrice
+        if (athPrice < signal.entryPrice) athPrice = signal.entryPrice;
+
         const athMultiple = athPrice / signal.entryPrice;
         const maxDrawdown = (minPrice - signal.entryPrice) / signal.entryPrice;
 
-        // Only update if we found better data or if it's missing
-        if (!existing || athPrice > existing.athPrice || maxDrawdown < existing.maxDrawdown) {
-             await prisma.signalMetric.upsert({
-                where: { signalId: signal.id },
-                create: {
-                    signalId: signal.id,
-                    currentPrice: validCandles[validCandles.length - 1].close,
-                    currentMultiple: validCandles[validCandles.length - 1].close / signal.entryPrice,
-                    athPrice,
-                    athMultiple,
-                    athAt,
-                    maxDrawdown,
-                    updatedAt: new Date()
-                },
-                update: {
-                    athPrice,
-                    athMultiple,
-                    athAt,
-                    maxDrawdown: maxDrawdown < (existing?.maxDrawdown ?? 0) ? maxDrawdown : undefined,
-                    updatedAt: new Date()
-                }
-             });
-             // logger.info(`Updated historical metrics for ${signal.mint}: ATH ${athMultiple.toFixed(2)}x`);
-        }
+        // Upsert metrics
+        // We always update if we have fresh data to keep "lastChecked" alive
+        // and ensure we converge on the truth.
+        const currentPrice = validCandles[validCandles.length - 1].close;
+        const currentMultiple = currentPrice / signal.entryPrice;
+
+        await prisma.signalMetric.upsert({
+            where: { signalId: signal.id },
+            create: {
+                signalId: signal.id,
+                currentPrice,
+                currentMultiple,
+                athPrice,
+                athMultiple,
+                athAt,
+                maxDrawdown,
+                updatedAt: new Date()
+            },
+            update: {
+                currentPrice,
+                currentMultiple,
+                athPrice,
+                athMultiple,
+                athAt,
+                maxDrawdown, // Update drawdown even if it gets "better"? No, usually max drawdown is monotonic worse.
+                             // But if we re-scanned and found a deeper low, we update. 
+                             // If our previous data was glitchy and showed -99% but now shows -10%, should we fix it? Yes.
+                             // So just setting it to the calculated maxDrawdown from the full history is safest.
+                updatedAt: new Date()
+            }
+         });
         
-        // Respect rate limits (GeckoTerminal is free but rate limited)
-        await new Promise(r => setTimeout(r, 2000)); 
+        // Rate limiting
+        if (source === 'gecko') {
+            await new Promise(r => setTimeout(r, 1500)); 
+        } else {
+            await new Promise(r => setTimeout(r, 200)); // Faster for Bitquery
+        }
 
       } catch (err) {
         logger.error(`Error updating history for ${signal.mint}:`, err);
