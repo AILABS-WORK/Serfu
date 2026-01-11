@@ -200,12 +200,12 @@ Source: ${priceSource}
         if (!signal) return ctx.answerCbQuery('Signal not found');
 
         await ctx.answerCbQuery('Deep scanning Top 10 holders...');
-        await ctx.reply('🔍 *Scanning Top 10 Wallets via Bitquery...* \nChecking realized PnL on all past trades...', { parse_mode: 'Markdown' });
+        await ctx.reply('🔍 *Scanning Top 10 Wallets (Helius)...* \nAnalyzing last 100 trades for major wins...', { parse_mode: 'Markdown' });
 
         const summaries = await getDeepHolderAnalysis(signal.mint);
 
         if (summaries.length === 0) {
-            return ctx.reply('⚠️ Could not fetch holder analysis. Check Bitquery key.');
+            return ctx.reply('⚠️ Could not fetch detailed holder analysis.');
         }
 
         let report = `🕵️ *WHALE INSPECTOR* for ${signal.symbol}\n\n`;
@@ -223,16 +223,18 @@ Source: ${priceSource}
                 }
             }
             
-            // Top PnL Trades (Bitquery)
-            if (s.topTrades && s.topTrades.length > 0) {
-                 report += `   🏆 *Best PnL History:*\n`;
-                 for (const trade of s.topTrades) {
+            // Best Trades (Helius Derived)
+            if (s.bestTrades.length > 0) {
+                 report += `   🏆 *Best Recent Wins (Last 100 Txs):*\n`;
+                 for (const trade of s.bestTrades) {
                      const profit = Math.round(trade.pnl).toLocaleString();
-                     const bought = Math.round(trade.totalBoughtUSD).toLocaleString();
-                     const sold = Math.round(trade.totalSoldUSD).toLocaleString();
-                     const roi = Math.round(trade.roi);
+                     const bought = Math.round(trade.buyUsd).toLocaleString();
+                     const sold = Math.round(trade.sellUsd).toLocaleString();
                      
-                     report += `      • ${trade.symbol}: +$${profit} (${roi}%) (In $${bought} ➔ Out $${sold})\n`;
+                     // Handle "Moonbag" case (999% ROI)
+                     const roiStr = trade.pnlPercent === 999 ? 'Early Entry' : `${Math.round(trade.pnlPercent)}%`;
+                     
+                     report += `      • ${trade.symbol}: +$${profit} (${roiStr}) (In $${bought} ➔ Out $${sold})\n`;
                  }
             }
             

@@ -3,7 +3,6 @@ import { solana, TokenHolderInfo } from '../providers/solana';
 import { logger } from '../utils/logger';
 import { provider } from '../providers';
 import { HeliusProvider } from '../providers/helius';
-import { bitquery, TokenPnL } from '../providers/bitquery';
 
 export interface WhaleAlert {
   holderAddress: string;
@@ -66,7 +65,7 @@ export const analyzeHolders = async (signalId: number, mint: string): Promise<Wh
         signalId: { not: signalId }, // Exclude current
         signal: {
           metrics: {
-            athMultiple: { gte: 5 }, // "Crazy 50x" threshold (start with 5x or 10x for testing)
+            athMultiple: { gte: 5 }, // "Crazy 50x" threshold
           },
         },
       },
@@ -80,7 +79,6 @@ export const analyzeHolders = async (signalId: number, mint: string): Promise<Wh
 
     // Format alerts
     for (const match of matches) {
-      // Find the rank of this holder in the *current* signal
       const currentRank = holders.find(h => h.address === match.holder.address)?.rank || 0;
       
       alerts.push({
@@ -100,7 +98,7 @@ export const analyzeHolders = async (signalId: number, mint: string): Promise<Wh
   }
 };
 
-// --- NEW: Detailed Portfolio Analysis ---
+// --- NEW: Detailed Portfolio Analysis (Helius Only) ---
 
 export interface PortfolioSummary {
   address: string;
@@ -113,7 +111,15 @@ export interface PortfolioSummary {
     amount: number;
     valueUsd?: number;
   }[];
-  topTrades: TokenPnL[];
+  bestTrades: {
+    token: string;
+    symbol: string;
+    buyUsd: number;
+    sellUsd: number;
+    pnl: number;
+    pnlPercent: number;
+    lastTradeDate: string;
+  }[];
   totalValueUsd?: number;
 }
 
@@ -124,10 +130,11 @@ export const getDeepHolderAnalysis = async (mint: string): Promise<PortfolioSumm
     if (holders.length === 0) return [];
 
     const summaries: PortfolioSummary[] = [];
+    // Ensure we use Helius provider (or instantiate one)
     const heliusProvider = provider instanceof HeliusProvider ? provider : new HeliusProvider(process.env.HELIUS_API_KEY || '');
 
     for (const h of holders) {
-      // A. Analyze Assets (Current Holdings) via Helius
+      // A. Analyze Assets (Current Holdings)
       const assets = await heliusProvider.getWalletAssets(h.address);
       
       let solBalance = 0;
@@ -152,7 +159,6 @@ export const getDeepHolderAnalysis = async (mint: string): Promise<PortfolioSumm
 
         if (value > 0) totalValue += value;
 
-        // Filter notable: Value > $5000 OR Known Bluechips (> $1000)
         const isBluechip = ['USDC', 'USDT', 'BONK', 'WIF', 'JUP', 'RAY', 'POPCAT'].includes(symbol);
         
         if (value > 5000 || (isBluechip && value > 1000)) {
@@ -167,15 +173,94 @@ export const getDeepHolderAnalysis = async (mint: string): Promise<PortfolioSumm
 
       notable.sort((a, b) => (b.valueUsd || 0) - (a.valueUsd || 0));
 
-      // B. Analyze PnL History via Bitquery (The requested "Top Trader" logic)
-      const pnlHistory = await bitquery.getWalletPnL(h.address, 20); // Get top 20 traded tokens by volume
+      // B. Analyze History (Using Helius Enriched Txs)
+      // We scan last 100 transactions to find "Realized Winners"
+      const history = await heliusProvider.getWalletHistory(h.address, 100);
       
-      // Filter for significant wins:
-      // 1. Realized Profit > $1000
-      // 2. OR High ROI (> 100%) with decent volume
-      const topTrades = pnlHistory.filter(t => {
-          return (t.pnl > 1000) || (t.roi > 100 && t.totalBoughtUSD > 500);
-      }).sort((a, b) => b.pnl - a.pnl); // Sort by PnL Descending
+      const tokenStats = new Map<string, { 
+        symbol: string, 
+        buyUsd: number, 
+        sellUsd: number, 
+        lastDate: number 
+      }>();
+
+      for (const tx of history) {
+        if (tx.type === 'SWAP' && tx.tokenTransfers && tx.timestamp) {
+            const transfers = tx.tokenTransfers;
+            
+            // Check for outgoing token (Sell) - User is SENDER
+            const sent = transfers.find((t: any) => t.fromUserAccount === h.address);
+            // Check for incoming token (Buy) - User is RECEIVER
+            const received = transfers.find((t: any) => t.toUserAccount === h.address);
+
+            // Estimate USD Value of the SWAP
+            let usdValue = 0;
+            
+            // 1. Did they pay/receive SOL?
+            if (tx.nativeTransfers) {
+                const solTx = tx.nativeTransfers.find((t: any) => t.fromUserAccount === h.address || t.toUserAccount === h.address);
+                if (solTx) {
+                    usdValue = (solTx.amount / 1e9) * 150; // Approx $150/SOL heuristic
+                }
+            }
+
+            // 2. Did they pay/receive Stablecoin? (More accurate)
+            if (sent && ['USDC', 'USDT'].includes(sent.tokenAmount?.symbol)) {
+                usdValue = sent.tokenAmount?.amount || 0;
+            } else if (received && ['USDC', 'USDT'].includes(received.tokenAmount?.symbol)) {
+                usdValue = received.tokenAmount?.amount || 0;
+            }
+
+            if (usdValue === 0) continue; 
+
+            // LOGIC:
+            // Buying Token X: They SENT SOL/USDC and RECEIVED Token X
+            if (received && !['USDC', 'USDT', 'SOL'].includes(received.tokenAmount?.symbol || '')) {
+                const mint = received.mint;
+                const stats = tokenStats.get(mint) || { symbol: received.tokenAmount?.symbol || 'UNK', buyUsd: 0, sellUsd: 0, lastDate: 0 };
+                stats.buyUsd += usdValue;
+                if (tx.timestamp > stats.lastDate) stats.lastDate = tx.timestamp;
+                tokenStats.set(mint, stats);
+            }
+
+            // Selling Token X: They SENT Token X and RECEIVED SOL/USDC
+            if (sent && !['USDC', 'USDT', 'SOL'].includes(sent.tokenAmount?.symbol || '')) {
+                const mint = sent.mint;
+                const stats = tokenStats.get(mint) || { symbol: sent.tokenAmount?.symbol || 'UNK', buyUsd: 0, sellUsd: 0, lastDate: 0 };
+                stats.sellUsd += usdValue;
+                if (tx.timestamp > stats.lastDate) stats.lastDate = tx.timestamp;
+                tokenStats.set(mint, stats);
+            }
+        }
+      }
+
+      // Convert Map to Array and Sort by Profit
+      const bestTrades: any[] = [];
+      tokenStats.forEach((stats, mint) => {
+          // We look for significant exits > $1k
+          if (stats.sellUsd > 1000) { 
+             const pnl = stats.sellUsd - stats.buyUsd;
+             const pnlPercent = stats.buyUsd > 0 ? (pnl / stats.buyUsd) * 100 : 0;
+             
+             // Filter: Profitable OR High Volume Exit (even if entry unknown/partial)
+             // If buyUsd is 0 (entry was older than 100 txs), we treat sellUsd as "Cashed Out Amount"
+             // Use heuristic: PnL > $500 OR (Buy known & >2x) OR (Entry unknown & Sell > $5k)
+             
+             if (pnl > 500 || (stats.buyUsd > 0 && stats.sellUsd > stats.buyUsd * 2) || (stats.buyUsd === 0 && stats.sellUsd > 5000)) {
+                 bestTrades.push({
+                     token: mint,
+                     symbol: stats.symbol,
+                     buyUsd: stats.buyUsd, // Might be 0 if entry outside window
+                     sellUsd: stats.sellUsd,
+                     pnl: stats.buyUsd > 0 ? pnl : stats.sellUsd, // If unknown entry, PnL ~ Sell Amount (heuristic)
+                     pnlPercent: stats.buyUsd > 0 ? pnlPercent : 999, // 999% indicates "Moonbag / Old Entry"
+                     lastTradeDate: new Date(stats.lastDate * 1000).toLocaleDateString()
+                 });
+             }
+          }
+      });
+
+      bestTrades.sort((a, b) => b.pnl - a.pnl);
 
       summaries.push({
         address: h.address,
@@ -183,7 +268,7 @@ export const getDeepHolderAnalysis = async (mint: string): Promise<PortfolioSumm
         percentage: h.percentage,
         solBalance,
         notableHoldings: notable.slice(0, 3), 
-        topTrades: topTrades.slice(0, 3), // Show top 3 best realized trades
+        bestTrades: bestTrades.slice(0, 3), 
         totalValueUsd: totalValue
       });
     }

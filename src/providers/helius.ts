@@ -241,7 +241,7 @@ export class HeliusProvider implements MarketDataProvider {
     }
   }
 
-  // --- NEW: Transaction History Analysis ---
+  // --- NEW: Transaction History Analysis (Helius Enriched) ---
   async getWalletHistory(address: string, limit: number = 100): Promise<any[]> {
       try {
           if (!this.helius) {
@@ -249,10 +249,10 @@ export class HeliusProvider implements MarketDataProvider {
           }
 
           // Fetch parsed transactions (enriched)
-          // Look for SWAP type primarily
+          // Helius Enriched Transactions are powerful for this
           const response = await this.helius.rpc.getEnrichedTransactions({
               account: address,
-              type: 'SWAP', // Filter for swaps to find "good trades"
+              type: 'SWAP', // Filter for swaps
               limit: limit,
           });
 
