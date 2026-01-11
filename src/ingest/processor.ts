@@ -1,4 +1,4 @@
-import { RawMessage } from '../generated/client/client';
+import { RawMessage } from '@prisma/client';
 import { detectSignal } from './classifier';
 import { createSignal, getSignalByMint } from '../db/signals';
 import { provider } from '../providers';

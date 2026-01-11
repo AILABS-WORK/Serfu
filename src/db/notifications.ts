@@ -1,5 +1,5 @@
 import { prisma } from './index';
-import { Prisma } from '../generated/client/client';
+import { Prisma } from '@prisma/client';
 
 export type NotificationSettingsCreateInput = Prisma.UserNotificationSettingsCreateInput;
 
@@ -39,5 +39,8 @@ export const updateNotificationSettings = async (
 export const getNotificationSettings = async (userId: number) => {
   return getOrCreateNotificationSettings(userId);
 };
+
+
+
 
 

@@ -9,7 +9,7 @@ const getChartModules = async () => {
   return { ChartJSNodeCanvas };
 };
 
-import { PriceSample, Signal } from '../generated/client/client';
+import { PriceSample, Signal } from '@prisma/client';
 
 const width = 800;
 const height = 400;

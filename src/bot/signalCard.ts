@@ -1,4 +1,4 @@
-import { Signal } from '../generated/client/client';
+import { Signal } from '@prisma/client';
 import { TokenMeta } from '../providers/types';
 import { prisma } from '../db';
 import { analyzeHolders, WhaleAlert } from '../analytics/holders';
