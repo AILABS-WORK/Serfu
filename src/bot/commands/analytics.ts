@@ -253,7 +253,7 @@ export const handleEarliestCallers = async (ctx: Context) => {
     const users = await prisma.user.findMany({
       where: { id: { in: top.map((t) => t[0]) } },
     });
-    const userMap = new Map(users.map((u: any) => [u.id, u]));
+    const userMap = new Map<number, any>(users.map((u: any) => [u.id, u]));
 
     let message = '🚀 *Earliest Callers (7d, your workspace)*\n\n';
     top.forEach(([uid, cnt], idx) => {
