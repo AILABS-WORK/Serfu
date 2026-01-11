@@ -256,7 +256,7 @@ export class HeliusProvider implements MarketDataProvider {
           while (fetched < limit) {
               const batchLimit = Math.min(100, limit - fetched);
               
-              const response = await this.helius.rpc.getEnrichedTransactions({
+              const response: any[] = await this.helius.rpc.getEnrichedTransactions({
                   account: address,
                   type: 'SWAP', // Filter for swaps
                   limit: batchLimit,

@@ -42,7 +42,7 @@ export class SolanaProvider {
       // Fetch account info to get owners (in batches if needed, but 10 is small)
       // Actually we need `getParsedAccountInfo` or parse the data manually.
       // `getMultipleAccountsInfo` is efficient.
-      const accountKeys = topAccounts.map(acc => acc.address);
+      const accountKeys = topAccounts.map((acc: any) => acc.address);
       const accountsInfo = await this.connection.getMultipleAccountsInfo(accountKeys);
 
       for (let i = 0; i < topAccounts.length; i++) {
@@ -82,4 +82,5 @@ export class SolanaProvider {
 }
 
 export const solana = new SolanaProvider();
+
 

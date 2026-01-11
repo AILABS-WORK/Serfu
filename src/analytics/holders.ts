@@ -20,7 +20,7 @@ export const analyzeHolders = async (signalId: number, mint: string): Promise<Wh
 
     // 2. Store Holders in DB
     const holderRecords = await Promise.all(
-      holders.map(async (h) => {
+      holders.map(async (h: TokenHolderInfo) => {
         // Create or get Holder
         const holder = await prisma.tokenHolder.upsert({
           where: { address: h.address },
