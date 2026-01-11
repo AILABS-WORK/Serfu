@@ -270,11 +270,72 @@ Source: ${priceSource}
   });
 
 
+  // --- MENU ACTIONS ---
+  
+  bot.action('live_signals', async (ctx) => {
+      await ctx.answerCbQuery('Live Signals are pushed to the channel.');
+      // Optionally show a list or instructions
+  });
+
+  bot.action('distributions', async (ctx) => {
+      await ctx.answerCbQuery('Distributions coming soon!');
+  });
+
+  bot.action('groups_menu', async (ctx) => {
+      // Implement groups list similar to /groups command
+      const { handleGroupsCommand } = await import('./commands/groups');
+      await handleGroupsCommand(ctx as any); 
+  });
+
+  bot.action('settings_menu', async (ctx) => {
+      const { handleSettingsCommand } = await import('./commands/settings');
+      await handleSettingsCommand(ctx as any);
+  });
+
+  bot.action('watchlist', async (ctx) => {
+      await ctx.answerCbQuery('Watchlist coming soon!');
+  });
+
   // --- ANALYTICS ACTIONS (Existing) ---
   
   bot.action('analytics', handleAnalyticsCommand);
   
   bot.action('analytics_recent', handleRecentCalls);
+  
+  bot.action('analytics_groups', async (ctx) => {
+      // Reuse groups handler or specific analytics view
+      // Let's redirect to groups list for now, or show group stats picker
+      await ctx.editMessageText('👥 *My Groups*\nSelect a group for stats:', {
+          parse_mode: 'Markdown',
+          reply_markup: {
+              inline_keyboard: [
+                  [{ text: 'Use /groupstats in group', callback_data: 'noop' }],
+                  [{ text: '🔙 Back', callback_data: 'analytics' }]
+              ]
+          }
+      });
+  });
+
+  bot.action('analytics_users_input', async (ctx) => {
+      await ctx.editMessageText('👤 *User Stats*\nReply with /userstats <id> or check leaderboards.', {
+          parse_mode: 'Markdown',
+          reply_markup: {
+              inline_keyboard: [
+                  [{ text: '🔙 Back', callback_data: 'analytics' }]
+              ]
+          }
+      });
+  });
+
+  bot.action('analytics_earliest', async (ctx) => {
+      const { handleEarliestCallers } = await import('./commands/analytics');
+      await handleEarliestCallers(ctx as any);
+  });
+
+  bot.action('analytics_confirms', async (ctx) => {
+      const { handleCrossGroupConfirms } = await import('./commands/analytics');
+      await handleCrossGroupConfirms(ctx as any);
+  });
   
   bot.action('analytics_refresh', async (ctx) => {
      try {
