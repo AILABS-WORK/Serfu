@@ -68,8 +68,8 @@ export const handleGroupsCommand = async (ctx: Context) => {
       );
     }
 
-    const channels = groups.filter(g => g.chatType === 'channel');
-    const normalGroups = groups.filter(g => g.chatType !== 'channel');
+    const channels = groups.filter((g: any) => g.chatType === 'channel');
+    const normalGroups = groups.filter((g: any) => g.chatType !== 'channel');
 
     let message = '📋 *Your Monitored Groups*\n\n';
     

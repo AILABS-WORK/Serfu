@@ -115,7 +115,7 @@ export const handleUserStatsCommand = async (ctx: Context, userIdStr?: string) =
         else return ctx.reply("You are not registered in the system yet.");
     }
     
-    const targetUserId = parseInt(userIdStr);
+    const targetUserId = parseInt(userIdStr || '0');
     const stats = await getUserStats(targetUserId, 'ALL');
 
     if (!stats) {
@@ -232,7 +232,7 @@ export const handleEarliestCallers = async (ctx: Context) => {
     });
 
     const firstByMint = new Map<string, { userId: number | null; detectedAt: Date }>();
-    signals.forEach((s) => {
+    signals.forEach((s: any) => {
       if (!firstByMint.has(s.mint)) {
         firstByMint.set(s.mint, { userId: s.userId, detectedAt: s.detectedAt });
       }
@@ -253,7 +253,7 @@ export const handleEarliestCallers = async (ctx: Context) => {
     const users = await prisma.user.findMany({
       where: { id: { in: top.map((t) => t[0]) } },
     });
-    const userMap = new Map(users.map((u) => [u.id, u]));
+    const userMap = new Map(users.map((u: any) => [u.id, u]));
 
     let message = '🚀 *Earliest Callers (7d, your workspace)*\n\n';
     top.forEach(([uid, cnt], idx) => {
@@ -286,7 +286,7 @@ export const handleCrossGroupConfirms = async (ctx: Context) => {
     });
 
     const byMint = new Map<string, Set<number>>();
-    signals.forEach((s) => {
+    signals.forEach((s: any) => {
       if (!byMint.has(s.mint)) byMint.set(s.mint, new Set());
       byMint.get(s.mint)!.add(s.groupId || -1);
     });
