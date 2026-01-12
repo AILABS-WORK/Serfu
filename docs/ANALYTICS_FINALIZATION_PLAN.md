@@ -1,104 +1,108 @@
-# Analytics & Leaderboard Finalization Plan
+# Analytics & Feature Finalization Plan
 
-This document outlines the steps to finalize the bot's analytics features, ensuring all dashboard buttons are functional, metrics are accurate, and channel signals are correctly attributed.
+This document outlines the exhaustive list of features, their current status, and the precise steps required to achieve full functionality and integration.
 
-## 1. Core Issues to Fix Immediately
+## 1. Core Feature: Recent Calls
+**Status:** Partially Fixed. Display logic updated to show Channel Names.
+**Missing/Bug:** Channel signals may still be missing from the list if the query filters them out or if they are "zombie" signals from before the fix.
+**Goal:** Ensure **ALL** signals (User & Channel) appear in "Recent Calls" with correct attribution and live metrics.
 
-### A. Recent Calls & Channel Signals
-- **Problem**: Signals from channels are not appearing in "Recent Calls", or appear with "Unknown User".
-- **Root Cause**: 
-    1. Channel posts (anonymous) often have no `userId` attached to the signal.
-    2. Display logic expects a `user` relation and defaults to "Unknown".
-    3. Query might be accidentally filtering out signals without users if not careful (though current Prisma query looks okay, the display is the issue).
-- **Fix**: 
-    - Update `handleRecentCalls` to check if `signal.user` exists.
-    - If no user, use `signal.group.name` (Channel Name) as the "Caller".
-    - Ensure the database query includes signals from owned groups even if `userId` is null.
+### Action Plan:
+1.  **Verify Query Scope:** `handleRecentCalls` queries `group: { owner: { userId: ownerTelegramId } }`.
+    *   *Issue:* If a channel was added *before* the "auto-register" fix, it might be owned by a "zombie" user (ID = negative chat ID). These signals are invisible to the real user.
+    *   *Fix:* Running `/addchannel` now claims the group. **However**, old signals linked to the "zombie group ID" won't move to the "new user-owned group ID" automatically.
+    *   *Solution:* We must either migrate old signals or accept they are lost to history. Going forward, new signals will work.
+    *   *Verification:* Post a **NEW** signal in a channel now that the fix is live. It *must* appear.
+2.  **Display Logic:**
+    *   *Requirement:* If `signal.userId` is null, display `signal.group.name`.
+    *   *Status:* **Completed** in `handleRecentCalls`.
+3.  **Metrics:**
+    *   *Requirement:* Live Price, ATH, Drawdown.
+    *   *Status:* **Completed** (using `updateHistoricalMetrics` + live Quote).
 
-### B. "Unknown User" in Signal Cards
-- **Problem**: Forwarded cards for channel posts show "Alpha caller • @Unknown User".
-- **Fix**: 
-    - Update `generateFirstSignalCard` and `generateDuplicateSignalCard`.
-    - If `userName` is "Unknown User" or missing, and it's a channel source, display the **Channel Name** instead.
+## 2. Core Feature: Leaderboards
+**Status:** Implemented but potentially incomplete for Channels.
+**Goal:** Ensure Channels appear in "Group Leaderboards" and Users in "User Leaderboards".
 
-## 2. Feature Implementation Status & Tasks
+### Action Plan:
+1.  **Group Leaderboard (`/groupleaderboard`):**
+    *   *Logic:* Aggregates by `groupId`.
+    *   *Requirement:* Ensure channels (which are groups) are included.
+    *   *Verification:* Check if `getGroupStats` allows channel-type groups. (It does, `Group` model has `chatType`).
+2.  **User Leaderboard (`/userleaderboard`):**
+    *   *Logic:* Aggregates by `userId`.
+    *   *Issue:* Channel signals have `userId: null`. They are excluded from User Leaderboards.
+    *   *Decision:* This is correct. Channels are not Users. They should dominate the Group Leaderboard.
+3.  **UI Integration:**
+    *   *Task:* Wire up `leaderboard_menu` buttons to call the existing commands via callback.
 
-### 🏆 Leaderboards
-- **Current Status**: Commands exist (`/groupleaderboard`, `/userleaderboard`), but need verifying against "Menu" buttons.
-- **Tasks**:
-    - Ensure "🏆 Leaderboards" menu button routes to a sub-menu asking "Groups" or "Users".
-    - Wire up `leaderboard_groups` and `leaderboard_users` callbacks.
-    - Verify scoring logic (Consistency vs Total Wins).
+## 3. Core Feature: Analytics Menu & Buttons
+**Status:** Many buttons are placeholders.
+**Goal:** Every button on the dashboard must do something useful.
 
-### 👥 My Groups
-- **Current Status**: `/groups` command works.
-- **Tasks**:
-    - Ensure "👥 My Groups" button triggers the existing `handleGroupsCommand` logic.
-    - Add "Stats" button next to each group in the list to jump to `/groupstats`.
+### Action Plan:
+1.  **🟢 Live Signals:**
+    *   *Function:* Show list of active signals (e.g., < 24h old, not stopped out).
+    *   *Implementation:* New handler `handleLiveSignals`. Query `trackingStatus: 'ACTIVE'`.
+    *   *UI:* Compact list with current PnL.
+2.  **📊 Distributions:**
+    *   *Function:* Show win-rate distribution (e.g., Histogram of multipliers).
+    *   *Implementation:* New handler `handleDistributions`. Aggregate `athMultiple` buckets.
+    *   *UI:* Text-based bar chart.
+3.  **⭐ Watchlist:**
+    *   *Function:* Save favorite signals.
+    *   *Implementation:*
+        *   Schema: Add `Watchlist` model (`userId`, `signalId`).
+        *   UI: Add "Add to Watchlist" button on signal cards.
+        *   View: Show saved signals list.
+4.  **👥 My Groups:**
+    *   *Status:* Works (`/groups`).
+    *   *Improvement:* Add inline buttons to each group in the list to "View Stats" directly.
+5.  **👤 User Stats:**
+    *   *Status:* Works (`/userstats`).
+    *   *Improvement:* If clicked without args, show *my* stats.
 
-### 📜 Recent Calls
-- **Current Status**: Implemented but buggy for channels.
-- **Tasks**:
-    - Apply Fix A (above).
-    - Ensure "ATH" and "Cur" metrics are live (already using `metrics` table).
+## 4. Core Feature: Signal Cards
+**Status:** Good, but "Unknown User" fix needs verification.
+**Goal:** Perfect presentation.
 
-### 👤 User Stats
-- **Current Status**: `/userstats` works.
-- **Tasks**:
-    - Ensure "👤 User Stats" button prompts for a user or shows the *current* user's stats if they have any.
-    - Add a "My Stats" fallback if no ID is provided.
+### Action Plan:
+1.  **Channel Attribution:**
+    *   *Status:* **Fixed** in `generateFirstSignalCard` and `generateDuplicateSignalCard`.
+2.  **Whale Alerts:**
+    *   *Status:* Implemented.
+    *   *Verification:* Ensure it triggers on real data.
 
-### 🚀 Earliest Callers
-- **Current Status**: Implemented (`handleEarliestCallers`).
-- **Tasks**:
-    - Verify it correctly counts "First Caller" events across the entire database or workspace.
-    - Ensure it filters by the user's monitored scope (optional, but requested "your workspace").
+## 5. System: Metrics Calculation
+**Status:** Robust (Bitquery + GeckoTerminal + Helius).
+**Goal:** Accuracy and Speed.
 
-### 🔄 Cross-Group Confirms
-- **Current Status**: Implemented (`handleCrossGroupConfirms`).
-- **Tasks**:
-    - Verify it correctly identifies same-mint signals across different groups.
+### Action Plan:
+1.  **ATH Accuracy:**
+    *   *Logic:* `updateHistoricalMetrics` uses OHLCV.
+    *   *Edge Case:* If a token pumps 100x in 1 minute, 1-minute candles might miss the wick? (Unlikely, High is captured).
+    *   *Status:* Acceptable.
+2.  **Performance:**
+    *   *Task:* Add database indexes on `Signal(detectedAt, groupId)`, `Signal(userId, detectedAt)`.
 
-### 📊 Distributions
-- **Current Status**: Placeholder.
-- **Tasks**:
-    - Implement a simple "Win Rate Distribution" text visualization.
-    - Example: "2x: 40% | 5x: 10% | 10x: 2%".
+## 6. Full Integration Checklist (The "Definition of Done")
 
-### 🟢 Live Signals
-- **Current Status**: Placeholder.
-- **Tasks**:
-    - Implement logic to fetch signals with `trackingStatus: 'ACTIVE'`.
-    - Show a compact list of currently active plays with their current PnL.
+- [ ] **Recent Calls:** Shows User signals AND Channel signals (with Channel Name).
+- [ ] **Leaderboards:**
+    - [ ] Top Groups shows Channels.
+    - [ ] Top Users shows individual callers.
+- [ ] **My Groups:** Lists all sources, allows management.
+- [ ] **User Stats:** Shows stats for queried user OR self.
+- [ ] **Live Signals:** Shows active plays.
+- [ ] **Distributions:** Shows win rate histogram.
+- [ ] **Watchlist:** Can add/remove and view signals.
+- [ ] **Earliest Callers:** Correctly attributes "First" status across the workspace.
+- [ ] **Cross-Group Confirms:** Correctly identifies overlap.
+- [ ] **Copy Trading:** Simulation works.
 
-### ⭐ Watchlist
-- **Current Status**: Placeholder.
-- **Tasks**:
-    - Add "⭐ Add to Watchlist" button on Signal Cards.
-    - Implement `handleWatchlist` to show saved signals.
-    - Create `Watchlist` table in Prisma (User <-> Signal many-to-many).
+## 7. Immediate Next Steps (Code)
 
-## 3. Metrics & Performance Optimization
-
-### Speed Improvements
-- **Action**: Ensure `price_samples`, `signals`, and `groups` tables have proper indices on `chatId`, `userId`, `mint`, and `detectedAt`.
-- **Action**: Optimize `updateHistoricalMetrics` to batch updates more aggressively if needed.
-
-### Data Accuracy
-- **Action**: Review `historicalMetrics.ts` to ensure it uses the *earliest* detection time for ATH calculation relative to *that specific signal*.
-- **Action**: Ensure Channel signals (with no user) are still counted in "Group Metrics".
-
-## 4. Execution Plan
-
-1.  **Phase 1: Critical Fixes (Done Today)**
-    - Fix Channel display in Recent Calls & Cards.
-    - Wire up all Main Menu buttons to their respective handlers.
-
-2.  **Phase 2: Missing Features (Next)**
-    - Implement "Live Signals" view.
-    - Implement "Distributions" view.
-    - Implement "Watchlist" (Schema change required).
-
-3.  **Phase 3: Validation**
-    - Run the "Full Scan" verification script to ensure all buttons return valid data.
-
+1.  **Implement `handleLiveSignals`** (New Feature).
+2.  **Implement `handleDistributions`** (New Feature).
+3.  **Implement `Watchlist`** (Schema + Logic).
+4.  **Wire up all Menu Buttons** in `actions.ts`.
