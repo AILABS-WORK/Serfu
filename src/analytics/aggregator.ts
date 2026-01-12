@@ -123,14 +123,29 @@ const calculateStats = (signals: SignalWithMetrics[]): EntityStats => {
   };
 };
 
+// ----------------------------------------------------------------------------
+// AGGREGATION HELPERS
+// ----------------------------------------------------------------------------
+
 export const getGroupStats = async (groupId: number, timeframe: TimeFrame): Promise<EntityStats | null> => {
+  // 1. Get the target group
   const group = await prisma.group.findUnique({ where: { id: groupId } });
   if (!group) return null;
 
+  // 2. Find ALL groups with the same chatId (Deduplication Logic)
+  // This ensures if we have duplicate groups for the same Telegram Chat, we aggregate all their signals.
+  const relatedGroups = await prisma.group.findMany({ 
+      where: { chatId: group.chatId },
+      select: { id: true } 
+  });
+  const groupIds = relatedGroups.map(g => g.id);
+
   const since = getDateFilter(timeframe);
+  
+  // 3. Fetch Signals from ALL related groups
   const signals = await prisma.signal.findMany({
     where: {
-      groupId,
+      groupId: { in: groupIds },
       detectedAt: { gte: since },
       metrics: { isNot: null }
     },
