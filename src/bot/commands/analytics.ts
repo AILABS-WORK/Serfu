@@ -639,9 +639,8 @@ export const handleDistributions = async (ctx: Context) => {
     const ownerTelegramId = ctx.from?.id ? BigInt(ctx.from.id) : null;
     if (!ownerTelegramId) return ctx.reply('❌ Unable to identify user.');
 
-    // Use shared aggregator logic
     const { getDistributionStats } = await import('../../analytics/aggregator');
-    const stats = await getDistributionStats(ownerTelegramId, '30D'); // Default to 30D for now
+    const stats = await getDistributionStats(ownerTelegramId, '30D');
 
     if (stats.totalSignals === 0) {
         return ctx.reply('No data available for distributions yet.', {
@@ -651,44 +650,47 @@ export const handleDistributions = async (ctx: Context) => {
         });
     }
 
-    const total = stats.totalSignals;
+    let message = UIHelper.header('MARKET CAP STRATEGY (30D)', '📈');
+    message += `Target: *Your Workspace*\n`;
+    message += UIHelper.separator('HEAVY');
     
-    // Helper for Bar Chart
-    const drawBar = (count: number, max: number = total, length: number = 8) => {
-        if (max === 0) return '░'.repeat(length);
-        const filled = Math.round((count / max) * length);
-        return '█'.repeat(filled) + '░'.repeat(length - filled);
-    };
+    // Table Header
+    message += `\`MCap Range   | Win Rate | Avg X \`\n`;
+    message += `\`─────────────┼──────────┼───────\`\n`;
 
-    const p = (count: number) => ((count / total) * 100).toFixed(0) + '%';
-
-    let message = '📊 *Distribution Analysis (30D)*\n\n';
-
-    // 1. ATH Distribution
-    message += '*📈 ATH Multiples*\n';
-    message += `\`>10x :\` ${drawBar(stats.winRateBuckets.x10_plus)} ${stats.winRateBuckets.x10_plus} (${p(stats.winRateBuckets.x10_plus)})\n`;
-    message += `\`5-10x:\` ${drawBar(stats.winRateBuckets.x5_10)} ${stats.winRateBuckets.x5_10} (${p(stats.winRateBuckets.x5_10)})\n`;
-    message += `\`3-5x :\` ${drawBar(stats.winRateBuckets.x3_5)} ${stats.winRateBuckets.x3_5} (${p(stats.winRateBuckets.x3_5)})\n`;
-    message += `\`2-3x :\` ${drawBar(stats.winRateBuckets.x2_3)} ${stats.winRateBuckets.x2_3} (${p(stats.winRateBuckets.x2_3)})\n`;
-    message += `\`1-2x :\` ${drawBar(stats.winRateBuckets.x1_2)} ${stats.winRateBuckets.x1_2} (${p(stats.winRateBuckets.x1_2)})\n`;
-    message += `\`<1x  :\` ${drawBar(stats.winRateBuckets.loss)} ${stats.winRateBuckets.loss} (${p(stats.winRateBuckets.loss)})\n\n`;
-
-    // 2. MC Bucket Analysis
-    message += '*💰 Market Cap Performance*\n_Win Rate (>2x) | Avg ATH_\n\n';
-    
+    // Table Body
     for (const b of stats.mcBuckets) {
-        if (b.count === 0) continue;
-        const winRate = (b.wins / b.count) * 100;
-        // Determine indicator based on WR
-        let icon = '⚪';
+        // Label padding (13 chars)
+        const label = b.label.padEnd(13, ' ');
+        
+        let winRate = 0;
+        if (b.count > 0) winRate = (b.wins / b.count) * 100;
+        
+        let icon = '🔴';
         if (winRate >= 50) icon = '🟢';
         else if (winRate >= 30) icon = '🟡';
-        else icon = '🔴';
+        if (b.count === 0) icon = '⚪';
 
-        // Format label to align
-        const label = b.label.padEnd(9, ' ');
-        
-        message += `\`${label}\` : ${icon} ${winRate.toFixed(0)}% WR | 💎 ${b.avgMult.toFixed(1)}x\n`;
+        const winStr = `${icon} ${winRate.toFixed(0)}%`.padEnd(8, ' '); // 8 chars roughly
+        const avgStr = `${b.avgMult.toFixed(1)}x`.padEnd(5, ' ');
+
+        message += `\`${label}| ${winStr} | ${avgStr}\`\n`;
+    }
+    
+    message += UIHelper.separator('HEAVY');
+    
+    // Suggestion logic
+    const bestBucket = stats.mcBuckets.reduce((prev, curr) => {
+        const currWR = curr.count > 0 ? curr.wins / curr.count : 0;
+        const prevWR = prev.count > 0 ? prev.wins / prev.count : 0;
+        return currWR > prevWR ? curr : prev;
+    });
+
+    if (bestBucket.count > 0) {
+        const wr = (bestBucket.wins / bestBucket.count) * 100;
+        message += `💡 *STRATEGY SUGGESTION:*\n`;
+        message += `"Focus on tokens in the *${bestBucket.label.trim()}* range.\n`;
+        message += `Win Rate is highest here (*${wr.toFixed(0)}%*)."\n`;
     }
 
     await ctx.reply(message, { 
