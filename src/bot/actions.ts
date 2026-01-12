@@ -287,6 +287,62 @@ Source: ${priceSource}
       await handleGroupsCommand(ctx as any); 
   });
 
+  bot.action('group_add', async (ctx) => {
+      const { getBotInviteLink } = await import('../db/groups');
+      const botInfo = await ctx.telegram.getMe();
+      const inviteLink = await getBotInviteLink(botInfo.username);
+      
+      await ctx.editMessageText(
+          `➕ *Add Group*\n\n` +
+          `1. Click the link below to select a group.\n` +
+          `2. Add the bot to the group.\n` +
+          `3. The bot will automatically register it as a Source.\n\n` +
+          `*To set a Destination:* Run /setdestination inside the group.`,
+          {
+              parse_mode: 'Markdown',
+              reply_markup: {
+                  inline_keyboard: [
+                      [{ text: '🔗 Add to Group', url: inviteLink }],
+                      [{ text: '🔙 Back', callback_data: 'groups_menu' }]
+                  ]
+              }
+          }
+      );
+  });
+
+  bot.action('group_invite', async (ctx) => {
+    const { getBotInviteLink } = await import('../db/groups');
+    const botInfo = await ctx.telegram.getMe();
+    const inviteLink = await getBotInviteLink(botInfo.username);
+    
+    await ctx.reply(`🔗 *Invite Link:*\n${inviteLink}`, { parse_mode: 'Markdown' });
+    await ctx.answerCbQuery();
+  });
+
+  bot.action('channel_add', async (ctx) => {
+      await ctx.editMessageText(
+          `📡 *Add Channel*\n\n` +
+          `1. Go to your Channel info > Administrators.\n` +
+          `2. Add this bot as an Admin.\n` +
+          `3. The bot will automatically detect and register the channel.\n\n` +
+          `*Troubleshooting:*\n` +
+          `If it doesn't appear, forward a message from the channel to this chat, or run:\n` +
+          `/addchannel <channel_id>`,
+          {
+              parse_mode: 'Markdown',
+              reply_markup: {
+                  inline_keyboard: [
+                      [{ text: '🔙 Back', callback_data: 'groups_menu' }]
+                  ]
+              }
+          }
+      );
+  });
+  
+  bot.action('group_settings', async (ctx) => {
+     await ctx.answerCbQuery('Use /groups to see settings for each group.');
+  });
+
   bot.action('settings_menu', async (ctx) => {
       const { handleSettingsCommand } = await import('./commands/settings');
       await handleSettingsCommand(ctx as any);
