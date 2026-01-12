@@ -303,52 +303,132 @@ export const handleEarliestCallers = async (ctx: Context) => {
   try {
     const ownerTelegramId = ctx.from?.id ? BigInt(ctx.from.id) : null;
     if (!ownerTelegramId) return ctx.reply('❌ Unable to identify user.');
-    const since = subDays(new Date(), 7);
+    const since = subDays(new Date(), 7); // 7D default
 
-    // Signals in owner workspace last 7d
+    // 1. Get user workspace (Owned groups + Destination forwards)
+    const userGroups = await prisma.group.findMany({
+        where: { owner: { userId: ownerTelegramId }, isActive: true },
+        select: { id: true, chatId: true, type: true }
+    });
+    const ownedChatIds = userGroups.map(g => g.chatId);
+    
+    // 2. Fetch signals
+    // Note: Earliest Callers logic is a bit complex. It usually means:
+    // "Within the entire ecosystem (or just my workspace?), who called it first?"
+    // If we only look at my workspace, we filter by my groups.
     const signals = await prisma.signal.findMany({
       where: {
         detectedAt: { gte: since },
-        group: { owner: { userId: ownerTelegramId } },
+        chatId: { in: ownedChatIds },
+        // IMPORTANT: Quality Filter. Only count signals that did > 2x.
+        // Or had metrics at all (implies it was tracked).
+        metrics: {
+            athMultiple: { gte: 2.0 } 
+        }
       },
-      select: { id: true, mint: true, detectedAt: true, userId: true },
+      select: { id: true, mint: true, detectedAt: true, userId: true, group: true, user: true, metrics: true },
       orderBy: { detectedAt: 'asc' },
     });
 
-    const firstByMint = new Map<string, { userId: number | null; detectedAt: Date }>();
+    if (signals.length === 0) {
+        return ctx.reply('No high-quality earliest calls (>2x) found in your workspace recently.');
+    }
+
+    // 3. Group by Mint to find the "First Caller" for each token
+    const firstByMint = new Map<string, { 
+        userId: number | null; 
+        groupId: number | null;
+        detectedAt: Date;
+        multiple: number;
+        symbol: string;
+    }>();
+
     signals.forEach((s: any) => {
+      // Since signals are ordered by detectedAt ASC, the first time we see a mint, it's the first call.
       if (!firstByMint.has(s.mint)) {
-        firstByMint.set(s.mint, { userId: s.userId, detectedAt: s.detectedAt });
+        firstByMint.set(s.mint, { 
+            userId: s.userId, 
+            groupId: s.groupId, // We need to handle if groupId isn't selected, but we included 'group' relation usually? Ah select above.
+            detectedAt: s.detectedAt,
+            multiple: s.metrics?.athMultiple || 0,
+            symbol: s.symbol || '?'
+        });
       }
     });
 
-    const counts = new Map<number, number>();
+    // 4. Aggregation: Count how many "First Calls" each User/Channel has
+    const userCounts = new Map<string, { count: number; totalMult: number; wins: number }>();
+
     for (const entry of firstByMint.values()) {
+      let key = 'Unknown';
+      let name = 'Unknown';
+
       if (entry.userId) {
-        counts.set(entry.userId, (counts.get(entry.userId) || 0) + 1);
+          // Resolve User Name? We need to look it up or have it in map.
+          // The signal query didn't fetch user name directly in the loop map.
+          // Let's refactor to simplify.
+          // Actually, we need to map back to the User/Group object.
+          // We can use the 'signals' array again.
+          const sig = signals.find(s => s.userId === entry.userId && s.mint === entry.mint); // This is inefficient but functional for small N
+          if (sig && sig.user) {
+              key = `user:${sig.userId}`;
+              name = sig.user.username ? `@${sig.user.username}` : (sig.user.firstName || 'User');
+          }
+      } else {
+          // Channel Call
+           const sig = signals.find(s => !s.userId && s.mint === entry.mint); // Fallback to group
+           if (sig && sig.group) {
+               key = `group:${sig.group.id}`;
+               name = sig.group.name || `Channel ${sig.group.chatId}`;
+           }
       }
+
+      if (key === 'Unknown') continue;
+
+      if (!userCounts.has(key)) {
+          userCounts.set(key, { count: 0, totalMult: 0, wins: 0 });
+      }
+      const stat = userCounts.get(key)!;
+      stat.count++;
+      stat.totalMult += entry.multiple;
+      // We already filtered query by > 2x, so all are wins? 
+      // Yes, in this context "Earliest Caller" leaderboard is for *good* calls.
     }
 
-    if (counts.size === 0) {
-      return ctx.reply('No earliest callers yet in the last 7 days.');
-    }
+    // 5. Sort & Display
+    const top = Array.from(userCounts.entries())
+        .map(([key, stat]) => {
+            // Retrieve name again? Or store it in map.
+            // Let's just find one signal for this key to get the name.
+            let name = 'Unknown';
+            if (key.startsWith('user:')) {
+                const uid = parseInt(key.split(':')[1]);
+                const u = signals.find(s => s.userId === uid)?.user;
+                name = u?.username ? `@${u.username}` : (u?.firstName || 'User');
+            } else {
+                const gid = parseInt(key.split(':')[1]);
+                const g = signals.find(s => s.group?.id === gid)?.group;
+                name = g?.name || 'Channel';
+            }
+            return { name, ...stat, avg: stat.totalMult / stat.count };
+        })
+        .sort((a, b) => b.count - a.count)
+        .slice(0, 10);
 
-    const top = Array.from(counts.entries()).sort((a, b) => b[1] - a[1]).slice(0, 10);
-    const users = await prisma.user.findMany({
-      where: { id: { in: top.map((t) => t[0]) } },
-    });
-    const userMap = new Map<number, any>(users.map((u: any) => [u.id, u]));
-
-    let message = '🚀 *Earliest Callers (7d, your workspace)*\n\n';
-    top.forEach(([uid, cnt], idx) => {
-      const u = userMap.get(uid);
-      // Use "as any" to access dynamic properties if User type is incomplete in context
-      const name = (u as any)?.username || (u as any)?.firstName || (u as any)?.userId || uid;
+    let message = '🚀 *Top "First Callers" (>2x Wins)*\n_Who finds the gems first in your workspace?_\n\n';
+    top.forEach((t, idx) => {
       const emoji = idx === 0 ? '🥇' : idx === 1 ? '🥈' : idx === 2 ? '🥉' : `${idx + 1}.`;
-      message += `${emoji} @${name} — ${cnt} first calls\n`;
+      message += `${emoji} *${t.name}*\n`;
+      message += `   🎯 ${t.count} First Calls | 💎 Avg ATH: ${t.avg.toFixed(1)}x\n\n`;
     });
 
-    await ctx.reply(message, { parse_mode: 'Markdown' });
+    await ctx.reply(message, { 
+        parse_mode: 'Markdown',
+        reply_markup: {
+            inline_keyboard: [[{ text: '🔙 Back', callback_data: 'analytics' }, { text: '❌ Close', callback_data: 'delete_msg' }]]
+        }
+    });
+
   } catch (error) {
     logger.error('Error in earliest callers:', error);
     ctx.reply('Error computing earliest callers.');
