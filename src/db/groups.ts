@@ -76,9 +76,21 @@ export const getGroupByChatId = async (chatId: bigint, ownerTelegramId: bigint) 
 
 // Find any group (any owner) by chatId (useful for channels where owner is established via /addchannel)
 export const getAnyGroupByChatId = async (chatId: bigint) => {
-  return prisma.group.findFirst({
+  const groups = await prisma.group.findMany({
     where: { chatId },
+    include: { owner: true }
   });
+  
+  // Prioritize groups where the owner is NOT the channel itself (Zombie groups)
+  // Channels have negative IDs, users have positive IDs.
+  // Zombie groups have owner.userId == chatId.
+  const validGroups = groups.filter(g => g.owner.userId !== g.chatId);
+  
+  if (validGroups.length > 0) {
+    return validGroups[0];
+  }
+  
+  return groups[0] || null;
 };
 
 export const getAllGroups = async (ownerTelegramId: bigint, activeOnly: boolean = false) => {

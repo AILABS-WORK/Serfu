@@ -29,16 +29,17 @@ export const forwardSignalToDestination = async (signal: Signal) => {
 
     const sourceGroup = signalWithRelations.group;
     if (!sourceGroup?.owner) {
+      logger.debug(`Forwarding skipped: No owner for source group ${signal.chatId}`);
       return; // No owner, can't forward
     }
     
     const ownerTelegramId = sourceGroup.owner.userId; // Owner's Telegram ID
-    const ownerId = sourceGroup.ownerId;
     
     // Get destination groups for the owner of the source group
     const destinationGroups = await getDestinationGroups(ownerTelegramId);
     
     if (destinationGroups.length === 0) {
+      logger.debug(`Forwarding skipped: No destination groups for owner ${ownerTelegramId}`);
       return; // No destination groups configured for this user
     }
 

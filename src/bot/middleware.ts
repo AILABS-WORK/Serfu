@@ -198,12 +198,12 @@ export const ingestMiddleware: Middleware<Context> = async (ctx, next) => {
       logger.error('Error ingesting message:', error);
     }
   } else if (channelPost && typeof channelPost === 'object' && 'caption' in channelPost) {
-    // Handle channel post captions
+      // Handle channel post captions
     try {
       const message = channelPost as any;
       const chatId = message.chat?.id;
       const messageId = message.message_id;
-      const senderId = message.from?.id || chatId;
+      const senderId = message.from?.id || null;
       const senderUsername = message.from?.username;
       const sentAt = new Date(message.date * 1000);
       const rawText = message.caption || '';
@@ -223,14 +223,25 @@ export const ingestMiddleware: Middleware<Context> = async (ctx, next) => {
       }
       
       let groupId: number | null = null;
-      try {
-        const group = await createOrUpdateGroup(BigInt(chatId), BigInt(senderId), {
-          name: message.chat?.title || `Channel ${chatId}`,
-          type: 'source',
-        });
-        groupId = group.id;
-      } catch (error) {
-        logger.debug(`Could not create channel for chat ${chatId}:`, error);
+      
+      // Try to find existing claimed channel
+      const existing = await getAnyGroupByChatId(BigInt(chatId));
+      if (existing) {
+        groupId = existing.id;
+      } else if (senderId) {
+         // Only create group if we have a real sender (not just a channel post without signer)
+         try {
+          const group = await createOrUpdateGroup(BigInt(chatId), BigInt(senderId), {
+            name: message.chat?.title || `Channel ${chatId}`,
+            type: 'source',
+            chatType: 'channel',
+          });
+          groupId = group.id;
+        } catch (error) {
+          logger.debug(`Could not create channel for chat ${chatId}:`, error);
+        }
+      } else {
+         logger.debug(`Channel ${chatId} not claimed and no senderId in caption; skipping group creation.`);
       }
       
       const rawMessage = await createRawMessage({
