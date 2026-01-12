@@ -47,6 +47,7 @@ export const forwardSignalToDestination = async (signal: Signal) => {
 
     // 4. Iterate over each subscription (User context)
     for (const subscription of sourceSubscriptions) {
+        if (!subscription.owner) continue;
         const ownerTelegramId = subscription.owner.userId;
         const ownerId = subscription.ownerId;
         const groupName = subscription.name || 'Unknown Group';
@@ -57,7 +58,7 @@ export const forwardSignalToDestination = async (signal: Signal) => {
 
         // Check Duplicate CA for THIS user's ecosystem
         // Pass the ownerId to checkDuplicateCA to see if THEY have seen this mint before
-        const duplicateCheck = await checkDuplicateCA(signal.mint, ownerId, undefined, signal.id);
+        const duplicateCheck = await checkDuplicateCA(signal.mint, ownerId ?? undefined, undefined, signal.id);
         const isDup = duplicateCheck.isDuplicate;
 
         for (const destGroup of destinationGroups) {

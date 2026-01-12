@@ -84,7 +84,7 @@ export const getAnyGroupByChatId = async (chatId: bigint) => {
   // Prioritize groups where the owner is NOT the channel itself (Zombie groups)
   // Channels have negative IDs, users have positive IDs.
   // Zombie groups have owner.userId == chatId.
-  const validGroups = groups.filter(g => g.owner.userId !== g.chatId);
+  const validGroups = groups.filter(g => g.owner && g.owner.userId !== g.chatId);
   
   if (validGroups.length > 0) {
     return validGroups[0];
