@@ -47,20 +47,30 @@ export const handleAnalyticsCommand = async (ctx: Context) => {
 };
 
 const formatEntityStats = (stats: EntityStats, type: 'GROUP' | 'USER'): string => {
-  let msg = UIHelper.header(`${type === 'GROUP' ? 'Group' : 'User'} Analytics: ${stats.name}`);
-  msg += UIHelper.subHeader('Overall Performance');
-  msg += UIHelper.field('Signals', stats.totalSignals.toString()) + '\n';
-  msg += UIHelper.field('Win Rate (>2x)', UIHelper.formatPercent(stats.winRate * 100)) + '\n';
-  msg += UIHelper.field('Win Rate (>5x)', UIHelper.formatPercent(stats.winRate5x * 100)) + '\n';
-  msg += UIHelper.field('Avg ATH', UIHelper.formatMultiple(stats.avgMultiple)) + '\n';
-  msg += UIHelper.field('Avg Time to ATH', `${stats.avgTimeToAth.toFixed(0)} min`) + '\n';
-  msg += UIHelper.field('Avg Drawdown', UIHelper.formatPercent(stats.avgDrawdown * 100)) + '\n';
-  msg += UIHelper.field('Reliability Score', stats.score.toFixed(0)) + '\n';
+  let msg = UIHelper.header(`${type === 'GROUP' ? 'Group' : 'User'} Analytics: ${stats.name}`, '📊');
+  
+  msg += UIHelper.subHeader('PERFORMANCE MATRIX', '🔹');
+  msg += `   🏆 *Score:* \`${stats.score.toFixed(0)}/100\`\n`;
+  msg += `   📡 *Signals:* ${stats.totalSignals}\n`;
+  msg += `   ✅ *Win Rate:* ${UIHelper.formatPercent(stats.winRate * 100)} ${UIHelper.progressBar(stats.winRate * 100, 100, 6)}\n`;
+  msg += `   💎 *Moon Rate:* ${UIHelper.formatPercent(stats.winRate5x * 100)} (>5x)\n`;
+  msg += `   📈 *Avg ROI:* ${UIHelper.formatMultiple(stats.avgMultiple)}\n`;
+
+  msg += UIHelper.subHeader('RISK PROFILE', '🔹');
+  msg += `   🎲 *Consistency:* ${stats.consistency.toFixed(2)} (StdDev)\n`;
+  msg += `   📉 *Avg Drawdown:* ${UIHelper.formatPercent(stats.avgDrawdown * 100)}\n`;
+  msg += `   💀 *Rug Rate:* ${UIHelper.formatPercent(stats.rugRate * 100)}\n`;
+
+  msg += UIHelper.subHeader('BEHAVIORAL ANALYSIS', '🔹');
+  msg += `   💰 *Avg MCap:* $${(stats.mcapAvg / 1000).toFixed(1)}k\n`;
+  msg += `   ⚡ *Sniper Score:* ${stats.sniperScore.toFixed(0)}%\n`;
+  msg += `   ⏳ *Time to Peak:* ${stats.timeToPeak.toFixed(0)} min\n`;
+  msg += `   🔥 *Streak:* ${stats.consecutiveWins} wins\n`;
 
   if (stats.bestCall) {
-    msg += UIHelper.subHeader('Best Call (ATH)');
-    msg += UIHelper.field('Token', `${stats.bestCall.symbol} (\`${stats.bestCall.mint}\`)`) + '\n';
-    msg += UIHelper.field('Peak', UIHelper.formatMultiple(stats.bestCall.multiple)) + '\n';
+    msg += UIHelper.subHeader('CROWN JEWEL (Best Call)', '🔹');
+    msg += `   💎 *${stats.bestCall.symbol}* (\`${stats.bestCall.mint}\`)\n`;
+    msg += `   🚀 *${stats.bestCall.multiple.toFixed(2)}x* Peak | 📅 ${stats.bestCall.detectedAt ? stats.bestCall.detectedAt.toLocaleDateString() : 'N/A'}\n`;
   }
 
   return msg;

@@ -12,10 +12,20 @@ export interface EntityStats {
     mint: string;
     symbol: string;
     multiple: number;
+    detectedAt: Date;
   } | null;
   avgDrawdown: number;
   avgTimeToAth: number; // in minutes
   score: number; // Reliability score
+  
+  // --- New Metrics ---
+  consistency: number; // Standard Deviation of ATH Multiples
+  rugRate: number; // % of calls with < 0.5x ATH or >90% Drawdown
+  mcapAvg: number; // Average Entry Market Cap
+  timeToPeak: number; // Avg time to ATH (same as avgTimeToAth, keeping alias)
+  sniperScore: number; // % of calls within 10m of token creation (mocked if no creation date)
+  consecutiveWins: number; // Current streak of > 2x calls
+  followThrough: number; // % of calls that are > 2x
 }
 
 type TimeFrame = '7D' | '30D' | 'ALL';
@@ -46,7 +56,14 @@ const calculateStats = (signals: SignalWithMetrics[]): EntityStats => {
       bestCall: null,
       avgDrawdown: 0,
       avgTimeToAth: 0,
-      score: 0
+      score: 0,
+      consistency: 0,
+      rugRate: 0,
+      mcapAvg: 0,
+      timeToPeak: 0,
+      sniperScore: 0,
+      consecutiveWins: 0,
+      followThrough: 0
     };
   }
 
@@ -58,12 +75,31 @@ const calculateStats = (signals: SignalWithMetrics[]): EntityStats => {
   let timeCount = 0;
   let bestSignal: any = null;
   let maxMult = 0;
+  
+  // New Metrics Accumulators
+  let rugCount = 0;
+  let totalMcap = 0;
+  let mcapCount = 0;
+  const multiples: number[] = [];
+  let sniperCount = 0; // Calls early
+  
+  // Sort signals by date for consecutive wins logic
+  const sortedSignals = [...signals].sort((a, b) => b.detectedAt.getTime() - a.detectedAt.getTime());
+  
+  // Calculate Consecutive Wins (Iterate recent to oldest)
+  let consecutiveWins = 0;
+  for (const s of sortedSignals) {
+      const m = s.metrics?.athMultiple || 0;
+      if (m > 2) consecutiveWins++;
+      else break;
+  }
 
   for (const s of signals) {
     if (!s.metrics) continue;
     
     // Multiple
     const mult = s.metrics.athMultiple || 0;
+    multiples.push(mult);
     totalMult += mult;
     if (mult > 2) wins++;
     if (mult > 5) wins5x++;
@@ -72,11 +108,14 @@ const calculateStats = (signals: SignalWithMetrics[]): EntityStats => {
       bestSignal = s;
     }
 
+    // Rug Rate: ATH < 0.5 OR Drawdown < -0.9
+    const dd = s.metrics.maxDrawdown || 0;
+    if (mult < 0.5 || dd < -0.9) rugCount++;
+
     // Drawdown (stored as negative decimal e.g. -0.4)
-    totalDrawdown += s.metrics.maxDrawdown || 0;
+    totalDrawdown += dd;
 
     // Time to ATH
-    // We compare detectedAt (signal creation) with athAt
     if (s.metrics.athAt && s.detectedAt) {
       const diffMs = new Date(s.metrics.athAt).getTime() - new Date(s.detectedAt).getTime();
       if (diffMs > 0) {
@@ -84,26 +123,48 @@ const calculateStats = (signals: SignalWithMetrics[]): EntityStats => {
         timeCount++;
       }
     }
+    
+    // Mcap
+    if (s.entryMarketCap) {
+        totalMcap += s.entryMarketCap;
+        mcapCount++;
+    }
+    
+    // Sniper Score: Proxy - if entry supply ~ total supply and low mcap? 
+    // Or just check if we caught it very early? 
+    // Let's use "Entry MC < 50k" as proxy for "Sniper" or early call for now.
+    // Real sniper score needs token creation date.
+    if (s.entryMarketCap && s.entryMarketCap < 20000) {
+        sniperCount++;
+    }
   }
 
   const count = signals.length;
   const avgMultiple = count ? totalMult / count : 0;
   const winRate = count ? wins / count : 0;
   const winRate5x = count ? wins5x / count : 0;
-  const avgDrawdown = count ? totalDrawdown / count : 0; // e.g. -0.25
+  const avgDrawdown = count ? totalDrawdown / count : 0; 
   const avgTimeToAth = timeCount ? totalTime / timeCount : 0;
+  
+  const rugRate = count ? rugCount / count : 0;
+  const mcapAvg = mcapCount ? totalMcap / mcapCount : 0;
+  const sniperScore = count ? (sniperCount / count) * 100 : 0;
+  
+  // Consistency (Std Dev)
+  let variance = 0;
+  if (count > 1) {
+      const mean = avgMultiple;
+      variance = multiples.reduce((acc, val) => acc + Math.pow(val - mean, 2), 0) / count;
+  }
+  const consistency = Math.sqrt(variance); // Standard Deviation. Lower is more consistent? 
+  // User wants "Consistency Score". Maybe invert it? Or just show StdDev.
+  // Low StdDev = High Consistency.
+  
+  // Follow Through (Proxy: % > 2x) same as winRate for now
+  const followThrough = winRate; 
 
-  // Improved Score: 
-  // Base: WinRate * 40
-  // Bonus: AvgMult * 5
-  // Bonus: WinRate5x * 20 (reward moonshots)
-  // Penalty: Drawdown * 50 (punish rekt calls heavily)
-  // WinRate 0.5 -> 20
-  // WinRate5x 0.1 -> 2
-  // AvgMult 3x -> 15
-  // Drawdown -0.3 -> +15
-  // Total ~ 52
-  const score = (winRate * 40) + (winRate5x * 20) + (avgMultiple * 5) - (avgDrawdown * 50);
+  // Improved Score Algorithm
+  const score = (winRate * 40) + (winRate5x * 20) + (avgMultiple * 5) - (avgDrawdown * 50) - (rugRate * 50);
 
   return {
     id: 0, // Placeholder
@@ -117,9 +178,17 @@ const calculateStats = (signals: SignalWithMetrics[]): EntityStats => {
     bestCall: bestSignal ? {
       mint: bestSignal.mint,
       symbol: bestSignal.symbol || 'Unknown',
-      multiple: bestSignal.metrics?.athMultiple || 0
+      multiple: bestSignal.metrics?.athMultiple || 0,
+      detectedAt: bestSignal.detectedAt
     } : null,
-    score
+    score,
+    consistency,
+    rugRate,
+    mcapAvg,
+    timeToPeak: avgTimeToAth,
+    sniperScore,
+    consecutiveWins,
+    followThrough
   };
 };
 
