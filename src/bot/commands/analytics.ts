@@ -359,43 +359,39 @@ export const handleRecentCalls = async (ctx: Context) => {
       },
     });
 
-    let message = '📜 *Recent Calls*\n\n';
-    for (const sig of signals) {
-      let currentPrice: number | null = null;
-      try {
-        const quote = await provider.getQuote(sig.mint);
-        currentPrice = quote.price;
-      } catch (err) {
-        logger.debug(`Recent calls quote failed for ${sig.mint}:`, err);
-      }
+            let message = '📜 *Recent Calls*\n\n';
+            for (const sig of signals) {
+              let currentPrice: number | null = null;
+              try {
+                const quote = await provider.getQuote(sig.mint);
+                currentPrice = quote.price;
+              } catch (err) {
+                logger.debug(`Recent calls quote failed for ${sig.mint}:`, err);
+              }
 
-      const entryPrice = sig.entryPrice || null;
-      // Calculate current multiple live
-      const multiple = currentPrice && entryPrice ? currentPrice / entryPrice : null;
-      
-      // Get historical ATH/Drawdown from metrics
-      // Ensure ATH is at least the current multiple
-      let athMult = sig.metrics?.athMultiple || 1.0;
-      if (multiple && athMult < multiple) {
-          athMult = multiple;
-      }
-      // If we are down bad (multiple < 1) and no metrics exist, default ATH to 1.0x (Entry)
-      if (!sig.metrics && (!multiple || multiple < 1)) {
-          athMult = 1.0;
-      }
-      
-      const drawdown = sig.metrics?.maxDrawdown ?? 0;
+              const entryPrice = sig.entryPrice || null;
+              const multiple = currentPrice && entryPrice ? currentPrice / entryPrice : null;
+              
+              let athMult = sig.metrics?.athMultiple || 1.0;
+              if (multiple && athMult < multiple) {
+                  athMult = multiple;
+              }
+              if (!sig.metrics && (!multiple || multiple < 1)) {
+                  athMult = 1.0;
+              }
+              
+              const drawdown = sig.metrics?.maxDrawdown ?? 0;
 
-      // User name
-      const callerName = sig.user?.username || sig.user?.firstName || 'Unknown';
+              const callerName = sig.user?.username || sig.user?.firstName;
+              const displayCaller = callerName ? `@${callerName}` : (sig.group?.name || 'Unknown Channel');
 
-      message += `• *${sig.name || sig.symbol || sig.mint}* (${sig.symbol || 'N/A'})\n`;
-      message += `  Group: ${sig.group?.name || sig.group?.chatId || 'N/A'}\n`;
-      message += `  Caller: @${callerName}\n`;
-      message += `  Entry: $${entryPrice ? entryPrice.toFixed(6) : 'Pending'} | Cur: ${multiple ? `${multiple.toFixed(2)}x` : 'N/A'}\n`;
-      message += `  ATH: \`${athMult.toFixed(2)}x\` | DD: \`${(drawdown * 100).toFixed(0)}%\`\n`;
-      message += `  Mint: \`${sig.mint}\`\n\n`;
-    }
+              message += `• *${sig.name || sig.symbol || sig.mint}* (${sig.symbol || 'N/A'})\n`;
+              message += `  Group: ${sig.group?.name || sig.group?.chatId || 'N/A'}\n`;
+              message += `  Caller: ${displayCaller}\n`;
+              message += `  Entry: $${entryPrice ? entryPrice.toFixed(6) : 'Pending'} | Cur: ${multiple ? `${multiple.toFixed(2)}x` : 'N/A'}\n`;
+              message += `  ATH: \`${athMult.toFixed(2)}x\` | DD: \`${(drawdown * 100).toFixed(0)}%\`\n`;
+              message += `  Mint: \`${sig.mint}\`\n\n`;
+            }
 
     // 5. Update the loading message with the result
     // We use editMessageText because we sent a text message earlier.

@@ -189,7 +189,8 @@ Sells: \`${sells}\` ($${formatNumber(volSell)})
   const header = `🚀 *NEW SIGNAL DETECTED*`;
   const tokenIdent = `*${meta.name || 'Unknown'}* (${meta.symbol || 'N/A'})`;
   const caLine = `\`${signal.mint}\``;
-  const sourceLine = `Source: ${groupName} • @${userName}`;
+  const displayUser = (userName === 'Unknown User' || !signal.userId) ? groupName : `@${userName}`;
+  const sourceLine = `Source: ${groupName} • ${displayUser}`;
 
   return `
 ${header}
@@ -219,6 +220,7 @@ export const generateDuplicateSignalCard = (
   const currentMc = meta.liveMarketCap ?? meta.marketCap ?? (currentPrice && meta.supply ? currentPrice * meta.supply : undefined);
   const firstPrice = firstSignal.entryPrice || null;
   const priceChange = calcPercentDelta(currentPrice, firstPrice);
+  const displayUser = (currentUserName === 'Unknown User' || !signal.userId) ? currentGroupName : `@${currentUserName}`;
   
   const statsBlock = `
 📊 *LIVE STATS*
@@ -247,7 +249,7 @@ export const generateDuplicateSignalCard = (
 ${statsBlock}
 
 First: ${firstGroupName} (${firstSignal.detectedAt.toLocaleTimeString()})
-Now: ${currentGroupName} • @${currentUserName}
+Now: ${currentGroupName} • ${displayUser}
 
 ${linksBlock}
   `.trim();
