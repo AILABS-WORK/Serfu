@@ -205,12 +205,49 @@ export const handleUserLeaderboardCommand = async (ctx: Context, window: '7D' | 
                     { text: 'ALL', callback_data: 'leaderboard_users:ALL' },
                 ],
                 [{ text: '👥 Group Leaderboard', callback_data: 'leaderboard_groups:30D' }],
+                [{ text: '💎 Top Signals', callback_data: 'leaderboard_signals:30D' }],
                 [{ text: '🔙 Analytics', callback_data: 'analytics' }],
             ]
         }
     });
   } catch (error) {
     logger.error('Error in user leaderboard:', error);
+    ctx.reply('Error loading leaderboard.');
+  }
+};
+
+export const handleSignalLeaderboardCommand = async (ctx: Context, window: '7D' | '30D' | 'ALL' = '30D') => {
+  try {
+    const { getSignalLeaderboard } = await import('../../analytics/aggregator');
+    const signals = await getSignalLeaderboard(window, 10);
+    
+    if (signals.length === 0) {
+        return ctx.reply(`No signal data available for ${window}.`);
+    }
+
+    let message = `💎 *Top Signals (${window})*\n_Sorted by ATH Multiple_\n\n`;
+    signals.forEach((s, i) => {
+        const rank = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `${i+1}.`;
+        message += `${rank} *${s.symbol}* (${s.athMultiple.toFixed(2)}x)\n`;
+        message += `   Caller: ${s.sourceName} | 📅 ${s.detectedAt.toLocaleDateString()}\n`;
+        message += `   \`${s.mint}\`\n\n`;
+    });
+
+    await ctx.reply(message, {
+        parse_mode: 'Markdown',
+        reply_markup: {
+            inline_keyboard: [
+                [
+                    { text: '7D', callback_data: 'leaderboard_signals:7D' },
+                    { text: '30D', callback_data: 'leaderboard_signals:30D' },
+                    { text: 'ALL', callback_data: 'leaderboard_signals:ALL' },
+                ],
+                [{ text: '🔙 Leaderboards', callback_data: 'leaderboards_menu' }],
+            ]
+        }
+    });
+  } catch (error) {
+    logger.error('Error in signal leaderboard:', error);
     ctx.reply('Error loading leaderboard.');
   }
 };

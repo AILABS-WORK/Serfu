@@ -411,6 +411,7 @@ Source: ${priceSource}
               inline_keyboard: [
                   [{ text: '👥 Top Groups', callback_data: 'leaderboard_groups:30D' }],
                   [{ text: '👤 Top Users', callback_data: 'leaderboard_users:30D' }],
+                  [{ text: '💎 Top Signals', callback_data: 'leaderboard_signals:30D' }],
                   [{ text: '🔙 Back', callback_data: 'analytics' }]
               ]
           }
@@ -427,6 +428,12 @@ Source: ${priceSource}
       const window = ctx.match[1] as '7D' | '30D' | 'ALL';
       const { handleUserLeaderboardCommand } = await import('./commands/analytics');
       await handleUserLeaderboardCommand(ctx as any, window);
+  });
+
+  bot.action(/^leaderboard_signals:(.*)$/, async (ctx) => {
+      const window = ctx.match[1] as '7D' | '30D' | 'ALL';
+      const { handleSignalLeaderboardCommand } = await import('./commands/analytics');
+      await handleSignalLeaderboardCommand(ctx as any, window);
   });
 
   // Group Stats

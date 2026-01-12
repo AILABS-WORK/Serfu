@@ -220,3 +220,36 @@ export const getLeaderboard = async (
     return b.score - a.score;
   }).slice(0, limit);
 };
+
+export const getSignalLeaderboard = async (
+  timeframe: TimeFrame, 
+  limit = 10
+): Promise<Array<{
+  mint: string,
+  symbol: string,
+  athMultiple: number,
+  sourceName: string,
+  detectedAt: Date
+}>> => {
+  const since = getDateFilter(timeframe);
+  
+  const signals = await prisma.signal.findMany({
+    where: {
+      detectedAt: { gte: since },
+      metrics: { isNot: null }
+    },
+    include: { metrics: true, group: true, user: true },
+    orderBy: {
+        metrics: { athMultiple: 'desc' }
+    },
+    take: limit
+  });
+
+  return signals.map(s => ({
+      mint: s.mint,
+      symbol: s.symbol || 'Unknown',
+      athMultiple: s.metrics?.athMultiple || 0,
+      sourceName: s.user?.username || s.group?.name || 'Unknown',
+      detectedAt: s.detectedAt
+  }));
+};
