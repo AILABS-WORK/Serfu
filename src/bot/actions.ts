@@ -273,12 +273,13 @@ Source: ${priceSource}
   // --- MENU ACTIONS ---
   
   bot.action('live_signals', async (ctx) => {
-      await ctx.answerCbQuery('Live Signals are pushed to the channel.');
-      // Optionally show a list or instructions
+      const { handleLiveSignals } = await import('./commands/analytics');
+      await handleLiveSignals(ctx as any);
   });
 
   bot.action('distributions', async (ctx) => {
-      await ctx.answerCbQuery('Distributions coming soon!');
+      const { handleDistributions } = await import('./commands/analytics');
+      await handleDistributions(ctx as any);
   });
 
   bot.action('groups_menu', async (ctx) => {
@@ -408,12 +409,24 @@ Source: ${priceSource}
           parse_mode: 'Markdown',
           reply_markup: {
               inline_keyboard: [
-                  [{ text: '👥 Top Groups', callback_data: 'leaderboard_groups' }],
-                  [{ text: '👤 Top Users', callback_data: 'leaderboard_users' }],
-                  [{ text: '🔙 Back', callback_data: 'analytics_menu' }]
+                  [{ text: '👥 Top Groups', callback_data: 'leaderboard_groups:30D' }],
+                  [{ text: '👤 Top Users', callback_data: 'leaderboard_users:30D' }],
+                  [{ text: '🔙 Back', callback_data: 'analytics' }]
               ]
           }
       });
+  });
+
+  bot.action(/^leaderboard_groups:(.*)$/, async (ctx) => {
+      const window = ctx.match[1] as '7D' | '30D' | 'ALL';
+      const { handleGroupLeaderboardCommand } = await import('./commands/analytics');
+      await handleGroupLeaderboardCommand(ctx as any, window);
+  });
+
+  bot.action(/^leaderboard_users:(.*)$/, async (ctx) => {
+      const window = ctx.match[1] as '7D' | '30D' | 'ALL';
+      const { handleUserLeaderboardCommand } = await import('./commands/analytics');
+      await handleUserLeaderboardCommand(ctx as any, window);
   });
 
   // Group Stats

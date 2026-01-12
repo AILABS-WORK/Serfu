@@ -314,6 +314,125 @@ export const handleCrossGroupConfirms = async (ctx: Context) => {
   }
 };
 
+export const handleLiveSignals = async (ctx: Context) => {
+  try {
+    const ownerTelegramId = ctx.from?.id ? BigInt(ctx.from.id) : null;
+    if (!ownerTelegramId) return ctx.reply('❌ Unable to identify user.');
+
+    // Fetch active signals
+    const signals = await prisma.signal.findMany({
+      where: {
+        trackingStatus: 'ACTIVE',
+        group: { owner: { userId: ownerTelegramId } },
+      },
+      orderBy: { detectedAt: 'desc' },
+      include: {
+        group: true,
+        user: true,
+      },
+      take: 10,
+    });
+
+    if (signals.length === 0) {
+      return ctx.reply('No active signals right now. Check back later!');
+    }
+
+    let message = '🟢 *Live Signals (Active)*\n\n';
+    
+    for (const sig of signals) {
+      // Get current price
+      let currentPrice = 0;
+      try {
+        const quote = await provider.getQuote(sig.mint);
+        currentPrice = quote.price;
+      } catch (e) {
+        // ignore
+      }
+
+      const entry = sig.entryPrice || 0;
+      const pnl = entry > 0 && currentPrice > 0 
+        ? ((currentPrice - entry) / entry) * 100 
+        : 0;
+      const pnlStr = pnl >= 0 ? `+${pnl.toFixed(1)}%` : `${pnl.toFixed(1)}%`;
+      const timeAgo = Math.floor((Date.now() - sig.detectedAt.getTime()) / (1000 * 60)); // minutes
+
+      message += `• *${sig.symbol || 'N/A'}* (${pnlStr})\n`;
+      message += `  $${currentPrice.toFixed(6)} | ${timeAgo}m ago\n`;
+      message += `  \`${sig.mint}\`\n\n`;
+    }
+
+    await ctx.reply(message, { 
+        parse_mode: 'Markdown',
+        reply_markup: {
+            inline_keyboard: [[{ text: '🔄 Refresh', callback_data: 'live_signals' }]]
+        }
+    });
+
+  } catch (error) {
+    logger.error('Error loading live signals:', error);
+    ctx.reply('Error loading live signals.');
+  }
+};
+
+export const handleDistributions = async (ctx: Context) => {
+  try {
+    const ownerTelegramId = ctx.from?.id ? BigInt(ctx.from.id) : null;
+    if (!ownerTelegramId) return ctx.reply('❌ Unable to identify user.');
+
+    const since = subDays(new Date(), 30); // 30D default
+
+    const signals = await prisma.signal.findMany({
+      where: {
+        detectedAt: { gte: since },
+        group: { owner: { userId: ownerTelegramId } },
+        metrics: { isNot: null }
+      },
+      include: { metrics: true }
+    });
+
+    if (signals.length === 0) {
+        return ctx.reply('No data available for distributions yet.');
+    }
+
+    const buckets = {
+        loss: 0,
+        x1_2: 0,
+        x2_3: 0,
+        x3_5: 0,
+        x5_10: 0,
+        x10_plus: 0
+    };
+
+    signals.forEach(s => {
+        const mult = s.metrics?.athMultiple || 0;
+        if (mult < 1) buckets.loss++;
+        else if (mult < 2) buckets.x1_2++;
+        else if (mult < 3) buckets.x2_3++;
+        else if (mult < 5) buckets.x3_5++;
+        else if (mult < 10) buckets.x5_10++;
+        else buckets.x10_plus++;
+    });
+
+    const total = signals.length;
+    const p = (count: number) => ((count / total) * 100).toFixed(1) + '%';
+    const bar = (count: number) => '█'.repeat(Math.round((count / total) * 10));
+
+    let message = '📊 *Win Rate Distribution (30D)*\n\n';
+    message += `🔴 <1x: ${p(buckets.loss)} ${bar(buckets.loss)}\n`;
+    message += `⚪ 1-2x: ${p(buckets.x1_2)} ${bar(buckets.x1_2)}\n`;
+    message += `🟢 2-3x: ${p(buckets.x2_3)} ${bar(buckets.x2_3)}\n`;
+    message += `🟢 3-5x: ${p(buckets.x3_5)} ${bar(buckets.x3_5)}\n`;
+    message += `🚀 5-10x: ${p(buckets.x5_10)} ${bar(buckets.x5_10)}\n`;
+    message += `🌕 >10x: ${p(buckets.x10_plus)} ${bar(buckets.x10_plus)}\n`;
+
+    await ctx.reply(message, { parse_mode: 'Markdown' });
+
+  } catch (error) {
+    logger.error('Error loading distributions:', error);
+    ctx.reply('Error loading distributions.');
+  }
+};
+
 export const handleRecentCalls = async (ctx: Context) => {
   try {
     const ownerTelegramId = ctx.from?.id ? BigInt(ctx.from.id) : null;
