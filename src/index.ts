@@ -4,6 +4,8 @@ import { logger } from './utils/logger';
 import { setupBot, launchBot } from './bot';
 import { runSamplingCycle } from './jobs/sampling';
 import { runAggregationCycle } from './jobs/aggregation';
+import { Telegraf } from 'telegraf';
+import { BotContext } from './types/bot';
 
 dotenv.config();
 
@@ -104,7 +106,7 @@ const main = async () => {
 
   try {
     const bot = setupBot();
-    await launchBot(bot);
+    await launchBot(bot as Telegraf<BotContext>);
 
     // Start Sampling Job (Every minute)
     logger.info('Starting Sampling Scheduler...');

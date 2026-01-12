@@ -1,17 +1,5 @@
 import { Telegraf, Context, session } from 'telegraf';
-
-// Define Session Interface
-interface SessionData {
-  liveFilters?: {
-    minMult?: number;
-    onlyGainers?: boolean;
-  };
-}
-
-// Extend Telegraf Context
-interface BotContext extends Context {
-  session: SessionData;
-}
+import { BotContext } from '../types/bot';
 
 import { logger } from '../utils/logger';
 import { ingestMiddleware } from './middleware';
@@ -213,7 +201,7 @@ export const setupBot = () => {
   return bot;
 };
 
-export const launchBot = async (bot: Telegraf) => {
+export const launchBot = async (bot: Telegraf<BotContext>) => {
   logger.info('Launching Telegram Bot...');
   
   // Graceful stop

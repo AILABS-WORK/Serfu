@@ -1,4 +1,5 @@
 import { Context, Telegraf } from 'telegraf';
+import { BotContext } from '../types/bot';
 import { prisma } from '../db';
 import { logger } from '../utils/logger';
 import { checkPriceAlerts } from '../jobs/priceAlerts';
@@ -10,7 +11,7 @@ import { handleRecentCalls, handleAnalyticsCommand } from './commands/analytics'
 import { updateHistoricalMetrics } from '../jobs/historicalMetrics';
 import { getDeepHolderAnalysis } from '../analytics/holders';
 
-export const registerActions = (bot: Telegraf) => {
+export const registerActions = (bot: Telegraf<BotContext>) => {
   // --- EXISTING ACTIONS ---
   
   // Chart Button
@@ -274,7 +275,7 @@ Source: ${priceSource}
   
   bot.action('live_signals', async (ctx) => {
       const { handleLiveSignals } = await import('./commands/analytics');
-      await handleLiveSignals(ctx as any);
+      await handleLiveSignals(ctx);
   });
 
   bot.action(/^live_filter:(.*)$/, async (ctx) => {
@@ -295,7 +296,7 @@ Source: ${priceSource}
 
           // Reload view
           const { handleLiveSignals } = await import('./commands/analytics');
-          await handleLiveSignals(ctx as any);
+          await handleLiveSignals(ctx);
           await ctx.answerCbQuery('Filter updated');
       } catch (error) {
           logger.error('Filter action error:', error);

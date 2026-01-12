@@ -1,4 +1,5 @@
 import { Context } from 'telegraf';
+import { BotContext } from '../../types/bot';
 import { prisma } from '../../db';
 import { logger } from '../../utils/logger';
 import { getAllGroups, getGroupByChatId } from '../../db/groups';
@@ -345,6 +346,7 @@ export const handleEarliestCallers = async (ctx: Context) => {
         detectedAt: Date;
         multiple: number;
         symbol: string;
+        mint: string;
     }>();
 
     signals.forEach((s: any) => {
@@ -352,10 +354,11 @@ export const handleEarliestCallers = async (ctx: Context) => {
       if (!firstByMint.has(s.mint)) {
         firstByMint.set(s.mint, { 
             userId: s.userId, 
-            groupId: s.groupId, // We need to handle if groupId isn't selected, but we included 'group' relation usually? Ah select above.
+            groupId: s.groupId,
             detectedAt: s.detectedAt,
             multiple: s.metrics?.athMultiple || 0,
-            symbol: s.symbol || '?'
+            symbol: s.symbol || '?',
+            mint: s.mint // Add mint here
         });
       }
     });
@@ -486,7 +489,7 @@ export const handleCrossGroupConfirms = async (ctx: Context) => {
 // LIVE SIGNALS HANDLER (Aggregated + Filters + UIHelper)
 // ----------------------------------------------------------------------
 
-export const handleLiveSignals = async (ctx: Context) => {
+export const handleLiveSignals = async (ctx: BotContext) => {
   try {
     const ownerTelegramId = ctx.from?.id ? BigInt(ctx.from.id) : null;
     if (!ownerTelegramId) return ctx.reply('❌ Unable to identify user.');
