@@ -22,21 +22,41 @@ This document outlines the exhaustive list of features, their current status, an
 
 ## 2. Core Feature: Leaderboards
 **Status:** Implemented but potentially incomplete for Channels.
-**Goal:** Ensure Channels appear in "Group Leaderboards" and Users in "User Leaderboards".
+**Goal:** Ensure Channels appear in "Group Leaderboards" and Users in "User Leaderboards". Add "Top Tokens" leaderboard.
 
 ### Action Plan:
-1.  **Group Leaderboard (`/groupleaderboard`):**
+1.  **🏆 Top Signals (New):**
+    *   *Function:* Show best performing signals (highest ATH multiple) in the workspace.
+    *   *Logic:* Query `Signal` joined with `SignalMetric`, sort by `athMultiple`.
+    *   *UI:* List Top 10 tokens with their ATH and Source.
+2.  **Group Leaderboard (`/groupleaderboard`):**
     *   *Logic:* Aggregates by `groupId`.
     *   *Requirement:* Ensure channels (which are groups) are included.
     *   *Verification:* Check if `getGroupStats` allows channel-type groups. (It does, `Group` model has `chatType`).
-2.  **User Leaderboard (`/userleaderboard`):**
+3.  **User Leaderboard (`/userleaderboard`):**
     *   *Logic:* Aggregates by `userId`.
     *   *Issue:* Channel signals have `userId: null`. They are excluded from User Leaderboards.
     *   *Decision:* This is correct. Channels are not Users. They should dominate the Group Leaderboard.
-3.  **UI Integration:**
-    *   *Task:* Wire up `leaderboard_menu` buttons to call the existing commands via callback.
+4.  **UI Integration:**
+    *   *Task:* Wire up `leaderboard_menu` buttons to call the existing commands via callback. Add "Top Signals" button.
 
-## 3. Core Feature: Analytics Menu & Buttons
+## 3. Core Feature: Group Stats (Destination View)
+**Goal:** Running `/groupstats` or viewing analytics in the Destination Group should show a "Collage" of all signals sent there.
+
+### Action Plan:
+1.  **Aggregated Stats:**
+    *   *Logic:* If target is a "Destination Group", fetch stats for ALL signals that were *forwarded* to it (or owned by the destination owner).
+    *   *Implementation:* Modify `getGroupStats` to handle "Destination Mode": aggregate signals from all source groups owned by the user.
+2.  **Deep Dive Analysis (Buckets):**
+    *   *Function:* "Tokens under 20k do better...".
+    *   *Implementation:* In `GroupStats`, calculate performance buckets:
+        *   Entry MC < 20k
+        *   20k - 50k
+        *   50k - 100k
+        *   > 100k
+    *   *UI:* Show Win Rate & Avg ROI for each bucket.
+
+## 4. Core Feature: Analytics Menu & Buttons
 **Status:** Many buttons are placeholders.
 **Goal:** Every button on the dashboard must do something useful.
 
@@ -62,7 +82,7 @@ This document outlines the exhaustive list of features, their current status, an
     *   *Status:* Works (`/userstats`).
     *   *Improvement:* If clicked without args, show *my* stats.
 
-## 4. Core Feature: Signal Cards
+## 5. Core Feature: Signal Cards
 **Status:** Good, but "Unknown User" fix needs verification.
 **Goal:** Perfect presentation.
 
@@ -73,7 +93,7 @@ This document outlines the exhaustive list of features, their current status, an
     *   *Status:* Implemented.
     *   *Verification:* Ensure it triggers on real data.
 
-## 5. System: Metrics Calculation
+## 6. System: Metrics Calculation
 **Status:** Robust (Bitquery + GeckoTerminal + Helius).
 **Goal:** Accuracy and Speed.
 
@@ -85,14 +105,16 @@ This document outlines the exhaustive list of features, their current status, an
 2.  **Performance:**
     *   *Task:* Add database indexes on `Signal(detectedAt, groupId)`, `Signal(userId, detectedAt)`.
 
-## 6. Full Integration Checklist (The "Definition of Done")
+## 7. Full Integration Checklist (The "Definition of Done")
 
 - [ ] **Recent Calls:** Shows User signals AND Channel signals (with Channel Name).
 - [ ] **Leaderboards:**
     - [ ] Top Groups shows Channels.
     - [ ] Top Users shows individual callers.
+    - [ ] Top Signals (New) shows best tokens.
 - [ ] **My Groups:** Lists all sources, allows management.
 - [ ] **User Stats:** Shows stats for queried user OR self.
+- [ ] **Group Stats (Advanced):** Shows Aggregated Stats for Destination + MC Buckets.
 - [ ] **Live Signals:** Shows active plays.
 - [ ] **Distributions:** Shows win rate histogram.
 - [ ] **Watchlist:** Can add/remove and view signals.
@@ -100,9 +122,10 @@ This document outlines the exhaustive list of features, their current status, an
 - [ ] **Cross-Group Confirms:** Correctly identifies overlap.
 - [ ] **Copy Trading:** Simulation works.
 
-## 7. Immediate Next Steps (Code)
+## 8. Immediate Next Steps (Code)
 
-1.  **Implement `handleLiveSignals`** (New Feature).
-2.  **Implement `handleDistributions`** (New Feature).
-3.  **Implement `Watchlist`** (Schema + Logic).
-4.  **Wire up all Menu Buttons** in `actions.ts`.
+1.  **Wire up `leaderboard_menu`** to show "Top Groups", "Top Users", and "Top Signals".
+2.  **Implement `handleLiveSignals`**.
+3.  **Implement `handleDistributions`** (with MC Buckets analysis).
+4.  **Update `getGroupStats`** to include "Destination Aggregation" and "Bucket Analysis".
+5.  **Implement `Watchlist`** (Schema + Logic).
