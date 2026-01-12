@@ -266,3 +266,106 @@ export const getSignalLeaderboard = async (
       detectedAt: s.detectedAt
   }));
 };
+
+export interface DistributionStats {
+  winRateBuckets: {
+    loss: number;
+    x1_2: number;
+    x2_3: number;
+    x3_5: number;
+    x5_10: number;
+    x10_plus: number;
+  };
+  mcBuckets: Array<{
+    label: string;
+    min: number;
+    max: number;
+    count: number;
+    wins: number; // >2x
+    avgMult: number;
+  }>;
+  totalSignals: number;
+}
+
+export const getDistributionStats = async (
+  ownerTelegramId: bigint, 
+  timeframe: TimeFrame
+): Promise<DistributionStats> => {
+  const since = getDateFilter(timeframe);
+  
+  // 1. Get all Groups owned by user (Sources AND Destinations)
+  const userGroups = await prisma.group.findMany({
+      where: { owner: { userId: ownerTelegramId }, isActive: true },
+      select: { id: true, chatId: true, type: true }
+  });
+
+  const ownedChatIds = userGroups.map(g => g.chatId);
+  const destinationGroupIds = userGroups.filter(g => g.type === 'destination').map(g => g.id);
+  
+  let forwardedSignalIds: number[] = [];
+  if (destinationGroupIds.length > 0) {
+      const forwarded = await prisma.forwardedSignal.findMany({
+          where: { destGroupId: { in: destinationGroupIds.map(id => BigInt(id)) } },
+          select: { signalId: true }
+      });
+      forwardedSignalIds = forwarded.map(f => f.signalId);
+  }
+
+  // 2. Fetch signals
+  const signals = await prisma.signal.findMany({
+    where: {
+      detectedAt: { gte: since },
+      metrics: { isNot: null },
+      OR: [
+          { chatId: { in: ownedChatIds } },
+          { id: { in: forwardedSignalIds } }
+      ]
+    },
+    include: { metrics: true }
+  });
+
+  // 3. Process Distributions
+  const stats: DistributionStats = {
+    winRateBuckets: { loss: 0, x1_2: 0, x2_3: 0, x3_5: 0, x5_10: 0, x10_plus: 0 },
+    mcBuckets: [
+      { label: '< 10k', min: 0, max: 10000, count: 0, wins: 0, avgMult: 0 },
+      { label: '10k-20k', min: 10000, max: 20000, count: 0, wins: 0, avgMult: 0 },
+      { label: '20k-50k', min: 20000, max: 50000, count: 0, wins: 0, avgMult: 0 },
+      { label: '50k-100k', min: 50000, max: 100000, count: 0, wins: 0, avgMult: 0 },
+      { label: '100k-250k', min: 100000, max: 250000, count: 0, wins: 0, avgMult: 0 },
+      { label: '> 250k', min: 250000, max: 1000000000, count: 0, wins: 0, avgMult: 0 },
+    ],
+    totalSignals: signals.length
+  };
+
+  for (const s of signals) {
+    if (!s.metrics) continue;
+    const mult = s.metrics.athMultiple || 0;
+    const entryMc = s.entryMarketCap || 0;
+
+    // Win Rate Buckets
+    if (mult < 1) stats.winRateBuckets.loss++;
+    else if (mult < 2) stats.winRateBuckets.x1_2++;
+    else if (mult < 3) stats.winRateBuckets.x2_3++;
+    else if (mult < 5) stats.winRateBuckets.x3_5++;
+    else if (mult < 10) stats.winRateBuckets.x5_10++;
+    else stats.winRateBuckets.x10_plus++;
+
+    // MC Buckets
+    if (entryMc > 0) {
+      const bucket = stats.mcBuckets.find(b => entryMc >= b.min && entryMc < b.max);
+      if (bucket) {
+        bucket.count++;
+        if (mult > 2) bucket.wins++;
+        bucket.avgMult += mult;
+      }
+    }
+  }
+
+  // Finalize averages
+  stats.mcBuckets.forEach(b => {
+    if (b.count > 0) b.avgMult /= b.count;
+  });
+
+  return stats;
+};

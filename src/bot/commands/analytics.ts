@@ -504,53 +504,66 @@ export const handleDistributions = async (ctx: Context) => {
     const ownerTelegramId = ctx.from?.id ? BigInt(ctx.from.id) : null;
     if (!ownerTelegramId) return ctx.reply('❌ Unable to identify user.');
 
-    const since = subDays(new Date(), 30); // 30D default
+    // Use shared aggregator logic
+    const { getDistributionStats } = await import('../../analytics/aggregator');
+    const stats = await getDistributionStats(ownerTelegramId, '30D'); // Default to 30D for now
 
-    const signals = await prisma.signal.findMany({
-      where: {
-        detectedAt: { gte: since },
-        group: { owner: { userId: ownerTelegramId } },
-        metrics: { isNot: null }
-      },
-      include: { metrics: true }
-    });
-
-    if (signals.length === 0) {
-        return ctx.reply('No data available for distributions yet.');
+    if (stats.totalSignals === 0) {
+        return ctx.reply('No data available for distributions yet.', {
+            reply_markup: {
+                inline_keyboard: [[{ text: '🔙 Back', callback_data: 'analytics' }]]
+            }
+        });
     }
 
-    const buckets = {
-        loss: 0,
-        x1_2: 0,
-        x2_3: 0,
-        x3_5: 0,
-        x5_10: 0,
-        x10_plus: 0
+    const total = stats.totalSignals;
+    
+    // Helper for Bar Chart
+    const drawBar = (count: number, max: number = total, length: number = 8) => {
+        if (max === 0) return '░'.repeat(length);
+        const filled = Math.round((count / max) * length);
+        return '█'.repeat(filled) + '░'.repeat(length - filled);
     };
 
-    signals.forEach(s => {
-        const mult = s.metrics?.athMultiple || 0;
-        if (mult < 1) buckets.loss++;
-        else if (mult < 2) buckets.x1_2++;
-        else if (mult < 3) buckets.x2_3++;
-        else if (mult < 5) buckets.x3_5++;
-        else if (mult < 10) buckets.x5_10++;
-        else buckets.x10_plus++;
+    const p = (count: number) => ((count / total) * 100).toFixed(0) + '%';
+
+    let message = '📊 *Distribution Analysis (30D)*\n\n';
+
+    // 1. ATH Distribution
+    message += '*📈 ATH Multiples*\n';
+    message += `\`>10x :\` ${drawBar(stats.winRateBuckets.x10_plus)} ${stats.winRateBuckets.x10_plus} (${p(stats.winRateBuckets.x10_plus)})\n`;
+    message += `\`5-10x:\` ${drawBar(stats.winRateBuckets.x5_10)} ${stats.winRateBuckets.x5_10} (${p(stats.winRateBuckets.x5_10)})\n`;
+    message += `\`3-5x :\` ${drawBar(stats.winRateBuckets.x3_5)} ${stats.winRateBuckets.x3_5} (${p(stats.winRateBuckets.x3_5)})\n`;
+    message += `\`2-3x :\` ${drawBar(stats.winRateBuckets.x2_3)} ${stats.winRateBuckets.x2_3} (${p(stats.winRateBuckets.x2_3)})\n`;
+    message += `\`1-2x :\` ${drawBar(stats.winRateBuckets.x1_2)} ${stats.winRateBuckets.x1_2} (${p(stats.winRateBuckets.x1_2)})\n`;
+    message += `\`<1x  :\` ${drawBar(stats.winRateBuckets.loss)} ${stats.winRateBuckets.loss} (${p(stats.winRateBuckets.loss)})\n\n`;
+
+    // 2. MC Bucket Analysis
+    message += '*💰 Market Cap Performance*\n_Win Rate (>2x) | Avg ATH_\n\n';
+    
+    for (const b of stats.mcBuckets) {
+        if (b.count === 0) continue;
+        const winRate = (b.wins / b.count) * 100;
+        // Determine indicator based on WR
+        let icon = '⚪';
+        if (winRate >= 50) icon = '🟢';
+        else if (winRate >= 30) icon = '🟡';
+        else icon = '🔴';
+
+        // Format label to align
+        const label = b.label.padEnd(9, ' ');
+        
+        message += `\`${label}\` : ${icon} ${winRate.toFixed(0)}% WR | 💎 ${b.avgMult.toFixed(1)}x\n`;
+    }
+
+    await ctx.reply(message, { 
+        parse_mode: 'Markdown',
+        reply_markup: {
+            inline_keyboard: [
+                [{ text: '🔙 Back', callback_data: 'analytics' }, { text: '❌ Close', callback_data: 'delete_msg' }]
+            ]
+        }
     });
-
-    const total = signals.length;
-    const p = (count: number) => ((count / total) * 100).toFixed(1) + '%';
-    const bar = (count: number) => '█'.repeat(Math.round((count / total) * 10));
-
-    let message = '📊 *Win Rate Distribution (30D)*\n\n';
-    message += `🔴 <1x: ${p(buckets.loss)} ${bar(buckets.loss)}\n`;
-    message += `⚪ 1-2x: ${p(buckets.x1_2)} ${bar(buckets.x1_2)}\n`;
-    message += `🟢 2-3x: ${p(buckets.x2_3)} ${bar(buckets.x2_3)}\n`;
-    message += `🟢 3-5x: ${p(buckets.x3_5)} ${bar(buckets.x3_5)}\n`;
-    message += `🚀 5-10x: ${p(buckets.x5_10)} ${bar(buckets.x5_10)}\n`;
-    message += `🌕 >10x: ${p(buckets.x10_plus)} ${bar(buckets.x10_plus)}\n`;
-
-    await ctx.reply(message, { parse_mode: 'Markdown' });
 
   } catch (error) {
     logger.error('Error loading distributions:', error);
