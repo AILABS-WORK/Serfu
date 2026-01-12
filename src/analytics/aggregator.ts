@@ -182,31 +182,42 @@ export const getLeaderboard = async (
     include: { metrics: true, group: true, user: true }
   });
 
-  // 2. Group by Entity
-  const entityMap = new Map<number, typeof signals>();
-  const nameMap = new Map<number, string>();
+  // 2. Group by Entity (Deduplicating Groups by ChatId)
+  const entityMap = new Map<string, typeof signals>();
+  const idMap = new Map<string, number>(); // Map Key -> Representative ID
+  const nameMap = new Map<string, string>();
 
   for (const s of signals) {
-    const id = type === 'GROUP' ? s.groupId : s.userId;
-    if (!id) continue;
-    
-    if (!entityMap.has(id)) entityMap.set(id, []);
-    entityMap.get(id)!.push(s);
+    let key: string;
+    let numericId: number;
+    let name: string;
 
-    if (!nameMap.has(id)) {
-      const name = type === 'GROUP' 
-        ? (s.group?.name || `Group ${s.group?.chatId}`) 
-        : (s.user?.username || s.user?.firstName || 'Unknown');
-      nameMap.set(id, name || 'Unknown');
+    if (type === 'GROUP') {
+        if (!s.group) continue;
+        key = s.group.chatId.toString(); // Use ChatID to merge duplicates
+        numericId = s.groupId!;
+        name = s.group.name || `Group ${s.group.chatId}`;
+    } else {
+        if (!s.userId) continue;
+        key = s.userId.toString();
+        numericId = s.userId!;
+        name = s.user?.username || s.user?.firstName || 'Unknown';
     }
+    
+    if (!entityMap.has(key)) {
+        entityMap.set(key, []);
+        idMap.set(key, numericId);
+        nameMap.set(key, name);
+    }
+    entityMap.get(key)!.push(s);
   }
 
   // 3. Calculate Stats for each
   const results: EntityStats[] = [];
-  for (const [id, entitySignals] of entityMap.entries()) {
+  for (const [key, entitySignals] of entityMap.entries()) {
     const stats = calculateStats(entitySignals);
-    stats.id = id;
-    stats.name = nameMap.get(id) || 'Unknown';
+    stats.id = idMap.get(key)!;
+    stats.name = nameMap.get(key) || 'Unknown';
     // Filter out low volume noise (e.g. need at least 3 calls to rank)
     if (stats.totalSignals >= 3) {
       results.push(stats);
@@ -225,6 +236,7 @@ export const getSignalLeaderboard = async (
   timeframe: TimeFrame, 
   limit = 10
 ): Promise<Array<{
+  id: number, // Add ID
   mint: string,
   symbol: string,
   athMultiple: number,
@@ -246,6 +258,7 @@ export const getSignalLeaderboard = async (
   });
 
   return signals.map(s => ({
+      id: s.id,
       mint: s.mint,
       symbol: s.symbol || 'Unknown',
       athMultiple: s.metrics?.athMultiple || 0,

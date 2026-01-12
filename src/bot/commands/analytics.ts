@@ -63,7 +63,7 @@ const formatEntityStats = (stats: EntityStats, type: 'GROUP' | 'USER'): string =
 
 // ... existing handler code ...
 
-export const handleGroupStatsCommand = async (ctx: Context, groupIdStr?: string) => {
+export const handleGroupStatsCommand = async (ctx: Context, groupIdStr?: string, window: '7D' | '30D' | 'ALL' = 'ALL') => {
   try {
     const userId = ctx.from?.id ? BigInt(ctx.from.id) : null;
     if (!userId) return ctx.reply('❌ Unable to identify user.');
@@ -80,34 +80,42 @@ export const handleGroupStatsCommand = async (ctx: Context, groupIdStr?: string)
       return ctx.reply('Please use this command in a group or select one from the menu.');
     }
 
-    const stats = await getGroupStats(targetGroupId, 'ALL');
+    const stats = await getGroupStats(targetGroupId, window);
     if (!stats) {
-      return ctx.reply('Group not found or no data available.');
+      // If callback, answer it
+      if (ctx.callbackQuery) await ctx.answerCbQuery('Group not found or no data available.');
+      else await ctx.reply('Group not found or no data available.');
+      return;
     }
 
-    const message = formatEntityStats(stats, 'GROUP');
+    const message = formatEntityStats(stats, 'GROUP') + `\n📅 Timeframe: *${window}*`;
     
-    await ctx.reply(message, {
-      parse_mode: 'Markdown',
-      reply_markup: {
+    const keyboard = {
         inline_keyboard: [
           [
-            { text: '7D Stats', callback_data: `group_stats_window:${targetGroupId}:7D` },
-            { text: '30D Stats', callback_data: `group_stats_window:${targetGroupId}:30D` },
+            { text: window === '7D' ? '✅ 7D' : '7D', callback_data: `group_stats_window:${targetGroupId}:7D` },
+            { text: window === '30D' ? '✅ 30D' : '30D', callback_data: `group_stats_window:${targetGroupId}:30D` },
+            { text: window === 'ALL' ? '✅ ALL' : 'ALL', callback_data: `group_stats_window:${targetGroupId}:ALL` },
           ],
           [
             { text: '🔙 Back', callback_data: 'analytics_groups' },
           ],
         ],
-      },
-    });
+    };
+
+    if (ctx.callbackQuery && ctx.callbackQuery.message) {
+        await ctx.editMessageText(message, { parse_mode: 'Markdown', reply_markup: keyboard });
+    } else {
+        await ctx.reply(message, { parse_mode: 'Markdown', reply_markup: keyboard });
+    }
+
   } catch (error) {
     logger.error('Error in /groupstats command:', error);
     ctx.reply('Error fetching group stats.');
   }
 };
 
-export const handleUserStatsCommand = async (ctx: Context, userIdStr?: string) => {
+export const handleUserStatsCommand = async (ctx: Context, userIdStr?: string, window: '7D' | '30D' | 'ALL' = 'ALL') => {
   try {
     if (!userIdStr) {
         const user = await prisma.user.findUnique({ where: { userId: BigInt(ctx.from!.id) }});
@@ -116,28 +124,34 @@ export const handleUserStatsCommand = async (ctx: Context, userIdStr?: string) =
     }
     
     const targetUserId = parseInt(userIdStr || '0');
-    const stats = await getUserStats(targetUserId, 'ALL');
+    const stats = await getUserStats(targetUserId, window);
 
     if (!stats) {
-      return ctx.reply('User not found or no data available.');
+      if (ctx.callbackQuery) await ctx.answerCbQuery('User not found or no data available.');
+      else await ctx.reply('User not found or no data available.');
+      return;
     }
 
-    const message = formatEntityStats(stats, 'USER');
+    const message = formatEntityStats(stats, 'USER') + `\n📅 Timeframe: *${window}*`;
 
-    await ctx.reply(message, {
-      parse_mode: 'Markdown',
-      reply_markup: {
+    const keyboard = {
         inline_keyboard: [
            [
-            { text: '7D Stats', callback_data: `user_stats_window:${targetUserId}:7D` },
-            { text: '30D Stats', callback_data: `user_stats_window:${targetUserId}:30D` },
+            { text: window === '7D' ? '✅ 7D' : '7D', callback_data: `user_stats_window:${targetUserId}:7D` },
+            { text: window === '30D' ? '✅ 30D' : '30D', callback_data: `user_stats_window:${targetUserId}:30D` },
+            { text: window === 'ALL' ? '✅ ALL' : 'ALL', callback_data: `user_stats_window:${targetUserId}:ALL` },
           ],
           [
-            { text: '🔙 Back', callback_data: 'analytics' },
+            { text: '🔙 Back', callback_data: 'analytics_users_input' }, // Go back to user list
           ],
         ],
-      },
-    });
+    };
+
+    if (ctx.callbackQuery && ctx.callbackQuery.message) {
+        await ctx.editMessageText(message, { parse_mode: 'Markdown', reply_markup: keyboard });
+    } else {
+        await ctx.reply(message, { parse_mode: 'Markdown', reply_markup: keyboard });
+    }
   } catch (error) {
     logger.error('Error in /userstats command:', error);
     ctx.reply('Error fetching user stats.');
@@ -153,26 +167,39 @@ export const handleGroupLeaderboardCommand = async (ctx: Context, window: '7D' |
     }
 
     let message = `🏆 *Top Groups (${window})*\n_Sorted by Reliability Score_\n\n`;
+    
+    // Generate Buttons
+    const entityButtons: any[] = [];
+    
     statsList.forEach((s, i) => {
         const rank = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `${i+1}.`;
         message += `${rank} *${s.name}*\n`;
         message += `   💎 ${s.avgMultiple.toFixed(2)}x Avg | 🎯 ${(s.winRate*100).toFixed(0)}% WR | Score: ${s.score.toFixed(0)}\n\n`;
-    });
-
-    await ctx.reply(message, {
-        parse_mode: 'Markdown',
-        reply_markup: {
-            inline_keyboard: [
-                [
-                    { text: '7D', callback_data: 'leaderboard_groups:7D' },
-                    { text: '30D', callback_data: 'leaderboard_groups:30D' },
-                    { text: 'ALL', callback_data: 'leaderboard_groups:ALL' },
-                ],
-                [{ text: '👤 User Leaderboard', callback_data: 'leaderboard_users:30D' }],
-                [{ text: '🔙 Analytics', callback_data: 'analytics' }],
-            ]
+        
+        // Add button for top 5
+        if (i < 5) {
+            entityButtons.push([{ text: `${rank} ${s.name} Stats`, callback_data: `group_stats_view:${s.id}` }]);
         }
     });
+
+    const keyboard = {
+        inline_keyboard: [
+            ...entityButtons,
+            [
+                { text: '7D', callback_data: 'leaderboard_groups:7D' },
+                { text: '30D', callback_data: 'leaderboard_groups:30D' },
+                { text: 'ALL', callback_data: 'leaderboard_groups:ALL' },
+            ],
+            [{ text: '👤 User Leaderboard', callback_data: 'leaderboard_users:30D' }],
+            [{ text: '🔙 Analytics', callback_data: 'analytics' }],
+        ]
+    };
+
+    if (ctx.callbackQuery && ctx.callbackQuery.message) {
+         await ctx.editMessageText(message, { parse_mode: 'Markdown', reply_markup: keyboard });
+    } else {
+         await ctx.reply(message, { parse_mode: 'Markdown', reply_markup: keyboard });
+    }
 
   } catch (error) {
     logger.error('Error in group leaderboard:', error);
@@ -189,27 +216,37 @@ export const handleUserLeaderboardCommand = async (ctx: Context, window: '7D' | 
     }
 
     let message = `🏆 *Top Callers (${window})*\n_Sorted by Reliability Score_\n\n`;
+    const entityButtons: any[] = [];
+
     statsList.forEach((s, i) => {
         const rank = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `${i+1}.`;
         message += `${rank} *${s.name}*\n`;
         message += `   💎 ${s.avgMultiple.toFixed(2)}x Avg | 🎯 ${(s.winRate*100).toFixed(0)}% WR | Score: ${s.score.toFixed(0)}\n\n`;
-    });
-
-    await ctx.reply(message, {
-        parse_mode: 'Markdown',
-        reply_markup: {
-            inline_keyboard: [
-                [
-                    { text: '7D', callback_data: 'leaderboard_users:7D' },
-                    { text: '30D', callback_data: 'leaderboard_users:30D' },
-                    { text: 'ALL', callback_data: 'leaderboard_users:ALL' },
-                ],
-                [{ text: '👥 Group Leaderboard', callback_data: 'leaderboard_groups:30D' }],
-                [{ text: '💎 Top Signals', callback_data: 'leaderboard_signals:30D' }],
-                [{ text: '🔙 Analytics', callback_data: 'analytics' }],
-            ]
+        
+        if (i < 5) {
+             entityButtons.push([{ text: `${rank} ${s.name} Stats`, callback_data: `user_stats_view:${s.id}` }]);
         }
     });
+
+    const keyboard = {
+        inline_keyboard: [
+            ...entityButtons,
+            [
+                { text: '7D', callback_data: 'leaderboard_users:7D' },
+                { text: '30D', callback_data: 'leaderboard_users:30D' },
+                { text: 'ALL', callback_data: 'leaderboard_users:ALL' },
+            ],
+            [{ text: '👥 Group Leaderboard', callback_data: 'leaderboard_groups:30D' }],
+            [{ text: '💎 Top Signals', callback_data: 'leaderboard_signals:30D' }],
+            [{ text: '🔙 Analytics', callback_data: 'analytics' }],
+        ]
+    };
+
+    if (ctx.callbackQuery && ctx.callbackQuery.message) {
+        await ctx.editMessageText(message, { parse_mode: 'Markdown', reply_markup: keyboard });
+   } else {
+        await ctx.reply(message, { parse_mode: 'Markdown', reply_markup: keyboard });
+   }
   } catch (error) {
     logger.error('Error in user leaderboard:', error);
     ctx.reply('Error loading leaderboard.');
@@ -226,26 +263,36 @@ export const handleSignalLeaderboardCommand = async (ctx: Context, window: '7D' 
     }
 
     let message = `💎 *Top Signals (${window})*\n_Sorted by ATH Multiple_\n\n`;
+    const signalButtons: any[] = [];
+
     signals.forEach((s, i) => {
         const rank = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `${i+1}.`;
         message += `${rank} *${s.symbol}* (${s.athMultiple.toFixed(2)}x)\n`;
         message += `   Caller: ${s.sourceName} | 📅 ${s.detectedAt.toLocaleDateString()}\n`;
         message += `   \`${s.mint}\`\n\n`;
-    });
 
-    await ctx.reply(message, {
-        parse_mode: 'Markdown',
-        reply_markup: {
-            inline_keyboard: [
-                [
-                    { text: '7D', callback_data: 'leaderboard_signals:7D' },
-                    { text: '30D', callback_data: 'leaderboard_signals:30D' },
-                    { text: 'ALL', callback_data: 'leaderboard_signals:ALL' },
-                ],
-                [{ text: '🔙 Leaderboards', callback_data: 'leaderboards_menu' }],
-            ]
+        if (i < 5) {
+            signalButtons.push([{ text: `${rank} ${s.symbol} Stats`, callback_data: `stats:${s.id}` }]);
         }
     });
+
+    const keyboard = {
+        inline_keyboard: [
+            ...signalButtons,
+            [
+                { text: '7D', callback_data: 'leaderboard_signals:7D' },
+                { text: '30D', callback_data: 'leaderboard_signals:30D' },
+                { text: 'ALL', callback_data: 'leaderboard_signals:ALL' },
+            ],
+            [{ text: '🔙 Leaderboards', callback_data: 'leaderboards_menu' }],
+        ]
+    };
+
+    if (ctx.callbackQuery && ctx.callbackQuery.message) {
+         await ctx.editMessageText(message, { parse_mode: 'Markdown', reply_markup: keyboard });
+    } else {
+         await ctx.reply(message, { parse_mode: 'Markdown', reply_markup: keyboard });
+    }
   } catch (error) {
     logger.error('Error in signal leaderboard:', error);
     ctx.reply('Error loading leaderboard.');
@@ -356,11 +403,23 @@ export const handleLiveSignals = async (ctx: Context) => {
     const ownerTelegramId = ctx.from?.id ? BigInt(ctx.from.id) : null;
     if (!ownerTelegramId) return ctx.reply('❌ Unable to identify user.');
 
-    // Fetch active signals
+    // 1. Get all Chat IDs monitored by the user (Sources)
+    const userGroups = await prisma.group.findMany({
+        where: { owner: { userId: ownerTelegramId }, isActive: true },
+        select: { chatId: true }
+    });
+
+    const monitoredChatIds = userGroups.map(g => g.chatId);
+
+    if (monitoredChatIds.length === 0) {
+        return ctx.reply('You are not monitoring any groups/channels yet.');
+    }
+
+    // 2. Fetch active signals matching those Chat IDs
     const signals = await prisma.signal.findMany({
       where: {
         trackingStatus: 'ACTIVE',
-        group: { owner: { userId: ownerTelegramId } },
+        chatId: { in: monitoredChatIds }, // Match by Chat ID, not just specific Group ID linkage
       },
       orderBy: { detectedAt: 'desc' },
       include: {
@@ -371,7 +430,11 @@ export const handleLiveSignals = async (ctx: Context) => {
     });
 
     if (signals.length === 0) {
-      return ctx.reply('No active signals right now. Check back later!');
+      return ctx.reply('No active signals right now. Check back later!', {
+          reply_markup: {
+              inline_keyboard: [[{ text: '🔙 Back', callback_data: 'analytics' }]]
+          }
+      });
     }
 
     let message = '🟢 *Live Signals (Active)*\n\n';
@@ -393,15 +456,21 @@ export const handleLiveSignals = async (ctx: Context) => {
       const pnlStr = pnl >= 0 ? `+${pnl.toFixed(1)}%` : `${pnl.toFixed(1)}%`;
       const timeAgo = Math.floor((Date.now() - sig.detectedAt.getTime()) / (1000 * 60)); // minutes
 
+      // Attribution
+      const sourceName = sig.user?.username || sig.group?.name || 'Unknown Source';
+
       message += `• *${sig.symbol || 'N/A'}* (${pnlStr})\n`;
       message += `  $${currentPrice.toFixed(6)} | ${timeAgo}m ago\n`;
-      message += `  \`${sig.mint}\`\n\n`;
+      message += `  Via: ${sourceName} | \`${sig.mint}\`\n\n`;
     }
 
     await ctx.reply(message, { 
         parse_mode: 'Markdown',
         reply_markup: {
-            inline_keyboard: [[{ text: '🔄 Refresh', callback_data: 'live_signals' }]]
+            inline_keyboard: [
+                [{ text: '🔄 Refresh', callback_data: 'live_signals' }],
+                [{ text: '🔙 Back', callback_data: 'analytics' }, { text: '❌ Close', callback_data: 'delete_msg' }]
+            ]
         }
     });
 
@@ -475,10 +544,21 @@ export const handleRecentCalls = async (ctx: Context) => {
     const ownerTelegramId = ctx.from?.id ? BigInt(ctx.from.id) : null;
     if (!ownerTelegramId) return ctx.reply('❌ Unable to identify user.');
 
-    // 1. First, fetch the top recent signals to identify what we need to update
+    // 1. Get monitored Chat IDs
+    const userGroups = await prisma.group.findMany({
+        where: { owner: { userId: ownerTelegramId }, isActive: true },
+        select: { chatId: true }
+    });
+    const monitoredChatIds = userGroups.map(g => g.chatId);
+
+    if (monitoredChatIds.length === 0) {
+        return ctx.reply('You are not monitoring any groups/channels yet.');
+    }
+
+    // 2. Fetch top recent signals matching Chat IDs
     const recentSignals = await prisma.signal.findMany({
       where: {
-        group: { owner: { userId: ownerTelegramId } },
+        chatId: { in: monitoredChatIds },
       },
       orderBy: { detectedAt: 'desc' },
       take: 6,
@@ -486,23 +566,25 @@ export const handleRecentCalls = async (ctx: Context) => {
     });
 
     if (recentSignals.length === 0) {
-      return ctx.reply('No signals yet in your workspace.');
+      return ctx.reply('No signals yet in your workspace.', {
+          reply_markup: {
+              inline_keyboard: [[{ text: '🔙 Back', callback_data: 'analytics' }]]
+          }
+      });
     }
 
-    // 2. Notify user we are loading fresh data
+    // 3. Notify user we are loading fresh data
     const loadingMsg = await ctx.reply('⏳ Calculating latest metrics (ATH/DD)... please wait.');
 
-    // 3. Force synchronous update for these specific signals
-    // This ensures we have the latest Bitquery data before displaying
+    // 4. Force synchronous update for these specific signals
     try {
         const signalIds = recentSignals.map(s => s.id);
         await updateHistoricalMetrics(signalIds);
     } catch (err) {
         logger.error('Targeted update failed during recent calls view:', err);
-        // Continue anyway to show what we have
     }
 
-    // 4. Fetch full data (now with updated metrics)
+    // 5. Fetch full data (now with updated metrics)
     const signals = await prisma.signal.findMany({
       where: {
         id: { in: recentSignals.map(s => s.id) }
@@ -515,47 +597,51 @@ export const handleRecentCalls = async (ctx: Context) => {
       },
     });
 
-            let message = '📜 *Recent Calls*\n\n';
-            for (const sig of signals) {
-              let currentPrice: number | null = null;
-              try {
-                const quote = await provider.getQuote(sig.mint);
-                currentPrice = quote.price;
-              } catch (err) {
-                logger.debug(`Recent calls quote failed for ${sig.mint}:`, err);
-              }
+    let message = '📜 *Recent Calls*\n\n';
+    for (const sig of signals) {
+      let currentPrice: number | null = null;
+      try {
+        const quote = await provider.getQuote(sig.mint);
+        currentPrice = quote.price;
+      } catch (err) {
+        logger.debug(`Recent calls quote failed for ${sig.mint}:`, err);
+      }
 
-              const entryPrice = sig.entryPrice || null;
-              const multiple = currentPrice && entryPrice ? currentPrice / entryPrice : null;
-              
-              let athMult = sig.metrics?.athMultiple || 1.0;
-              if (multiple && athMult < multiple) {
-                  athMult = multiple;
-              }
-              if (!sig.metrics && (!multiple || multiple < 1)) {
-                  athMult = 1.0;
-              }
-              
-              const drawdown = sig.metrics?.maxDrawdown ?? 0;
+      const entryPrice = sig.entryPrice || null;
+      const multiple = currentPrice && entryPrice ? currentPrice / entryPrice : null;
+      
+      let athMult = sig.metrics?.athMultiple || 1.0;
+      if (multiple && athMult < multiple) {
+          athMult = multiple;
+      }
+      if (!sig.metrics && (!multiple || multiple < 1)) {
+          athMult = 1.0;
+      }
+      
+      const drawdown = sig.metrics?.maxDrawdown ?? 0;
 
-              const callerName = sig.user?.username || sig.user?.firstName;
-              const displayCaller = callerName ? `@${callerName}` : (sig.group?.name || 'Unknown Channel');
+      const callerName = sig.user?.username || sig.user?.firstName;
+      // If user is null, fallback to group name.
+      const displayCaller = callerName ? `@${callerName}` : (sig.group?.name || 'Unknown Channel');
 
-              message += `• *${sig.name || sig.symbol || sig.mint}* (${sig.symbol || 'N/A'})\n`;
-              message += `  Group: ${sig.group?.name || sig.group?.chatId || 'N/A'}\n`;
-              message += `  Caller: ${displayCaller}\n`;
-              message += `  Entry: $${entryPrice ? entryPrice.toFixed(6) : 'Pending'} | Cur: ${multiple ? `${multiple.toFixed(2)}x` : 'N/A'}\n`;
-              message += `  ATH: \`${athMult.toFixed(2)}x\` | DD: \`${(drawdown * 100).toFixed(0)}%\`\n`;
-              message += `  Mint: \`${sig.mint}\`\n\n`;
-            }
+      message += `• *${sig.name || sig.symbol || sig.mint}* (${sig.symbol || 'N/A'})\n`;
+      message += `  Group: ${sig.group?.name || sig.group?.chatId || 'N/A'}\n`;
+      message += `  Caller: ${displayCaller}\n`;
+      message += `  Entry: $${entryPrice ? entryPrice.toFixed(6) : 'Pending'} | Cur: ${multiple ? `${multiple.toFixed(2)}x` : 'N/A'}\n`;
+      message += `  ATH: \`${athMult.toFixed(2)}x\` | DD: \`${(drawdown * 100).toFixed(0)}%\`\n`;
+      message += `  Mint: \`${sig.mint}\`\n\n`;
+    }
 
-    // 5. Update the loading message with the result
-    // We use editMessageText because we sent a text message earlier.
-    // If handleRecentCalls is called via callback, we might want to edit that instead, 
-    // but usually we reply a new message for "Loading...". 
-    // If called via callback (ctx.callbackQuery), we should delete loadingMsg and send new one, or edit loadingMsg.
-    
-    await ctx.telegram.editMessageText(loadingMsg.chat.id, loadingMsg.message_id, undefined, message.trim(), { parse_mode: 'Markdown' });
+    // 6. Update the loading message with the result and ADD buttons
+    await ctx.telegram.editMessageText(loadingMsg.chat.id, loadingMsg.message_id, undefined, message.trim(), { 
+        parse_mode: 'Markdown',
+        reply_markup: {
+            inline_keyboard: [
+                [{ text: '🔄 Refresh', callback_data: 'analytics_recent' }],
+                [{ text: '🔙 Back', callback_data: 'analytics' }, { text: '❌ Close', callback_data: 'delete_msg' }]
+            ]
+        }
+    });
     
   } catch (error) {
     logger.error('Error loading recent calls:', error);

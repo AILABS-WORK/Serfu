@@ -360,29 +360,124 @@ Source: ${priceSource}
   bot.action('analytics_recent', handleRecentCalls);
   
   bot.action('analytics_groups', async (ctx) => {
-      // Reuse groups handler or specific analytics view
-      // Let's redirect to groups list for now, or show group stats picker
-      await ctx.editMessageText('👥 *My Groups*\nSelect a group for stats:', {
+      const ownerTelegramId = ctx.from?.id ? BigInt(ctx.from.id) : null;
+      if (!ownerTelegramId) return ctx.answerCbQuery('User not identified');
+
+      const groups = await prisma.group.findMany({
+          where: { owner: { userId: ownerTelegramId }, isActive: true },
+          take: 10 // Limit to 10 for UI
+      });
+
+      if (groups.length === 0) {
+          return ctx.editMessageText('👥 *My Groups*\nNo groups monitored yet.', {
+              parse_mode: 'Markdown',
+              reply_markup: {
+                  inline_keyboard: [[{ text: '🔙 Back', callback_data: 'analytics' }]]
+              }
+          });
+      }
+
+      const buttons = groups.map(g => [{
+          text: g.name || `Group ${g.chatId}`,
+          callback_data: `group_stats_view:${g.id}`
+      }]);
+
+      buttons.push([{ text: '🔙 Back', callback_data: 'analytics' }]);
+
+      await ctx.editMessageText('👥 *My Groups*\nSelect a group to view stats:', {
           parse_mode: 'Markdown',
           reply_markup: {
-              inline_keyboard: [
-                  [{ text: 'Use /groupstats in group', callback_data: 'noop' }],
-                  [{ text: '🔙 Back', callback_data: 'analytics' }]
-              ]
+              inline_keyboard: buttons
           }
       });
   });
 
   bot.action('analytics_users_input', async (ctx) => {
-      await ctx.editMessageText('👤 *User Stats*\nReply with /userstats <id> or check leaderboards.', {
+      // Show top active users in workspace
+      const ownerTelegramId = ctx.from?.id ? BigInt(ctx.from.id) : null;
+      if (!ownerTelegramId) return ctx.answerCbQuery('User not identified');
+
+      // Find users with most signals in workspace groups
+      // This is a bit complex query, maybe just fetch recent signal users?
+      const recentSignals = await prisma.signal.findMany({
+          where: { group: { owner: { userId: ownerTelegramId } }, userId: { not: null } },
+          select: { userId: true },
+          orderBy: { detectedAt: 'desc' },
+          take: 50
+      });
+
+      const userIds = Array.from(new Set(recentSignals.map(s => s.userId!).filter(Boolean)));
+      const users = await prisma.user.findMany({
+          where: { id: { in: userIds } },
+          take: 10
+      });
+
+      if (users.length === 0) {
+           return ctx.editMessageText('👤 *User Stats*\nNo active users found recently.', {
+              parse_mode: 'Markdown',
+              reply_markup: {
+                  inline_keyboard: [[{ text: '🔙 Back', callback_data: 'analytics' }]]
+              }
+          });
+      }
+
+      const buttons = users.map(u => [{
+          text: u.username ? `@${u.username}` : (u.firstName || `User ${u.id}`),
+          callback_data: `user_stats_view:${u.id}`
+      }]);
+
+      buttons.push([{ text: '🔙 Back', callback_data: 'analytics' }]);
+
+      await ctx.editMessageText('👤 *User Stats*\nSelect a user to view stats:', {
           parse_mode: 'Markdown',
           reply_markup: {
-              inline_keyboard: [
-                  [{ text: '🔙 Back', callback_data: 'analytics' }]
-              ]
+              inline_keyboard: buttons
           }
       });
   });
+
+  // Handle viewing stats for a specific group
+  bot.action(/^group_stats_view:(\d+)$/, async (ctx) => {
+      const groupId = ctx.match[1];
+      const { handleGroupStatsCommand } = await import('./commands/analytics');
+      // We need to reply a new message or edit? handleGroupStatsCommand usually replies.
+      // Let's modify handleGroupStatsCommand to support editing if possible, or just reply.
+      // But we are in a callback. Replying is fine.
+      await handleGroupStatsCommand(ctx as any, groupId);
+      await ctx.answerCbQuery();
+  });
+
+  // Handle switching window for group stats
+  bot.action(/^group_stats_window:(\d+):(7D|30D|ALL)$/, async (ctx) => {
+      const groupId = ctx.match[1];
+      // We can reuse handleGroupStatsCommand but we need to pass window?
+      // Actually handleGroupStatsCommand currently defaults to ALL.
+      // We should update it to accept window or create a specialized function.
+      // For now, let's just re-call it and maybe it will default to ALL, but the UI has buttons to switch.
+      // Wait, handleGroupStatsCommand doesn't take window arg in the export?
+      // Let's check analytics.ts... it takes (ctx, groupIdStr). It DOES NOT take window.
+      // We need to update handleGroupStatsCommand to accept window.
+      const { handleGroupStatsCommand } = await import('./commands/analytics');
+      // @ts-ignore
+      await handleGroupStatsCommand(ctx as any, groupId, ctx.match[2]); 
+      await ctx.answerCbQuery();
+  });
+
+  bot.action(/^user_stats_view:(\d+)$/, async (ctx) => {
+      const userId = ctx.match[1];
+      const { handleUserStatsCommand } = await import('./commands/analytics');
+      await handleUserStatsCommand(ctx as any, userId);
+      await ctx.answerCbQuery();
+  });
+
+  bot.action(/^user_stats_window:(\d+):(7D|30D|ALL)$/, async (ctx) => {
+      const userId = ctx.match[1];
+      const { handleUserStatsCommand } = await import('./commands/analytics');
+      // @ts-ignore
+      await handleUserStatsCommand(ctx as any, userId, ctx.match[2]);
+      await ctx.answerCbQuery();
+  });
+
 
   bot.action('analytics_earliest', async (ctx) => {
       const { handleEarliestCallers } = await import('./commands/analytics');
