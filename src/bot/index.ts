@@ -1,4 +1,18 @@
-import { Telegraf } from 'telegraf';
+import { Telegraf, Context, session } from 'telegraf';
+
+// Define Session Interface
+interface SessionData {
+  liveFilters?: {
+    minMult?: number;
+    onlyGainers?: boolean;
+  };
+}
+
+// Extend Telegraf Context
+interface BotContext extends Context {
+  session: SessionData;
+}
+
 import { logger } from '../utils/logger';
 import { ingestMiddleware } from './middleware';
 import { setBotInstance } from './instance';
@@ -26,8 +40,11 @@ export const setupBot = () => {
     throw new Error('BOT_TOKEN must be provided!');
   }
 
-  const bot = new Telegraf(token);
+  const bot = new Telegraf<BotContext>(token);
   setBotInstance(bot);
+
+  // Session Middleware (In-memory for now)
+  bot.use(session());
 
   // Middleware
   bot.use(ingestMiddleware);
@@ -203,6 +220,8 @@ export const launchBot = async (bot: Telegraf) => {
   process.once('SIGINT', () => bot.stop('SIGINT'));
   process.once('SIGTERM', () => bot.stop('SIGTERM'));
 
-  await bot.launch();
+  await bot.launch({
+    allowedUpdates: ['message', 'callback_query', 'my_chat_member', 'channel_post']
+  });
   logger.info('Bot launched!');
 };

@@ -270,11 +270,37 @@ Source: ${priceSource}
   });
 
 
-  // --- MENU ACTIONS ---
+  // --- LIVE SIGNALS & FILTERS ---
   
   bot.action('live_signals', async (ctx) => {
       const { handleLiveSignals } = await import('./commands/analytics');
       await handleLiveSignals(ctx as any);
+  });
+
+  bot.action(/^live_filter:(.*)$/, async (ctx) => {
+      try {
+          const filter = ctx.match[1];
+          // Initialize session if not exists
+          if (!ctx.session) ctx.session = {};
+          if (!ctx.session.liveFilters) ctx.session.liveFilters = {};
+
+          // Toggle logic
+          if (filter === '2x') {
+              ctx.session.liveFilters.minMult = ctx.session.liveFilters.minMult === 2 ? undefined : 2;
+          } else if (filter === '5x') {
+              ctx.session.liveFilters.minMult = ctx.session.liveFilters.minMult === 5 ? undefined : 5;
+          } else if (filter === 'gainers') {
+              ctx.session.liveFilters.onlyGainers = !ctx.session.liveFilters.onlyGainers;
+          }
+
+          // Reload view
+          const { handleLiveSignals } = await import('./commands/analytics');
+          await handleLiveSignals(ctx as any);
+          await ctx.answerCbQuery('Filter updated');
+      } catch (error) {
+          logger.error('Filter action error:', error);
+          ctx.answerCbQuery('Error updating filter');
+      }
   });
 
   bot.action('distributions', async (ctx) => {
