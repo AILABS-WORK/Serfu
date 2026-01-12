@@ -403,23 +403,42 @@ export const handleLiveSignals = async (ctx: Context) => {
     const ownerTelegramId = ctx.from?.id ? BigInt(ctx.from.id) : null;
     if (!ownerTelegramId) return ctx.reply('❌ Unable to identify user.');
 
-    // 1. Get all Chat IDs monitored by the user (Sources)
+    // 1. Get all Groups owned by user (Sources AND Destinations)
     const userGroups = await prisma.group.findMany({
         where: { owner: { userId: ownerTelegramId }, isActive: true },
-        select: { chatId: true }
+        select: { id: true, chatId: true, type: true }
     });
 
-    const monitoredChatIds = userGroups.map(g => g.chatId);
+    const ownedGroupIds = userGroups.map(g => g.id);
+    const ownedChatIds = userGroups.map(g => g.chatId);
 
-    if (monitoredChatIds.length === 0) {
+    // 2. Find signals forwarded TO my destination groups
+    // If a signal is forwarded to my group, I want to see it, regardless of source ownership
+    const destinationGroupIds = userGroups.filter(g => g.type === 'destination').map(g => g.id);
+    
+    let forwardedSignalIds: number[] = [];
+    if (destinationGroupIds.length > 0) {
+        const forwarded = await prisma.forwardedSignal.findMany({
+            where: { destGroupId: { in: destinationGroupIds.map(id => BigInt(id)) } },
+            select: { signalId: true }
+        });
+        forwardedSignalIds = forwarded.map(f => f.signalId);
+    }
+
+    if (ownedChatIds.length === 0 && forwardedSignalIds.length === 0) {
         return ctx.reply('You are not monitoring any groups/channels yet.');
     }
 
-    // 2. Fetch active signals matching those Chat IDs
+    // 3. Fetch active signals:
+    // - Either the signal is from a chat I monitor (ownedChatIds)
+    // - OR the signal was forwarded to one of my groups (forwardedSignalIds)
     const signals = await prisma.signal.findMany({
       where: {
         trackingStatus: 'ACTIVE',
-        chatId: { in: monitoredChatIds }, // Match by Chat ID, not just specific Group ID linkage
+        OR: [
+            { chatId: { in: ownedChatIds } },
+            { id: { in: forwardedSignalIds } }
+        ]
       },
       orderBy: { detectedAt: 'desc' },
       include: {
@@ -544,21 +563,37 @@ export const handleRecentCalls = async (ctx: Context) => {
     const ownerTelegramId = ctx.from?.id ? BigInt(ctx.from.id) : null;
     if (!ownerTelegramId) return ctx.reply('❌ Unable to identify user.');
 
-    // 1. Get monitored Chat IDs
+    // 1. Get all Groups owned by user (Sources AND Destinations)
     const userGroups = await prisma.group.findMany({
         where: { owner: { userId: ownerTelegramId }, isActive: true },
-        select: { chatId: true }
+        select: { id: true, chatId: true, type: true }
     });
-    const monitoredChatIds = userGroups.map(g => g.chatId);
 
-    if (monitoredChatIds.length === 0) {
+    const ownedChatIds = userGroups.map(g => g.chatId);
+
+    // 2. Find signals forwarded TO my destination groups
+    const destinationGroupIds = userGroups.filter(g => g.type === 'destination').map(g => g.id);
+    
+    let forwardedSignalIds: number[] = [];
+    if (destinationGroupIds.length > 0) {
+        const forwarded = await prisma.forwardedSignal.findMany({
+            where: { destGroupId: { in: destinationGroupIds.map(id => BigInt(id)) } },
+            select: { signalId: true }
+        });
+        forwardedSignalIds = forwarded.map(f => f.signalId);
+    }
+
+    if (ownedChatIds.length === 0 && forwardedSignalIds.length === 0) {
         return ctx.reply('You are not monitoring any groups/channels yet.');
     }
 
-    // 2. Fetch top recent signals matching Chat IDs
+    // 3. Fetch top recent signals matching Chat IDs OR Forwarded IDs
     const recentSignals = await prisma.signal.findMany({
       where: {
-        chatId: { in: monitoredChatIds },
+        OR: [
+            { chatId: { in: ownedChatIds } },
+            { id: { in: forwardedSignalIds } }
+        ]
       },
       orderBy: { detectedAt: 'desc' },
       take: 6,
@@ -573,10 +608,10 @@ export const handleRecentCalls = async (ctx: Context) => {
       });
     }
 
-    // 3. Notify user we are loading fresh data
+    // 4. Notify user we are loading fresh data
     const loadingMsg = await ctx.reply('⏳ Calculating latest metrics (ATH/DD)... please wait.');
 
-    // 4. Force synchronous update for these specific signals
+    // 5. Force synchronous update for these specific signals
     try {
         const signalIds = recentSignals.map(s => s.id);
         await updateHistoricalMetrics(signalIds);
@@ -584,7 +619,7 @@ export const handleRecentCalls = async (ctx: Context) => {
         logger.error('Targeted update failed during recent calls view:', err);
     }
 
-    // 5. Fetch full data (now with updated metrics)
+    // 6. Fetch full data (now with updated metrics)
     const signals = await prisma.signal.findMany({
       where: {
         id: { in: recentSignals.map(s => s.id) }
@@ -632,7 +667,7 @@ export const handleRecentCalls = async (ctx: Context) => {
       message += `  Mint: \`${sig.mint}\`\n\n`;
     }
 
-    // 6. Update the loading message with the result and ADD buttons
+    // 7. Update the loading message with the result and ADD buttons
     await ctx.telegram.editMessageText(loadingMsg.chat.id, loadingMsg.message_id, undefined, message.trim(), { 
         parse_mode: 'Markdown',
         reply_markup: {
@@ -645,7 +680,12 @@ export const handleRecentCalls = async (ctx: Context) => {
     
   } catch (error) {
     logger.error('Error loading recent calls:', error);
-    ctx.reply('Error loading recent calls.');
+    // Try to reply with error if edit fails, or just log
+    try {
+        await ctx.reply('Error loading recent calls. Please try again.');
+    } catch(e) {
+        // ignore
+    }
   }
 };
 
