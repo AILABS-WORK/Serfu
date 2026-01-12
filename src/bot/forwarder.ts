@@ -10,44 +10,30 @@ import { TokenMeta } from '../providers/types';
 
 export const forwardSignalToDestination = async (signal: Signal) => {
   try {
-    // Load signal with relations to get the source group owner
-    const signalWithRelations = await prisma.signal.findUnique({
+    // 1. Fetch signal details to get caller info
+    const signalDetails = await prisma.signal.findUnique({
       where: { id: signal.id },
-      include: { 
-        group: {
-          include: {
-            owner: true, // Get the owner of the source group
-          },
-        },
-        user: true,
+      include: { user: true }
+    });
+    const userName = signalDetails?.user?.username || signalDetails?.user?.firstName || 'Unknown User';
+
+    // 2. Find ALL users who are monitoring this source chat (Subscribers)
+    // This allows fan-out: if User A and User B both monitor Chat X, both get forwards.
+    const sourceSubscriptions = await prisma.group.findMany({
+      where: {
+        chatId: signal.chatId,
+        type: 'source',
+        isActive: true,
       },
+      include: { owner: true }
     });
 
-    if (!signalWithRelations || !signalWithRelations.group) {
-      return; // No group info, can't forward
+    if (sourceSubscriptions.length === 0) {
+      logger.debug(`Forwarding skipped: No active subscriptions for chat ${signal.chatId}`);
+      return;
     }
 
-    const sourceGroup = signalWithRelations.group;
-    if (!sourceGroup?.owner) {
-      logger.debug(`Forwarding skipped: No owner for source group ${signal.chatId}`);
-      return; // No owner, can't forward
-    }
-    
-    const ownerTelegramId = sourceGroup.owner.userId; // Owner's Telegram ID
-    
-    // Get destination groups for the owner of the source group
-    const destinationGroups = await getDestinationGroups(ownerTelegramId);
-    
-    if (destinationGroups.length === 0) {
-      logger.debug(`Forwarding skipped: No destination groups for owner ${ownerTelegramId}`);
-      return; // No destination groups configured for this user
-    }
-
-    const bot = getBotInstance();
-    const groupName = sourceGroup.name || 'Unknown Group';
-    const userName = signalWithRelations.user?.username || signalWithRelations.user?.firstName || 'Unknown User';
-
-    // Fetch fresh meta for the card
+    // 3. Prepare Token Meta (once for all destinations)
     const meta = await provider.getTokenMeta(signal.mint);
     const quote = await provider.getQuote(signal.mint);
     const supply = meta?.supply ?? signal.entrySupply ?? undefined;
@@ -56,131 +42,132 @@ export const forwardSignalToDestination = async (signal: Signal) => {
       livePrice: quote.price,
       liveMarketCap: supply ? quote.price * supply : meta.marketCap,
     };
+    
+    const bot = getBotInstance();
 
-    for (const destGroup of destinationGroups) {
-      // Skip if forwarding to same group
-      if (destGroup.chatId === signal.chatId) {
-        continue;
-      }
+    // 4. Iterate over each subscription (User context)
+    for (const subscription of sourceSubscriptions) {
+        const ownerTelegramId = subscription.owner.userId;
+        const ownerId = subscription.ownerId;
+        const groupName = subscription.name || 'Unknown Group';
 
-      // Check if we've already sent THIS signal to this destination
-      const existing = await prisma.forwardedSignal.findUnique({
-        where: {
-          signalId_destGroupId: {
-            signalId: signal.id,
-            destGroupId: destGroup.chatId,
-          },
-        },
-      });
-      if (existing) {
-        continue; // Already forwarded this signal instance
-      }
+        // Get destinations for THIS user
+        const destinationGroups = await getDestinationGroups(ownerTelegramId);
+        if (destinationGroups.length === 0) continue;
 
-      // Check if we've already sent this mint from this source group to this destination
-      const alreadySentFromSource = await prisma.forwardedSignal.findFirst({
-        where: {
-          destGroupId: destGroup.chatId,
-          sourceGroupId: signal.chatId,
-          signal: {
-            mint: signal.mint,
-            group: { ownerId },
-          },
-        },
-        include: { signal: true },
-      });
-      if (alreadySentFromSource) {
-        continue; // Avoid spamming destination from the same source group for the same CA
-      }
+        // Check Duplicate CA for THIS user's ecosystem
+        // Pass the ownerId to checkDuplicateCA to see if THEY have seen this mint before
+        const duplicateCheck = await checkDuplicateCA(signal.mint, ownerId, undefined, signal.id);
+        const isDup = duplicateCheck.isDuplicate;
 
-      // Check duplicate across this owner (to label first vs new group mention)
-      // Exclude current signal ID to avoid self-match if checking broadly, but checkDuplicateCA handles it
-      const duplicateCheck = await checkDuplicateCA(signal.mint, ownerId || undefined, undefined, signal.id);
-      const isDup = duplicateCheck.isDuplicate;
+        for (const destGroup of destinationGroups) {
+            // Skip self-forward
+            if (destGroup.chatId === signal.chatId) continue;
 
-      // Generate card
-      let message: string;
-      let keyboard: any;
+            // Check if we've already sent THIS signal instance to this destination
+            const existing = await prisma.forwardedSignal.findUnique({
+                where: {
+                signalId_destGroupId: {
+                    signalId: signal.id,
+                    destGroupId: destGroup.chatId,
+                },
+                },
+            });
+            if (existing) continue;
 
-      if (isDup && duplicateCheck.firstSignal) {
-        message = generateDuplicateSignalCard(
-          signal,
-          metaWithLive,
-          duplicateCheck.firstSignal,
-          duplicateCheck.firstGroupName || 'Unknown Group',
-          groupName,
-          userName
-        );
-        // Add header for new group mention context
-        message = `🆕 *NEW GROUP MENTION*\n\n` + message;
-      } else {
-        // First time seeing this CA in ANY of owner's groups
-        message = await generateFirstSignalCard(signal, metaWithLive, groupName, userName);
-      }
+            // Check if we've already sent this mint from this specific source group to this destination
+            // (Avoid spamming the same group mention repeatedly)
+            const alreadySentFromSource = await prisma.forwardedSignal.findFirst({
+                where: {
+                destGroupId: destGroup.chatId,
+                sourceGroupId: signal.chatId,
+                signal: { mint: signal.mint },
+                },
+            });
+            if (alreadySentFromSource) continue;
 
-      keyboard = {
-        inline_keyboard: [
-          [
-            { text: '📈 Chart', callback_data: `chart:${signal.id}` },
-            { text: '📊 Stats', callback_data: `stats:${signal.id}` },
-          ],
-          [
-            { text: '🐋 Analyze Holders', callback_data: `analyze_holders:${signal.id}` },
-          ],
-          [
-            { text: '🔍 View Source', callback_data: `source:${signal.id}` },
-            { text: '🔄 Refresh', callback_data: `refresh:${signal.id}` },
-          ],
-        ],
-      };
+            // Generate Card
+            let message: string;
+            if (isDup && duplicateCheck.firstSignal) {
+                message = generateDuplicateSignalCard(
+                    signal,
+                    metaWithLive,
+                    duplicateCheck.firstSignal,
+                    duplicateCheck.firstGroupName || 'Unknown Group',
+                    groupName,
+                    userName
+                );
+                message = `🆕 *NEW GROUP MENTION*\n\n` + message;
+            } else {
+                // First time seeing this CA in ANY of owner's groups
+                message = await generateFirstSignalCard(signal, metaWithLive, groupName, userName);
+            }
 
-      const destPrefs = {
-        autoDeleteSeconds: destGroup.autoDeleteSeconds ?? null,
-        showHideButton: destGroup.showHideButton ?? true
-      };
+            const keyboard = {
+                inline_keyboard: [
+                [
+                    { text: '📈 Chart', callback_data: `chart:${signal.id}` },
+                    { text: '📊 Stats', callback_data: `stats:${signal.id}` },
+                ],
+                [
+                    { text: '🐋 Analyze Holders', callback_data: `analyze_holders:${signal.id}` },
+                ],
+                [
+                    { text: '🔍 View Source', callback_data: `source:${signal.id}` },
+                    { text: '🔄 Refresh', callback_data: `refresh:${signal.id}` },
+                ],
+                ],
+            } as any;
 
-      if (destPrefs.showHideButton) {
-        keyboard.inline_keyboard.push([{ text: '🙈 Hide', callback_data: 'hide' }]);
-      }
+            const destPrefs = {
+                autoDeleteSeconds: destGroup.autoDeleteSeconds ?? null,
+                showHideButton: destGroup.showHideButton ?? true
+            };
 
-      let sent;
-      // Prefer photo if available
-      if (metaWithLive.image) {
-        try {
-          sent = await bot.telegram.sendPhoto(Number(destGroup.chatId), metaWithLive.image, {
-            caption: message,
-            parse_mode: 'Markdown',
-            reply_markup: keyboard,
-          });
-        } catch (err) {
-          logger.warn(`Forwarder: failed to send photo, fallback to text: ${err}`);
-          sent = await bot.telegram.sendMessage(Number(destGroup.chatId), message, {
-            parse_mode: 'Markdown',
-            reply_markup: keyboard,
-            link_preview_options: { is_disabled: false },
-          });
+            if (destPrefs.showHideButton) {
+                keyboard.inline_keyboard.push([{ text: '🙈 Hide', callback_data: 'hide' }]);
+            }
+
+            let sent;
+            if (metaWithLive.image) {
+                try {
+                sent = await bot.telegram.sendPhoto(Number(destGroup.chatId), metaWithLive.image, {
+                    caption: message,
+                    parse_mode: 'Markdown',
+                    reply_markup: keyboard,
+                });
+                } catch (err) {
+                logger.warn(`Forwarder: failed to send photo, fallback to text: ${err}`);
+                sent = await bot.telegram.sendMessage(Number(destGroup.chatId), message, {
+                    parse_mode: 'Markdown',
+                    reply_markup: keyboard,
+                    link_preview_options: { is_disabled: false },
+                });
+                }
+            } else {
+                sent = await bot.telegram.sendMessage(Number(destGroup.chatId), message, {
+                parse_mode: 'Markdown',
+                reply_markup: keyboard,
+                link_preview_options: { is_disabled: false },
+                });
+            }
+
+            if (sent) {
+                scheduleAutoDelete(bot, destGroup.chatId, sent.message_id, destPrefs.autoDeleteSeconds);
+            }
+
+            // Record forwarding
+            await prisma.forwardedSignal.create({
+                data: {
+                signalId: signal.id,
+                sourceGroupId: signal.chatId,
+                destGroupId: destGroup.chatId,
+                forwardedBy: ownerTelegramId,
+                },
+            });
+
+            logger.info(`Signal ${signal.id} forwarded to group ${destGroup.chatId} for user ${ownerTelegramId}`);
         }
-      } else {
-        sent = await bot.telegram.sendMessage(Number(destGroup.chatId), message, {
-          parse_mode: 'Markdown',
-          reply_markup: keyboard,
-          link_preview_options: { is_disabled: false },
-        });
-      }
-
-      if (sent) {
-        scheduleAutoDelete(bot, destGroup.chatId, sent.message_id, destPrefs.autoDeleteSeconds);
-      }
-
-      // Record forwarding
-      await prisma.forwardedSignal.create({
-        data: {
-          signalId: signal.id,
-          sourceGroupId: signal.chatId,
-          destGroupId: destGroup.chatId,
-        },
-      });
-
-      logger.info(`Signal ${signal.id} forwarded to group ${destGroup.chatId} (owner: ${ownerTelegramId})`);
     }
   } catch (error) {
     logger.error(`Error forwarding signal ${signal.id}:`, error);

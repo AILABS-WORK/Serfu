@@ -10,6 +10,45 @@ export const ingestMiddleware: Middleware<Context> = async (ctx, next) => {
   // We process messages from groups, supergroups, and channels
   // PRD says: "For every message in the group, store at minimum..."
   
+  // Handle bot being added to a group/channel (my_chat_member update)
+  if (ctx.myChatMember) {
+    const status = ctx.myChatMember.new_chat_member.status;
+    const oldStatus = ctx.myChatMember.old_chat_member.status;
+    const isJoin = (status === 'member' || status === 'administrator') && (oldStatus === 'left' || oldStatus === 'kicked' || oldStatus === 'restricted');
+    
+    if (isJoin && ctx.from) {
+      const chatId = BigInt(ctx.chat?.id || 0);
+      const userId = BigInt(ctx.from.id);
+      const chatTitle = (ctx.chat as any)?.title || `Group ${chatId}`;
+      const chatType = (ctx.chat as any)?.type;
+
+      if (chatId !== 0n) {
+        try {
+          // Auto-register this group as a source for the user who added the bot
+          await createOrUpdateGroup(chatId, userId, {
+            name: chatTitle,
+            type: 'source',
+            chatType: chatType,
+          });
+          logger.info(`Bot added to chat ${chatId} by user ${userId}. Registered as source group.`);
+          
+          // Optional: Send a welcome message confirming setup
+          if (chatType === 'group' || chatType === 'supergroup') {
+              // Only reply if we have permission to send messages
+              try {
+                  await ctx.reply('👋 Hello! I am now monitoring this group for signals.\nUse /groups to manage your settings.');
+              } catch (e) {
+                  // Ignore if can't send messages
+              }
+          }
+        } catch (error) {
+          logger.error('Error handling my_chat_member update:', error);
+        }
+      }
+    }
+    return next();
+  }
+
   // Guided channel claim flow (only in private chats). Also auto-claim if a forwarded channel message is sent.
   if (ctx.chat?.type === 'private' && ctx.from?.id) {
     const awaiting = isAwaitChannelClaim(ctx.from.id);
