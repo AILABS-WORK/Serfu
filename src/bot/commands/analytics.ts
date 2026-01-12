@@ -693,20 +693,21 @@ export const handleDistributions = async (ctx: Context) => {
   }
 };
 
+// ----------------------------------------------------------------------
+// RECENT CALLS HANDLER (Timeline + Deduplication + V2 Design)
+// ----------------------------------------------------------------------
+
 export const handleRecentCalls = async (ctx: Context) => {
   try {
     const ownerTelegramId = ctx.from?.id ? BigInt(ctx.from.id) : null;
     if (!ownerTelegramId) return ctx.reply('❌ Unable to identify user.');
 
-    // 1. Get all Groups owned by user (Sources AND Destinations)
+    // 1. Get Workspace Scope
     const userGroups = await prisma.group.findMany({
         where: { owner: { userId: ownerTelegramId }, isActive: true },
         select: { id: true, chatId: true, type: true }
     });
-
     const ownedChatIds = userGroups.map(g => g.chatId);
-
-    // 2. Find signals forwarded TO my destination groups
     const destinationGroupIds = userGroups.filter(g => g.type === 'destination').map(g => g.id);
     
     let forwardedSignalIds: number[] = [];
@@ -722,8 +723,8 @@ export const handleRecentCalls = async (ctx: Context) => {
         return ctx.reply('You are not monitoring any groups/channels yet.');
     }
 
-    // 3. Fetch top recent signals matching Chat IDs OR Forwarded IDs
-    const recentSignals = await prisma.signal.findMany({
+    // 2. Fetch Signals (Fetch more to allow for deduplication)
+    const rawSignals = await prisma.signal.findMany({
       where: {
         OR: [
             { chatId: { in: ownedChatIds } },
@@ -731,35 +732,7 @@ export const handleRecentCalls = async (ctx: Context) => {
         ]
       },
       orderBy: { detectedAt: 'desc' },
-      take: 6,
-      select: { id: true, mint: true }
-    });
-
-    if (recentSignals.length === 0) {
-      return ctx.reply('No signals yet in your workspace.', {
-          reply_markup: {
-              inline_keyboard: [[{ text: '🔙 Back', callback_data: 'analytics' }]]
-          }
-      });
-    }
-
-    // 4. Notify user we are loading fresh data
-    const loadingMsg = await ctx.reply('⏳ Calculating latest metrics (ATH/DD)... please wait.');
-
-    // 5. Force synchronous update for these specific signals
-    try {
-        const signalIds = recentSignals.map(s => s.id);
-        await updateHistoricalMetrics(signalIds);
-    } catch (err) {
-        logger.error('Targeted update failed during recent calls view:', err);
-    }
-
-    // 6. Fetch full data (now with updated metrics)
-    const signals = await prisma.signal.findMany({
-      where: {
-        id: { in: recentSignals.map(s => s.id) }
-      },
-      orderBy: { detectedAt: 'desc' },
+      take: 40, // Fetch 40, display top 10 unique
       include: {
         group: true,
         user: true, 
@@ -767,43 +740,91 @@ export const handleRecentCalls = async (ctx: Context) => {
       },
     });
 
-    let message = '📜 *Recent Calls*\n\n';
-    for (const sig of signals) {
-      let currentPrice: number | null = null;
-      try {
-        const quote = await provider.getQuote(sig.mint);
-        currentPrice = quote.price;
-      } catch (err) {
-        logger.debug(`Recent calls quote failed for ${sig.mint}:`, err);
-      }
-
-      const entryPrice = sig.entryPrice || null;
-      const multiple = currentPrice && entryPrice ? currentPrice / entryPrice : null;
-      
-      let athMult = sig.metrics?.athMultiple || 1.0;
-      if (multiple && athMult < multiple) {
-          athMult = multiple;
-      }
-      if (!sig.metrics && (!multiple || multiple < 1)) {
-          athMult = 1.0;
-      }
-      
-      const drawdown = sig.metrics?.maxDrawdown ?? 0;
-
-      const callerName = sig.user?.username || sig.user?.firstName;
-      // If user is null, fallback to group name.
-      const displayCaller = callerName ? `@${callerName}` : (sig.group?.name || 'Unknown Channel');
-
-      message += `• *${sig.name || sig.symbol || sig.mint}* (${sig.symbol || 'N/A'})\n`;
-      message += `  Group: ${sig.group?.name || sig.group?.chatId || 'N/A'}\n`;
-      message += `  Caller: ${displayCaller}\n`;
-      message += `  Entry: $${entryPrice ? entryPrice.toFixed(6) : 'Pending'} | Cur: ${multiple ? `${multiple.toFixed(2)}x` : 'N/A'}\n`;
-      message += `  ATH: \`${athMult.toFixed(2)}x\` | DD: \`${(drawdown * 100).toFixed(0)}%\`\n`;
-      message += `  Mint: \`${sig.mint}\`\n\n`;
+    if (rawSignals.length === 0) {
+      return ctx.reply('No signals yet in your workspace.', {
+          reply_markup: {
+              inline_keyboard: [[{ text: '🔙 Back', callback_data: 'analytics' }]]
+          }
+      });
     }
 
-    // 7. Update the loading message with the result and ADD buttons
-    await ctx.telegram.editMessageText(loadingMsg.chat.id, loadingMsg.message_id, undefined, message.trim(), { 
+    // 3. Deduplication Logic
+    // Keep only the LATEST call from a specific Group for a specific Token.
+    const seenMap = new Set<string>();
+    const uniqueSignals = [];
+
+    for (const sig of rawSignals) {
+        const key = `${sig.groupId || 'unknown'}:${sig.mint}`;
+        if (seenMap.has(key)) continue;
+        
+        seenMap.add(key);
+        uniqueSignals.push(sig);
+        if (uniqueSignals.length >= 10) break;
+    }
+
+    // 4. Trigger Metric Updates for displayed signals
+    const loadingMsg = await ctx.reply('⏳ Syncing latest price data...');
+    try {
+        await updateHistoricalMetrics(uniqueSignals.map(s => s.id));
+    } catch (err) {
+        logger.warn('Background metric update failed:', err);
+    }
+
+    // 5. Build "Serfu Prime" Timeline
+    // Re-fetch to get updated metrics? 
+    // Actually updateHistoricalMetrics updates the DB. We should probably re-fetch or trust the update?
+    // For speed, let's re-fetch just these 10 IDs to get the fresh 'metrics' relation.
+    const signals = await prisma.signal.findMany({
+        where: { id: { in: uniqueSignals.map(s => s.id) } },
+        orderBy: { detectedAt: 'desc' },
+        include: { group: true, user: true, metrics: true }
+    });
+
+    let message = UIHelper.header('RECENT ACTIVITY LOG', '📜');
+
+    for (const sig of signals) {
+        // Price Logic
+        let currentPrice = 0;
+        try {
+            const quote = await provider.getQuote(sig.mint);
+            currentPrice = quote.price;
+        } catch {}
+
+        const entry = sig.entryPrice || 0;
+        const entryStr = UIHelper.formatCurrency(entry);
+        const currStr = UIHelper.formatCurrency(currentPrice);
+        
+        // PnL & Multiple
+        let multiple = 1.0;
+        if (entry > 0 && currentPrice > 0) multiple = currentPrice / entry;
+        
+        const pnl = (multiple - 1) * 100;
+        const pnlStr = UIHelper.formatPercent(pnl);
+        const icon = UIHelper.getStatusIcon(pnl);
+        
+        const ath = sig.metrics?.athMultiple || multiple;
+        const athStr = ath > multiple ? ath : multiple; // Show max
+
+        // Attribution
+        const time = sig.detectedAt.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
+        const source = sig.user?.username 
+            ? `👤 @${sig.user.username}` 
+            : `📢 ${sig.group?.name || 'Unknown Channel'}`;
+
+        // Format:
+        // 🕒 14:05 | 🟢 ACORN
+        //    via 📢 Alpha Caller
+        //    Entry: $0.0012 ➔ Now: $0.0035
+        //    📈 +191% (3.5x Peak)
+        
+        message += `🕒 *${time}* | ${icon} *${sig.symbol || 'UNKNOWN'}*\n`;
+        message += `   via ${source}\n`;
+        message += `   💵 Entry: ${entryStr} ➔ Now: ${currStr}\n`;
+        message += `   ${pnl >= 0 ? '📈' : '📉'} ${pnlStr} (\`${athStr.toFixed(2)}x\` Peak)\n`;
+        message += UIHelper.separator('LIGHT');
+    }
+
+    await ctx.telegram.editMessageText(loadingMsg.chat.id, loadingMsg.message_id, undefined, message, { 
         parse_mode: 'Markdown',
         reply_markup: {
             inline_keyboard: [
@@ -812,15 +833,10 @@ export const handleRecentCalls = async (ctx: Context) => {
             ]
         }
     });
-    
+
   } catch (error) {
     logger.error('Error loading recent calls:', error);
-    // Try to reply with error if edit fails, or just log
-    try {
-        await ctx.reply('Error loading recent calls. Please try again.');
-    } catch(e) {
-        // ignore
-    }
+    try { await ctx.reply('Error loading recent calls.'); } catch {}
   }
 };
 
