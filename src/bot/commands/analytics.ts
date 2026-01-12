@@ -7,13 +7,13 @@ import { provider } from '../../providers';
 import { getGroupStats, getUserStats, getLeaderboard, EntityStats } from '../../analytics/aggregator';
 import { updateHistoricalMetrics } from '../../jobs/historicalMetrics';
 
+import { UIHelper } from '../../utils/ui';
+
 export const handleAnalyticsCommand = async (ctx: Context) => {
   try {
-    // Trigger background update if requested or maybe just always async update?
-    // Let's not block the UI but start an update if it hasn't run recently.
-    // For now, we rely on the job.
+    const title = UIHelper.header('Analytics Dashboard');
     
-    await ctx.reply('📊 *Analytics Dashboard*', {
+    await ctx.reply(title, {
       parse_mode: 'Markdown',
       reply_markup: {
         inline_keyboard: [
@@ -22,7 +22,11 @@ export const handleAnalyticsCommand = async (ctx: Context) => {
             { text: '👥 My Groups', callback_data: 'analytics_groups' },
           ],
           [
+             { text: '🟢 Live Signals', callback_data: 'live_signals' }, // Changed from Recent
              { text: '📜 Recent Calls', callback_data: 'analytics_recent' },
+          ],
+          [
+             { text: '📊 Distributions', callback_data: 'distributions' },
              { text: '👤 User Stats', callback_data: 'analytics_users_input' },
           ],
           [
@@ -42,20 +46,20 @@ export const handleAnalyticsCommand = async (ctx: Context) => {
 };
 
 const formatEntityStats = (stats: EntityStats, type: 'GROUP' | 'USER'): string => {
-  let msg = `📊 *${type === 'GROUP' ? 'Group' : 'User'} Analytics: ${stats.name}*\n\n`;
-  msg += `*Overall Performance*\n`;
-  msg += `Signals: \`${stats.totalSignals}\`\n`;
-  msg += `Win Rate (>2x): \`${(stats.winRate * 100).toFixed(1)}%\`\n`;
-  msg += `Win Rate (>5x): \`${(stats.winRate5x * 100).toFixed(1)}%\`\n`;
-  msg += `Avg ATH: \`${stats.avgMultiple.toFixed(2)}x\`\n`;
-  msg += `Avg Time to ATH: \`${stats.avgTimeToAth.toFixed(0)} min\`\n`;
-  msg += `Avg Drawdown: \`${(stats.avgDrawdown * 100).toFixed(1)}%\`\n`;
-  msg += `Reliability Score: \`${stats.score.toFixed(0)}\`\n\n`;
+  let msg = UIHelper.header(`${type === 'GROUP' ? 'Group' : 'User'} Analytics: ${stats.name}`);
+  msg += UIHelper.subHeader('Overall Performance');
+  msg += UIHelper.field('Signals', stats.totalSignals.toString()) + '\n';
+  msg += UIHelper.field('Win Rate (>2x)', UIHelper.formatPercent(stats.winRate * 100)) + '\n';
+  msg += UIHelper.field('Win Rate (>5x)', UIHelper.formatPercent(stats.winRate5x * 100)) + '\n';
+  msg += UIHelper.field('Avg ATH', UIHelper.formatMultiple(stats.avgMultiple)) + '\n';
+  msg += UIHelper.field('Avg Time to ATH', `${stats.avgTimeToAth.toFixed(0)} min`) + '\n';
+  msg += UIHelper.field('Avg Drawdown', UIHelper.formatPercent(stats.avgDrawdown * 100)) + '\n';
+  msg += UIHelper.field('Reliability Score', stats.score.toFixed(0)) + '\n';
 
   if (stats.bestCall) {
-    msg += `*Best Call (ATH)*\n`;
-    msg += `Token: ${stats.bestCall.symbol} (\`${stats.bestCall.mint}\`)\n`;
-    msg += `Peak: \`${stats.bestCall.multiple.toFixed(2)}x\`\n`;
+    msg += UIHelper.subHeader('Best Call (ATH)');
+    msg += UIHelper.field('Token', `${stats.bestCall.symbol} (\`${stats.bestCall.mint}\`)`) + '\n';
+    msg += UIHelper.field('Peak', UIHelper.formatMultiple(stats.bestCall.multiple)) + '\n';
   }
 
   return msg;
@@ -478,22 +482,21 @@ export const handleCrossGroupConfirms = async (ctx: Context) => {
   }
 };
 
+// ----------------------------------------------------------------------
+// LIVE SIGNALS HANDLER (Aggregated + Filters + UIHelper)
+// ----------------------------------------------------------------------
+
 export const handleLiveSignals = async (ctx: Context) => {
   try {
     const ownerTelegramId = ctx.from?.id ? BigInt(ctx.from.id) : null;
     if (!ownerTelegramId) return ctx.reply('❌ Unable to identify user.');
 
-    // 1. Get all Groups owned by user (Sources AND Destinations)
+    // 1. Get Workspace Scope
     const userGroups = await prisma.group.findMany({
         where: { owner: { userId: ownerTelegramId }, isActive: true },
         select: { id: true, chatId: true, type: true }
     });
-
-    const ownedGroupIds = userGroups.map(g => g.id);
     const ownedChatIds = userGroups.map(g => g.chatId);
-
-    // 2. Find signals forwarded TO my destination groups
-    // If a signal is forwarded to my group, I want to see it, regardless of source ownership
     const destinationGroupIds = userGroups.filter(g => g.type === 'destination').map(g => g.id);
     
     let forwardedSignalIds: number[] = [];
@@ -509,9 +512,7 @@ export const handleLiveSignals = async (ctx: Context) => {
         return ctx.reply('You are not monitoring any groups/channels yet.');
     }
 
-    // 3. Fetch active signals:
-    // - Either the signal is from a chat I monitor (ownedChatIds)
-    // - OR the signal was forwarded to one of my groups (forwardedSignalIds)
+    // 2. Fetch Active Signals
     const signals = await prisma.signal.findMany({
       where: {
         trackingStatus: 'ACTIVE',
@@ -520,57 +521,98 @@ export const handleLiveSignals = async (ctx: Context) => {
             { id: { in: forwardedSignalIds } }
         ]
       },
-      orderBy: { detectedAt: 'desc' },
+      orderBy: { detectedAt: 'asc' }, // Oldest first to find "Earliest Caller"
       include: {
         group: true,
         user: true,
-      },
-      take: 10,
+      }
     });
 
     if (signals.length === 0) {
-      return ctx.reply('No active signals right now. Check back later!', {
+      return ctx.reply('No active signals right now.', {
           reply_markup: {
               inline_keyboard: [[{ text: '🔙 Back', callback_data: 'analytics' }]]
           }
       });
     }
 
-    let message = '🟢 *Live Signals (Active)*\n\n';
-    
+    // 3. Aggregate by Mint
+    const aggregated = new Map<string, {
+        symbol: string;
+        mint: string;
+        earliestDate: Date;
+        earliestCaller: string;
+        mentions: number;
+        pnl: number;
+        currentPrice: number;
+    }>();
+
     for (const sig of signals) {
-      // Get current price
-      let currentPrice = 0;
-      try {
-        const quote = await provider.getQuote(sig.mint);
-        currentPrice = quote.price;
-      } catch (e) {
-        // ignore
-      }
+        if (!aggregated.has(sig.mint)) {
+            // First time seeing this mint (Earliest because sorted ASC)
+            let currentPrice = 0;
+            // Note: We might want to batch price fetches or rely on what's in DB if updated recently
+            // For now, simple fetch (cached by provider ideally)
+            try {
+                const quote = await provider.getQuote(sig.mint);
+                currentPrice = quote.price;
+            } catch {}
 
-      const entry = sig.entryPrice || 0;
-      const pnl = entry > 0 && currentPrice > 0 
-        ? ((currentPrice - entry) / entry) * 100 
-        : 0;
-      const pnlStr = pnl >= 0 ? `+${pnl.toFixed(1)}%` : `${pnl.toFixed(1)}%`;
-      const timeAgo = Math.floor((Date.now() - sig.detectedAt.getTime()) / (1000 * 60)); // minutes
+            const entry = sig.entryPrice || 0;
+            const pnl = entry > 0 && currentPrice > 0 ? ((currentPrice - entry) / entry) * 100 : 0;
+            
+            const caller = sig.user?.username ? `@${sig.user.username}` : (sig.group?.name || 'Unknown');
 
-      // Attribution
-      const sourceName = sig.user?.username || sig.group?.name || 'Unknown Source';
-
-      message += `• *${sig.symbol || 'N/A'}* (${pnlStr})\n`;
-      message += `  $${currentPrice.toFixed(6)} | ${timeAgo}m ago\n`;
-      message += `  Via: ${sourceName} | \`${sig.mint}\`\n\n`;
+            aggregated.set(sig.mint, {
+                symbol: sig.symbol || 'N/A',
+                mint: sig.mint,
+                earliestDate: sig.detectedAt,
+                earliestCaller: caller,
+                mentions: 0,
+                pnl,
+                currentPrice
+            });
+        }
+        
+        aggregated.get(sig.mint)!.mentions++;
     }
+
+    // 4. Construct Message with UIHelper
+    let message = UIHelper.header('Live Signals (Active)');
+    
+    // Convert to array and Sort by PnL desc
+    const rows = Array.from(aggregated.values()).sort((a, b) => b.pnl - a.pnl).slice(0, 10);
+
+    for (const row of rows) {
+        // 🟢 ACORN | +120% | 5 mentions
+        // 👤 @AlphaCaller | 5m ago
+        const pnlStr = UIHelper.formatPercent(row.pnl);
+        const icon = row.pnl >= 0 ? '🟢' : '🔴';
+        const timeAgo = UIHelper.formatTimeAgo(row.earliestDate);
+        
+        message += `\n${icon} *${row.symbol}* | \`${pnlStr}\`\n`;
+        message += `👤 ${row.earliestCaller} | ${row.mentions} mentions\n`;
+        message += `🕒 ${timeAgo} | $${row.currentPrice.toFixed(6)}\n`;
+        message += `\`${row.mint}\`\n`;
+        message += `───────────────────`; // Slimmer separator for rows
+    }
+
+    // 5. Filters UI
+    const filters = [
+        [
+            { text: '🚀 > 2x', callback_data: 'live_filter:2x' },
+            { text: '🌕 > 5x', callback_data: 'live_filter:5x' },
+            { text: '🟢 Gainers', callback_data: 'live_filter:gainers' }
+        ],
+        [
+            { text: '🔄 Refresh', callback_data: 'live_signals' },
+            { text: '❌ Close', callback_data: 'delete_msg' }
+        ]
+    ];
 
     await ctx.reply(message, { 
         parse_mode: 'Markdown',
-        reply_markup: {
-            inline_keyboard: [
-                [{ text: '🔄 Refresh', callback_data: 'live_signals' }],
-                [{ text: '🔙 Back', callback_data: 'analytics' }, { text: '❌ Close', callback_data: 'delete_msg' }]
-            ]
-        }
+        reply_markup: { inline_keyboard: filters }
     });
 
   } catch (error) {
