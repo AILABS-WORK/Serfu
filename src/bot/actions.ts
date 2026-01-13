@@ -271,6 +271,14 @@ Source: ${priceSource}
   });
 
 
+  bot.action(/^strategy_view:(GROUP|USER):(\d+)$/, async (ctx) => {
+      const type = ctx.match[1] as 'GROUP' | 'USER';
+      const id = ctx.match[2];
+      const { handleStrategyCommand } = await import('./commands/analytics');
+      await handleStrategyCommand(ctx as any, type, id);
+      await ctx.answerCbQuery();
+  });
+
   // --- LIVE SIGNALS & FILTERS ---
   
   bot.action('live_signals', async (ctx) => {

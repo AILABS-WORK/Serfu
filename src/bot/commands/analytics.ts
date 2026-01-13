@@ -113,7 +113,8 @@ export const handleGroupStatsCommand = async (ctx: Context, groupIdStr?: string,
             { text: window === 'ALL' ? '✅ ALL' : 'ALL', callback_data: `group_stats_window:${targetGroupId}:ALL` },
           ],
           [
-            { text: '🔙 Back', callback_data: 'analytics_groups' },
+             { text: '🪄 Strategy', callback_data: `strategy_view:GROUP:${targetGroupId}` },
+             { text: '🔙 Back', callback_data: 'analytics_groups' },
           ],
         ],
     };
@@ -157,6 +158,7 @@ export const handleUserStatsCommand = async (ctx: Context, userIdStr?: string, w
             { text: window === 'ALL' ? '✅ ALL' : 'ALL', callback_data: `user_stats_window:${targetUserId}:ALL` },
           ],
           [
+            { text: '🪄 Strategy', callback_data: `strategy_view:USER:${targetUserId}` },
             { text: '🔙 Back', callback_data: 'analytics_users_input' }, // Go back to user list
           ],
         ],
@@ -1068,5 +1070,93 @@ export const handleRefreshMetrics = async (ctx: Context) => {
     } catch (error) {
         logger.error('Manual refresh failed:', error);
         ctx.reply('❌ Refresh failed.');
+    }
+};
+
+// ----------------------------------------------------------------------
+// STRATEGY CREATOR (AI/Algo)
+// ----------------------------------------------------------------------
+
+export const handleStrategyCommand = async (ctx: Context, type: 'GROUP' | 'USER', id: string) => {
+    try {
+        const entityId = parseInt(id);
+        // Use 30D stats for strategy analysis
+        const { getGroupStats, getUserStats } = await import('../../analytics/aggregator');
+        const stats = type === 'GROUP' 
+            ? await getGroupStats(entityId, '30D') 
+            : await getUserStats(entityId, '30D');
+
+        if (!stats) return ctx.reply('No data available to generate strategy.');
+
+        // Algorithmic Strategy Generation
+        let strategyName = 'Balanced';
+        let riskLevel = 'Medium';
+        let action = 'Copy Trade';
+        const advice: string[] = [];
+
+        // 1. Analyze Win Rate vs Reward
+        if (stats.winRate > 0.6 && stats.avgMultiple < 2.5) {
+            strategyName = 'High-Frequency Scalper';
+            advice.push('• This source calls many winners but with smaller gains.');
+            advice.push('• Strategy: Take Profit quickly at 30-50%. Do not hold for moon.');
+            riskLevel = 'Low';
+        } else if (stats.winRate < 0.3 && stats.avgMultiple > 5) {
+            strategyName = 'Lotto Hunter';
+            advice.push('• Low win rate but huge winners. Expect losing streaks.');
+            advice.push('• Strategy: Use small size (0.1 SOL). Hold moonbags for >10x.');
+            riskLevel = 'High';
+        } else {
+            strategyName = 'Balanced Trader';
+            advice.push('• Decent mix of reliability and upside.');
+            advice.push('• Strategy: Standard copy trade settings.');
+        }
+
+        // 2. Analyze Risk (Rug Rate & Drawdown)
+        if (stats.rugRate > 0.1) {
+            riskLevel = 'Very High 💀';
+            advice.push('• WARNING: High Rug Rate (>10%). Verify CA before buying.');
+            action = 'Manual Review (Do Not Auto-Copy)';
+        } else if (stats.consistency < 1.0) { // Low StdDev
+            advice.push('• Very consistent performance. Safe for automated copy trading.');
+        }
+
+        // 3. Analyze Behavior (MCap & Sniper)
+        if (stats.mcapAvg < 15000) {
+            advice.push('• Specializes in Micro-Caps (<$15k).');
+            advice.push('• Execution speed is critical. Use high gas/priority fees.');
+        }
+        if (stats.sniperScore > 80) {
+            advice.push('• Enters extremely early (Sniper).');
+            advice.push('• Manual entry will likely be dumped on. Needs a fast bot.');
+        }
+
+        // 4. Construct Output
+        let message = UIHelper.header('STRATEGY REPORT', '🪄');
+        message += `Target: *${stats.name}*\n`;
+        message += UIHelper.separator('HEAVY');
+        
+        message += `🧠 *Archetype:* ${strategyName}\n`;
+        message += `⚠️ *Risk Level:* ${riskLevel}\n`;
+        message += `🤖 *Recommended Action:* ${action}\n\n`;
+        
+        message += `*📝 Execution Plan:*\n`;
+        advice.forEach(line => message += `${line}\n`);
+        
+        message += UIHelper.separator('LIGHT');
+        message += `*📊 Key Stats (30D):*\n`;
+        message += `• Win Rate: ${(stats.winRate * 100).toFixed(0)}%\n`;
+        message += `• Avg X: ${stats.avgMultiple.toFixed(2)}x\n`;
+        message += `• Rug Rate: ${(stats.rugRate * 100).toFixed(1)}%`;
+
+        await ctx.reply(message, { 
+            parse_mode: 'Markdown',
+            reply_markup: {
+                inline_keyboard: [[{ text: '❌ Close', callback_data: 'delete_msg' }]]
+            }
+        });
+
+    } catch (error) {
+        logger.error('Error generating strategy:', error);
+        ctx.reply('Error generating strategy.');
     }
 };
