@@ -456,39 +456,162 @@ export const handleCrossGroupConfirms = async (ctx: Context) => {
   try {
     const ownerTelegramId = ctx.from?.id ? BigInt(ctx.from.id) : null;
     if (!ownerTelegramId) return ctx.reply('❌ Unable to identify user.');
-    const since = subDays(new Date(), 7);
+    
+    // 1. Get Workspace Scope
+    const userGroups = await prisma.group.findMany({
+        where: { owner: { userId: ownerTelegramId }, isActive: true },
+        select: { id: true, chatId: true, type: true, name: true }
+    });
+    
+    if (userGroups.length < 2) {
+        return ctx.reply('You need to monitor at least 2 groups to see cross-group correlations.');
+    }
 
-    // Signals with group owner filter
+    const ownedChatIds = userGroups.map(g => g.chatId);
+    const destinationGroupIds = userGroups.filter(g => g.type === 'destination').map(g => g.id);
+    
+    let forwardedSignalIds: number[] = [];
+    if (destinationGroupIds.length > 0) {
+        const forwarded = await prisma.forwardedSignal.findMany({
+            where: { destGroupId: { in: destinationGroupIds.map(id => BigInt(id)) } },
+            select: { signalId: true }
+        });
+        forwardedSignalIds = forwarded.map(f => f.signalId);
+    }
+
+    // 2. Fetch Signals (Last 7 Days)
+    const since = subDays(new Date(), 7);
     const signals = await prisma.signal.findMany({
       where: {
         detectedAt: { gte: since },
-        group: { owner: { userId: ownerTelegramId } },
+        OR: [
+            { chatId: { in: ownedChatIds } },
+            { id: { in: forwardedSignalIds } }
+        ]
       },
-      select: { mint: true, groupId: true },
+      select: { mint: true, groupId: true, detectedAt: true, group: { select: { id: true, name: true } } },
+      orderBy: { detectedAt: 'asc' }
     });
 
-    const byMint = new Map<string, Set<number>>();
-    signals.forEach((s: any) => {
-      if (!byMint.has(s.mint)) byMint.set(s.mint, new Set());
-      byMint.get(s.mint)!.add(s.groupId || -1);
-    });
-
-    const multiGroup = Array.from(byMint.entries())
-      .map(([mint, groups]) => ({ mint, groups: Array.from(groups) }))
-      .filter((m) => m.groups.length > 1)
-      .slice(0, 20);
-
-    if (multiGroup.length === 0) {
-      return ctx.reply('No cross-group confirmations yet in the last 7 days.');
+    if (signals.length === 0) {
+        return ctx.reply('No signals found in the last 7 days to analyze.');
     }
 
-    let message = '🔁 *Cross-Group Confirmations (7d, your workspace)*\n\n';
-    multiGroup.slice(0, 10).forEach((m, idx) => {
-      const emoji = idx === 0 ? '🔥' : `${idx + 1}.`;
-      message += `${emoji} \`${m.mint}\` — ${m.groups.length} groups\n`;
+    // 3. Group by Mint
+    const byMint = new Map<string, Array<{ groupId: number; groupName: string; time: number }>>();
+    
+    for (const s of signals) {
+        if (!s.groupId) continue; // Skip channel signals without group? Or map them differently?
+        // Note: Channel signals might have groupId if mapped correctly in ingestion.
+        // If s.group is null, we might skip or handle as "Unknown".
+        if (!byMint.has(s.mint)) byMint.set(s.mint, []);
+        
+        // Avoid duplicates from same group for same mint?
+        const list = byMint.get(s.mint)!;
+        if (!list.find(x => x.groupId === s.groupId)) {
+            list.push({ 
+                groupId: s.groupId, 
+                groupName: s.group?.name || `Group ${s.groupId}`, 
+                time: s.detectedAt.getTime() 
+            });
+        }
+    }
+
+    // 4. Analyze Pairs
+    // Map: "id1-id2" -> { count, lagSum, id1LeadCount }
+    const pairStats = new Map<string, {
+        g1Name: string;
+        g2Name: string;
+        count: number;
+        lagSum: number; // in seconds
+        g1LeadCount: number;
+    }>();
+
+    for (const calls of byMint.values()) {
+        if (calls.length < 2) continue;
+        
+        // Sort by time to see who was first for THIS token
+        calls.sort((a, b) => a.time - b.time);
+
+        // Generate pairs
+        for (let i = 0; i < calls.length; i++) {
+            for (let j = i + 1; j < calls.length; j++) {
+                const c1 = calls[i];
+                const c2 = calls[j];
+                
+                // Canonical Key: smallest ID first
+                const [p1, p2] = c1.groupId < c2.groupId ? [c1, c2] : [c2, c1];
+                const key = `${p1.groupId}-${p2.groupId}`;
+
+                if (!pairStats.has(key)) {
+                    pairStats.set(key, {
+                        g1Name: p1.groupName,
+                        g2Name: p2.groupName,
+                        count: 0,
+                        lagSum: 0,
+                        g1LeadCount: 0
+                    });
+                }
+                
+                const stat = pairStats.get(key)!;
+                stat.count++;
+                
+                // Lag
+                const diff = Math.abs(c1.time - c2.time);
+                stat.lagSum += diff;
+                
+                // Who led? 
+                // Since we sorted `calls` by time, `c1` (at index i) is earlier than `c2` (at index j).
+                // But p1/p2 are sorted by ID.
+                if (c1.groupId === p1.groupId) {
+                    stat.g1LeadCount++; // p1 was c1 (earlier)
+                }
+            }
+        }
+    }
+
+    // 5. Format Output
+    // Sort by Count (Correlation)
+    const topPairs = Array.from(pairStats.values())
+        .sort((a, b) => b.count - a.count)
+        .slice(0, 10);
+
+    if (topPairs.length === 0) {
+        return ctx.reply('No cross-group correlations found (no shared calls).');
+    }
+
+    let message = UIHelper.header('CLUSTER ANALYSIS (7D)', '🕸️');
+    
+    for (const p of topPairs) {
+        // Calculate percentages
+        const avgLagSec = p.lagSum / p.count / 1000;
+        const avgLagMin = (avgLagSec / 60).toFixed(1);
+        
+        // Determine Leader
+        const g1LeadPct = (p.g1LeadCount / p.count) * 100;
+        let relation = '';
+        
+        if (g1LeadPct > 60) {
+            relation = `${p.g1Name} ⚡ leads ${p.g2Name}`;
+        } else if (g1LeadPct < 40) {
+            relation = `${p.g2Name} ⚡ leads ${p.g1Name}`;
+        } else {
+            relation = `${p.g1Name} 🤝 ${p.g2Name} (Sync)`;
+        }
+
+        message += `🔗 *${p.count} Shared Calls*\n`;
+        message += `   ${relation}\n`;
+        message += `   ⏱️ Avg Lag: \`${avgLagMin}m\`\n`;
+        message += UIHelper.separator('LIGHT');
+    }
+
+    await ctx.reply(message, { 
+        parse_mode: 'Markdown',
+        reply_markup: {
+            inline_keyboard: [[{ text: '🔙 Back', callback_data: 'analytics' }, { text: '❌ Close', callback_data: 'delete_msg' }]]
+        }
     });
 
-    await ctx.reply(message, { parse_mode: 'Markdown' });
   } catch (error) {
     logger.error('Error in cross-group confirmations:', error);
     ctx.reply('Error computing cross-group confirmations.');
@@ -549,7 +672,7 @@ export const handleLiveSignals = async (ctx: BotContext) => {
       });
     }
 
-    // 3. Aggregate by Mint
+    // 3. Aggregate by Mint (Initial Pass)
     const aggregated = new Map<string, {
         symbol: string;
         mint: string;
@@ -558,56 +681,138 @@ export const handleLiveSignals = async (ctx: BotContext) => {
         mentions: number;
         pnl: number;
         currentPrice: number;
+        meta?: any; // TokenMeta
     }>();
 
     for (const sig of signals) {
         if (!aggregated.has(sig.mint)) {
-            // First time seeing this mint (Earliest because sorted ASC)
-            let currentPrice = 0;
-            // Note: We might want to batch price fetches or rely on what's in DB if updated recently
-            // For now, simple fetch (cached by provider ideally)
-            try {
-                const quote = await provider.getQuote(sig.mint);
-                currentPrice = quote.price;
-            } catch {}
-
-            const entry = sig.entryPrice || 0;
-            const pnl = entry > 0 && currentPrice > 0 ? ((currentPrice - entry) / entry) * 100 : 0;
-            
             const caller = sig.user?.username ? `@${sig.user.username}` : (sig.group?.name || 'Unknown');
-
             aggregated.set(sig.mint, {
                 symbol: sig.symbol || 'N/A',
                 mint: sig.mint,
                 earliestDate: sig.detectedAt,
                 earliestCaller: caller,
                 mentions: 0,
-                pnl,
-                currentPrice
+                pnl: 0,
+                currentPrice: 0
             });
         }
-        
         aggregated.get(sig.mint)!.mentions++;
     }
 
-    // 4. Construct Message with UIHelper
+    // 4. Enrich Data (Fetch Metadata in Parallel)
+    const uniqueMints = Array.from(aggregated.keys());
+    const metaMap = new Map<string, any>();
+
+    // Batch fetch in chunks of 5 to avoid rate limits if many
+    const chunk = (arr: string[], size: number) => Array.from({ length: Math.ceil(arr.length / size) }, (v, i) => arr.slice(i * size, i * size + size));
+    
+    for (const batch of chunk(uniqueMints, 5)) {
+        await Promise.all(batch.map(async (mint) => {
+            try {
+                const meta = await provider.getTokenMeta(mint);
+                metaMap.set(mint, meta);
+            } catch (e) {
+                // Fallback or ignore
+            }
+        }));
+    }
+
+    // 5. Update Aggregated Stats with Meta
+    for (const [mint, entry] of aggregated.entries()) {
+        const meta = metaMap.get(mint);
+        if (meta) {
+            // Use live price from meta if available (calculated from mcap or jup price)
+            let price = 0;
+            if (meta.livePrice) price = meta.livePrice;
+            else if (meta.marketCap && meta.supply) price = meta.marketCap / meta.supply;
+            // Fallback to simple calculation if needed, but meta usually has price via getJupiterTokenInfo
+
+             // Double check price extraction from meta (it might be in meta.price or we might need to rely on what getTokenMeta returns)
+             // HeliusProvider.getTokenMeta doesn't explicitly return 'price' top level in interface, but might attach it?
+             // Actually looking at helius.ts, it calculates marketCap. It doesn't explicitly return 'price' in TokenMeta interface in types.ts
+             // But getJupiterTokenInfo returns usdPrice. 
+             // Let's rely on marketCap/supply if available, or fetch quote if critical.
+             // Actually, for PnL we need price. 
+             
+             // If meta doesn't have direct price, let's look at liquidity/mcap.
+             // Better: HeliusProvider.getTokenMeta uses getJupiterTokenInfo which returns usdPrice. 
+             // We should ensure TokenMeta has 'price' or 'livePrice'. 
+             // types.ts says `livePrice?: number | null`.
+             
+             // If livePrice is missing, we might have 0 pnl.
+             // Let's try to get price from marketCap / supply as fallback.
+             if (!price && meta.marketCap && meta.supply) {
+                 price = meta.marketCap / meta.supply;
+             }
+             
+             entry.currentPrice = price;
+             entry.meta = meta;
+             
+             // Update Symbol if better in meta
+             if (meta.symbol && meta.symbol !== 'UNKNOWN') entry.symbol = meta.symbol;
+        }
+
+        // Calculate PnL
+        // We need entry price from the Earliest Signal?
+        // Let's find the signal again or store it in aggregation
+        const sig = signals.find(s => s.mint === mint); // We know it exists
+        const entryPrice = sig?.entryPrice || 0;
+        
+        if (entry.currentPrice > 0 && entryPrice > 0) {
+            entry.pnl = ((entry.currentPrice - entryPrice) / entryPrice) * 100;
+        }
+    }
+
+    // 6. Construct Message with UIHelper
     let message = UIHelper.header('Live Signals (Active)');
     
-    // Convert to array and Sort by PnL desc
-    const rows = Array.from(aggregated.values()).sort((a, b) => b.pnl - a.pnl).slice(0, 10);
+    // Filter and Sort
+    // We can apply session filters here if we want strict filtering before display
+    const { minMult, onlyGainers } = ctx.session.liveFilters || { minMult: 0, onlyGainers: false };
+    
+    const rows = Array.from(aggregated.values())
+        .filter(row => {
+            const mult = row.currentPrice > 0 && (signals.find(s => s.mint === row.mint)?.entryPrice || 0) > 0 
+                ? row.currentPrice / (signals.find(s => s.mint === row.mint)?.entryPrice || 1) 
+                : 0;
+            
+            if (minMult > 0 && mult < minMult) return false;
+            if (onlyGainers && row.pnl < 0) return false;
+            return true;
+        })
+        .sort((a, b) => b.pnl - a.pnl)
+        .slice(0, 10);
 
     for (const row of rows) {
         // 🟢 ACORN | +120% | 5 mentions
         // 👤 @AlphaCaller | 5m ago
+        // 🍬 Dex: ✅ | 👥 Team: ✅
+        
         const pnlStr = UIHelper.formatPercent(row.pnl);
         const icon = row.pnl >= 0 ? '🟢' : '🔴';
         const timeAgo = UIHelper.formatTimeAgo(row.earliestDate);
         
         message += `\n${icon} *${row.symbol}* | \`${pnlStr}\`\n`;
         message += `👤 ${row.earliestCaller} | ${row.mentions} mentions\n`;
+        
+        // Enrichment Row
+        if (row.meta) {
+            const hasSocials = row.meta.socialLinks && Object.keys(row.meta.socialLinks).length > 0;
+            const isAudited = row.meta.audit && (!row.meta.audit.mintAuthorityDisabled || !row.meta.audit.freezeAuthorityDisabled) ? false : true; 
+            // Audit: If authorities disabled => Good (Green check). 
+            // Actually 'isAudited' usually means 'Has Audit'. 
+            // Let's show: "🍬 Dex: [status] | 🐦 Socials: [status]"
+            
+            const socialIcon = hasSocials ? '✅' : '❌';
+            const auditIcon = isAudited ? '✅' : '⚠️'; // Warning if authorities enabled
+            
+            message += `🍬 Audit: ${auditIcon} | 🐦 Socials: ${socialIcon}\n`;
+        }
+        
         message += `🕒 ${timeAgo} | $${row.currentPrice.toFixed(6)}\n`;
         message += `\`${row.mint}\`\n`;
-        message += `───────────────────`; // Slimmer separator for rows
+        message += `───────────────────`; 
     }
 
     // 5. Filters UI
