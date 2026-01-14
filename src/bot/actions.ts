@@ -382,11 +382,17 @@ Source: ${priceSource}
   bot.action('settings_menu', async (ctx) => {
       const { handleSettingsCommand } = await import('./commands/settings');
       await handleSettingsCommand(ctx as any);
-      await ctx.answerCbQuery();
   });
 
   bot.action('watchlist', async (ctx) => {
-      await ctx.answerCbQuery('Watchlist coming soon!');
+      const { handleWatchlistCommand } = await import('./commands/watchlist');
+      await handleWatchlistCommand(ctx as any);
+  });
+
+  bot.action(/^watchlist_add:(\d+)$/, async (ctx) => {
+      const signalId = parseInt(ctx.match[1]);
+      const { handleAddToWatchlist } = await import('./commands/watchlist');
+      await handleAddToWatchlist(ctx as any, signalId);
   });
 
   // --- ANALYTICS ACTIONS (Existing) ---
