@@ -202,7 +202,6 @@ export const getGroupStats = async (groupId: number, timeframe: TimeFrame): Prom
   if (!group) return null;
 
   // 2. Find ALL groups with the same chatId (Deduplication Logic)
-  // This ensures if we have duplicate groups for the same Telegram Chat, we aggregate all their signals.
   const relatedGroups = await prisma.group.findMany({ 
       where: { chatId: group.chatId },
       select: { id: true } 
@@ -212,6 +211,8 @@ export const getGroupStats = async (groupId: number, timeframe: TimeFrame): Prom
   const since = getDateFilter(timeframe);
   
   // 3. Fetch Signals from ALL related groups
+  // CRITICAL FIX: Do NOT filter by userId. Channels have userId=null.
+  // We strictly look for signals linked to these group IDs.
   const signals = await prisma.signal.findMany({
     where: {
       groupId: { in: groupIds },
