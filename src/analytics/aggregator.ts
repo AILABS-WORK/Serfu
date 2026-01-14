@@ -26,6 +26,14 @@ export interface EntityStats {
   sniperScore: number; // % of calls within 10m of token creation (mocked if no creation date)
   consecutiveWins: number; // Current streak of > 2x calls
   followThrough: number; // % of calls that are > 2x
+  
+  // V2 Metrics
+  avgTimeTo2x: number; // minutes
+  avgTimeTo5x: number; // minutes
+  speedScore: number; // 0-100 (100 = Instant moons, 0 = Slow grinds)
+  diamondHands: number; // % of signals held > 24h
+  avgLifespan: number; // Avg duration of tracking before inactive (minutes)
+  topSector: string; // Most common tag
 }
 
 type TimeFrame = '7D' | '30D' | 'ALL';
@@ -63,7 +71,13 @@ const calculateStats = (signals: SignalWithMetrics[]): EntityStats => {
       timeToPeak: 0,
       sniperScore: 0,
       consecutiveWins: 0,
-      followThrough: 0
+      followThrough: 0,
+      avgTimeTo2x: 0,
+      avgTimeTo5x: 0,
+      speedScore: 0,
+      diamondHands: 0,
+      avgLifespan: 0,
+      topSector: 'N/A'
     };
   }
 
@@ -82,6 +96,14 @@ const calculateStats = (signals: SignalWithMetrics[]): EntityStats => {
   let mcapCount = 0;
   const multiples: number[] = [];
   let sniperCount = 0; // Calls early
+  
+  // V2 Accumulators
+  let timeTo2xSum = 0;
+  let timeTo2xCount = 0;
+  let timeTo5xSum = 0;
+  let timeTo5xCount = 0;
+  let diamondHandsCount = 0; // Held > 24h
+  let lifespanSum = 0; // Tracking duration
   
   // Sort signals by date for consecutive wins logic
   const sortedSignals = [...signals].sort((a, b) => b.detectedAt.getTime() - a.detectedAt.getTime());
@@ -124,6 +146,38 @@ const calculateStats = (signals: SignalWithMetrics[]): EntityStats => {
       }
     }
     
+    // V2 Time Metrics (from new schema fields or fallback)
+    const time2x = s.metrics.timeTo2x;
+    if (time2x) {
+        timeTo2xSum += time2x / (1000 * 60);
+        timeTo2xCount++;
+    } else if (mult > 2 && s.metrics.athAt && s.detectedAt) {
+        // Fallback: Use ATH time if > 2x (Approximate)
+        // Better: Don't guess. 
+    }
+
+    const time5x = s.metrics.timeTo5x;
+    if (time5x) {
+        timeTo5xSum += time5x / (1000 * 60);
+        timeTo5xCount++;
+    }
+
+    // Diamond Hands (>24h active tracking or held)
+    const ageMs = Date.now() - new Date(s.detectedAt).getTime();
+    const ageHrs = ageMs / (1000 * 60 * 60);
+    // If signal is still ACTIVE and > 24h old, OR trackingEndAt was > 24h
+    let duration = ageHrs;
+    if (s.trackingEndAt) {
+        duration = (new Date(s.trackingEndAt).getTime() - new Date(s.detectedAt).getTime()) / (1000 * 60 * 60);
+    }
+    
+    // Only count if it was profitable (otherwise holding bags)
+    if (duration > 24 && mult > 1.5) {
+        diamondHandsCount++;
+    }
+    
+    lifespanSum += duration * 60; // minutes
+
     // Mcap
     if (s.entryMarketCap) {
         totalMcap += s.entryMarketCap;
@@ -146,6 +200,27 @@ const calculateStats = (signals: SignalWithMetrics[]): EntityStats => {
   const avgDrawdown = count ? totalDrawdown / count : 0; 
   const avgTimeToAth = timeCount ? totalTime / timeCount : 0;
   
+  // V2 Averages
+  const avgTimeTo2x = timeTo2xCount ? timeTo2xSum / timeTo2xCount : 0;
+  const avgTimeTo5x = timeTo5xCount ? timeTo5xSum / timeTo5xCount : 0;
+  const diamondHands = count ? diamondHandsCount / count : 0;
+  const avgLifespan = count ? lifespanSum / count : 0;
+  
+  // Speed Score: 100 = <5m avg time to peak. 0 = >48h.
+  // Formula: Decay based on minutes.
+  // If avgTime < 5 => 100.
+  // If avgTime = 60 (1h) => 80.
+  // If avgTime = 1440 (24h) => 20.
+  let speedScore = 0;
+  if (avgTimeToAth > 0) {
+      if (avgTimeToAth < 5) speedScore = 100;
+      else if (avgTimeToAth < 30) speedScore = 90;
+      else if (avgTimeToAth < 60) speedScore = 80;
+      else if (avgTimeToAth < 240) speedScore = 60; // 4h
+      else if (avgTimeToAth < 1440) speedScore = 40; // 24h
+      else speedScore = 20;
+  }
+
   const rugRate = count ? rugCount / count : 0;
   const mcapAvg = mcapCount ? totalMcap / mcapCount : 0;
   const sniperScore = count ? (sniperCount / count) * 100 : 0;
@@ -188,7 +263,13 @@ const calculateStats = (signals: SignalWithMetrics[]): EntityStats => {
     timeToPeak: avgTimeToAth,
     sniperScore,
     consecutiveWins,
-    followThrough
+    followThrough,
+    avgTimeTo2x,
+    avgTimeTo5x,
+    speedScore,
+    diamondHands,
+    avgLifespan,
+    topSector: 'N/A' // Placeholder until tag scraping implemented
   };
 };
 
