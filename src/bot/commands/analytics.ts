@@ -1096,12 +1096,21 @@ export const handleStrategyCommand = async (ctx: Context, type: 'GROUP' | 'USER'
             advice.push('• Specializes in Micro-Caps (<$15k).');
             advice.push('• Execution speed is critical. Use high gas/priority fees.');
         }
-        if (stats.sniperScore > 80) {
-            advice.push('• Enters extremely early (Sniper).');
+        if (stats.sniperScore > 80 || stats.speedScore > 80) {
+            advice.push('• Enters extremely early (Sniper Mode).');
             advice.push('• Manual entry will likely be dumped on. Needs a fast bot.');
         }
+        
+        // 4. Lifespan & Diamond Hands
+        if (stats.diamondHands > 0.5) {
+            advice.push('• Diamond Handed Caller: Holds >24h frequently.');
+            advice.push('• Strategy: Good for swing trading. Don\'t panic sell early dips.');
+        } else if (stats.avgLifespan < 1) { // < 1 hour
+            advice.push('• Quick Flipper: Calls die within 1 hour.');
+            advice.push('• Strategy: Scalp only. Get in, take 20-30%, get out.');
+        }
 
-        // 4. Construct Output
+        // 5. Construct Output
         let message = UIHelper.header('STRATEGY REPORT', '🪄');
         message += `Target: *${stats.name}*\n`;
         message += UIHelper.separator('HEAVY');
