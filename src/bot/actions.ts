@@ -382,6 +382,7 @@ Source: ${priceSource}
   bot.action('settings_menu', async (ctx) => {
       const { handleSettingsCommand } = await import('./commands/settings');
       await handleSettingsCommand(ctx as any);
+      await ctx.answerCbQuery();
   });
 
   bot.action('watchlist', async (ctx) => {

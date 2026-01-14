@@ -674,7 +674,8 @@ export const handleLiveSignals = async (ctx: BotContext) => {
       });
     }
 
-    // 3. Aggregate by Mint (Initial Pass)
+    // 3. Aggregate by Mint (Initial Pass - FAST)
+    // We only iterate through the DB results, no external calls yet
     const aggregated = new Map<string, {
         symbol: string;
         mint: string;
@@ -683,110 +684,108 @@ export const handleLiveSignals = async (ctx: BotContext) => {
         mentions: number;
         pnl: number;
         currentPrice: number;
-        meta?: any; // TokenMeta
+        meta?: any; 
+        entryPrice: number;
     }>();
 
     for (const sig of signals) {
         if (!aggregated.has(sig.mint)) {
             const caller = sig.user?.username ? `@${sig.user.username}` : (sig.group?.name || 'Unknown');
+            
+            // Use stored metrics for initial sorting if available (fallback to entry price)
+            const storedPrice = sig.metrics?.athMultiple ? sig.entryPrice! * sig.metrics.athMultiple : 0;
+            
             aggregated.set(sig.mint, {
                 symbol: sig.symbol || 'N/A',
                 mint: sig.mint,
                 earliestDate: sig.detectedAt,
                 earliestCaller: caller,
                 mentions: 0,
-                pnl: 0,
-                currentPrice: 0
+                pnl: 0, // Calculated later
+                currentPrice: storedPrice, // Placeholder
+                entryPrice: sig.entryPrice || 0
             });
         }
         aggregated.get(sig.mint)!.mentions++;
     }
 
-    // 4. Enrich Data (Fetch Metadata in Parallel)
-    const uniqueMints = Array.from(aggregated.keys());
-    const metaMap = new Map<string, any>();
-
-    // Batch fetch in chunks of 5 to avoid rate limits if many
-    const chunk = (arr: string[], size: number) => Array.from({ length: Math.ceil(arr.length / size) }, (v, i) => arr.slice(i * size, i * size + size));
+    // 4. Sort and Filter Candidates (Pre-Enrichment)
+    // We want the most relevant signals to be enriched.
+    // If filtering by "Recent", we just take the last 20 active mints.
+    // If filtering by "Gainers", we might miss some if we don't fetch all prices?
+    // Optimization: Fetch prices for ALL candidates (batch JUP), but only fetch Metadata for TOP 10.
     
-    for (const batch of chunk(uniqueMints, 5)) {
+    // Batch Fetch Prices for ALL aggregated mints (much cheaper than full metadata)
+    const allMints = Array.from(aggregated.keys());
+    const priceMap = new Map<string, number>();
+    
+    // Chunk price fetch (Jup is fast)
+    // We can use a simpler provider method just for price if available, or just reuse getQuote
+    // Let's do it in chunks of 10
+    const priceChunks = (arr: string[], size: number) => Array.from({ length: Math.ceil(arr.length / size) }, (v, i) => arr.slice(i * size, i * size + size));
+    
+    // NOTE: For true "Live" gainers, we need the price. 
+    // If the list is huge (100s), this might still be slow. 
+    // But typically active signals are < 50.
+    
+    await Promise.all(priceChunks(allMints, 10).map(async (batch) => {
         await Promise.all(batch.map(async (mint) => {
             try {
-                const meta = await provider.getTokenMeta(mint);
-                metaMap.set(mint, meta);
-            } catch (e) {
-                // Fallback or ignore
-            }
+                const quote = await provider.getQuote(mint);
+                priceMap.set(mint, quote.price);
+            } catch {}
         }));
-    }
+    }));
 
-    // 5. Update Aggregated Stats with Meta
+    // Update prices and PnL in aggregation
     for (const [mint, entry] of aggregated.entries()) {
-        const meta = metaMap.get(mint);
-        if (meta) {
-            // Use live price from meta if available (calculated from mcap or jup price)
-            let price = 0;
-            if (meta.livePrice) price = meta.livePrice;
-            else if (meta.marketCap && meta.supply) price = meta.marketCap / meta.supply;
-            // Fallback to simple calculation if needed, but meta usually has price via getJupiterTokenInfo
-
-             // Double check price extraction from meta (it might be in meta.price or we might need to rely on what getTokenMeta returns)
-             // HeliusProvider.getTokenMeta doesn't explicitly return 'price' top level in interface, but might attach it?
-             // Actually looking at helius.ts, it calculates marketCap. It doesn't explicitly return 'price' in TokenMeta interface in types.ts
-             // But getJupiterTokenInfo returns usdPrice. 
-             // Let's rely on marketCap/supply if available, or fetch quote if critical.
-             // Actually, for PnL we need price. 
-             
-             // If meta doesn't have direct price, let's look at liquidity/mcap.
-             // Better: HeliusProvider.getTokenMeta uses getJupiterTokenInfo which returns usdPrice. 
-             // We should ensure TokenMeta has 'price' or 'livePrice'. 
-             // types.ts says `livePrice?: number | null`.
-             
-             // If livePrice is missing, we might have 0 pnl.
-             // Let's try to get price from marketCap / supply as fallback.
-             if (!price && meta.marketCap && meta.supply) {
-                 price = meta.marketCap / meta.supply;
-             }
-             
-             entry.currentPrice = price;
-             entry.meta = meta;
-             
-             // Update Symbol if better in meta
-             if (meta.symbol && meta.symbol !== 'UNKNOWN') entry.symbol = meta.symbol;
-        }
-
-        // Calculate PnL
-        // We need entry price from the Earliest Signal?
-        // Let's find the signal again or store it in aggregation
-        const sig = signals.find(s => s.mint === mint); // We know it exists
-        const entryPrice = sig?.entryPrice || 0;
-        
-        if (entry.currentPrice > 0 && entryPrice > 0) {
-            entry.pnl = ((entry.currentPrice - entryPrice) / entryPrice) * 100;
+        const livePrice = priceMap.get(mint);
+        if (livePrice) {
+            entry.currentPrice = livePrice;
+            if (entry.entryPrice > 0) {
+                entry.pnl = ((livePrice - entry.entryPrice) / entry.entryPrice) * 100;
+            }
         }
     }
 
-    // 6. Construct Message with UIHelper
-    let message = UIHelper.header('Live Signals (Active)');
-    
-    // Filter and Sort
-    // We can apply session filters here if we want strict filtering before display
+    // 5. Apply Filters & Sort
     const { minMult = 0, onlyGainers = false } = ctx.session?.liveFilters || {};
     
-    const rows = Array.from(aggregated.values())
-        .filter(row => {
-            const mult = row.currentPrice > 0 && (signals.find(s => s.mint === row.mint)?.entryPrice || 0) > 0 
-                ? row.currentPrice / (signals.find(s => s.mint === row.mint)?.entryPrice || 1) 
-                : 0;
-            
-            if (minMult > 0 && mult < minMult) return false;
-            if (onlyGainers && row.pnl < 0) return false;
-            return true;
-        })
-        .sort((a, b) => b.pnl - a.pnl)
-        .slice(0, 10);
+    let candidates = Array.from(aggregated.values());
+    
+    if (minMult > 0) {
+        candidates = candidates.filter(r => (r.currentPrice / (r.entryPrice || 1)) >= minMult);
+    }
+    if (onlyGainers) {
+        candidates = candidates.filter(r => r.pnl > 0);
+    }
+    
+    // Default Sort: PnL Descending (Hot) or Recent? User suggested "Most Recently Mentioned"
+    // Let's stick to PnL for "Live Signals" dashboard feel, but maybe add "Recent" toggle later.
+    // Actually user said: "arranged by most recently mentioned... or most amount of price difference".
+    // Let's sort by Recency (earliestDate desc) if no filter, or PnL if filter?
+    // The previous code sorted by PnL. Let's keep PnL for now as it's a "Dashboard".
+    candidates.sort((a, b) => b.pnl - a.pnl);
+    
+    // Top 10 for display
+    const displayRows = candidates.slice(0, 10);
 
-    for (const row of rows) {
+    // 6. Enrich ONLY Displayed Rows (Socials, Audit)
+    // This is the key optimization: Only fetch heavy metadata for the 10 items we show.
+    await Promise.all(displayRows.map(async (row) => {
+        try {
+            const meta = await provider.getTokenMeta(row.mint);
+            row.meta = meta;
+            // Refine symbol/price if meta is better
+            if (meta.symbol) row.symbol = meta.symbol;
+        } catch {}
+    }));
+
+    // 7. Construct Message with UIHelper
+    let message = UIHelper.header('Live Signals (Active)');
+    
+    for (const row of displayRows) {
+        // ... (Rendering logic same as before)
         // 🟢 ACORN | +120% | 5 mentions
         // 👤 @AlphaCaller | 5m ago
         // 🍬 Dex: ✅ | 👥 Team: ✅

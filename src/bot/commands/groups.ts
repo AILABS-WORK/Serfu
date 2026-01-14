@@ -71,26 +71,37 @@ export const handleGroupsCommand = async (ctx: Context) => {
     const channels = groups.filter((g: any) => g.chatType === 'channel');
     const normalGroups = groups.filter((g: any) => g.chatType !== 'channel');
 
+    // Fetch accurate signal counts by chatId (aggregating across all owner instances if needed, or just raw signals)
+    const allChatIds = groups.map(g => g.chatId);
+    const signalCounts = await (await import('../../db')).prisma.signal.groupBy({
+        by: ['chatId'],
+        _count: { id: true },
+        where: { chatId: { in: allChatIds } }
+    });
+    const countMap = new Map(signalCounts.map(s => [s.chatId.toString(), s._count.id]));
+
     let message = '📋 *Your Monitored Groups*\n\n';
     
     for (const group of normalGroups) {
+      const count = countMap.get(group.chatId.toString()) || 0;
       const status = group.isActive ? '✅' : '❌';
       const type = group.type === 'destination' ? '📤 Destination' : '📥 Source';
       message += `${status} *${group.name || `Group ${group.chatId}`}*\n`;
       message += `   Type: ${type}\n`;
       message += `   ID: \`${group.chatId}\`\n`;
-      message += `   Signals: ${group.signals?.length || 0}\n\n`;
+      message += `   Signals: ${count}\n\n`;
     }
 
     if (channels.length > 0) {
       message += '📡 *Your Monitored Channels*\n\n';
       for (const ch of channels) {
+        const count = countMap.get(ch.chatId.toString()) || 0;
         const status = ch.isActive ? '✅' : '❌';
         const type = ch.type === 'destination' ? '📤 Destination' : '📥 Source';
         message += `${status} *${ch.name || `Channel ${ch.chatId}`}*\n`;
         message += `   Type: ${type}\n`;
         message += `   ID: \`${ch.chatId}\`\n`;
-        message += `   Signals: ${ch.signals?.length || 0}\n\n`;
+        message += `   Signals: ${count}\n\n`;
       }
     }
 
@@ -160,18 +171,44 @@ export const handleSetDestinationCommand = async (ctx: Context, groupIdStr?: str
 };
 
 // Claim a channel as owned by the current user
-export const handleAddChannelCommand = async (ctx: Context, channelIdStr?: string) => {
+export const handleAddChannelCommand = async (ctx: Context, channelIdentifier?: string) => {
   try {
     const userId = getCurrentUserId(ctx);
     if (!userId) {
       return ctx.reply('❌ Unable to identify user.');
     }
 
-    if (!channelIdStr) {
-      return ctx.reply('Usage: /addchannel <channel_id>\n\nAdd the bot as admin to the channel, then run this command with the channel id.');
+    if (!channelIdentifier) {
+      return ctx.reply('Usage: /addchannel <channel_id_or_username>\nExample: /addchannel -100123456789 or /addchannel @mychannel');
     }
 
-    const channelId = BigInt(channelIdStr);
+    let channelId: bigint;
+    let channelTitle: string | undefined;
+
+    // Handle @username
+    if (channelIdentifier.startsWith('@')) {
+        try {
+            const chat = await ctx.telegram.getChat(channelIdentifier);
+            if (!chat.id) throw new Error('No ID found');
+            channelId = BigInt(chat.id);
+            channelTitle = (chat as any).title;
+        } catch (e) {
+            return ctx.reply(`❌ Could not resolve ${channelIdentifier}. Please ensure the bot is an admin in the channel, or try using the numeric Channel ID.`);
+        }
+    } else {
+        // Assume numeric ID
+        try {
+            // Validate it's a number
+            if (!/^-?\d+$/.test(channelIdentifier)) throw new Error('Invalid ID format');
+            channelId = BigInt(channelIdentifier);
+            
+            // Try to fetch info
+             const chat = await ctx.telegram.getChat(Number(channelId)).catch(() => null);
+             if (chat) channelTitle = (chat as any).title;
+        } catch (e) {
+             return ctx.reply('❌ Invalid Channel ID format.');
+        }
+    }
 
     // Ensure user exists
     await createOrUpdateUser(userId, {
@@ -180,15 +217,6 @@ export const handleAddChannelCommand = async (ctx: Context, channelIdStr?: strin
       lastName: ctx.from?.last_name,
     });
 
-    // Try to read channel title if we have it cached (optional)
-    let channelTitle: string | undefined;
-    try {
-      const chat = await ctx.telegram.getChat(Number(channelId));
-      channelTitle = (chat as any).title;
-    } catch {
-      channelTitle = undefined;
-    }
-
     // Upsert the channel under this owner
     await createOrUpdateGroup(channelId, userId, {
       name: channelTitle || `Channel ${channelId}`,
@@ -196,10 +224,10 @@ export const handleAddChannelCommand = async (ctx: Context, channelIdStr?: strin
       chatType: 'channel',
     });
 
-    await ctx.reply(`✅ Channel \`${channelId}\` claimed and added to your monitored list.`, { parse_mode: 'Markdown' });
+    await ctx.reply(`✅ Channel \`${channelId}\` (${channelTitle || 'Unknown Title'}) claimed and added to your monitored list.`, { parse_mode: 'Markdown' });
   } catch (error) {
     logger.error('Error in /addchannel command:', error);
-    ctx.reply('Error adding channel. Make sure the bot is an admin in the channel and the ID is correct.');
+    ctx.reply('Error adding channel. Make sure the bot is an admin in the channel.');
   }
 };
 
