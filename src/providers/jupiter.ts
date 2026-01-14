@@ -9,9 +9,48 @@ const SOL_MINT = 'So11111111111111111111111111111111111111112';
 const JUP_API_KEY = (process.env.JUPITER_API_KEY || process.env.JUP_API_KEY || '').trim() || undefined;
 
 /**
- * Fetch price via Jupiter price/v3 (best effort).
+ * Fetch multiple prices via Jupiter price/v3 (batch request).
  */
-export const getJupiterPriceV3 = async (mint: string): Promise<{ price: number | null; error?: string }> => {
+export const getMultipleTokenPrices = async (mints: string[]): Promise<Record<string, number | null>> => {
+  if (mints.length === 0) return {};
+  
+  try {
+    // Jupiter API allows comma separated IDs
+    // We should chunk if too many, but 40 is fine usually.
+    const chunks = [];
+    for (let i = 0; i < mints.length; i += 50) {
+        chunks.push(mints.slice(i, i + 50));
+    }
+
+    const results: Record<string, number | null> = {};
+
+    for (const chunk of chunks) {
+        const ids = chunk.join(',');
+        const headers: Record<string, string> = {};
+        if (JUP_API_KEY) {
+          headers['x-api-key'] = JUP_API_KEY;
+        }
+        const url = `${JUP_PRICE_URL}?ids=${ids}`;
+        const res = await fetch(url, { headers });
+        if (!res.ok) {
+          logger.debug(`Jupiter batch price failed status ${res.status}`);
+          continue;
+        }
+        const data: any = await res.json();
+        
+        chunk.forEach(mint => {
+            const price = data?.data?.[mint]?.price;
+            results[mint] = price !== undefined && price !== null ? Number(price) : null;
+        });
+    }
+    
+    return results;
+
+  } catch (err: any) {
+    logger.debug('Jupiter batch price error:', err);
+    return {};
+  }
+};
   try {
     const headers: Record<string, string> = {};
     if (JUP_API_KEY) {
