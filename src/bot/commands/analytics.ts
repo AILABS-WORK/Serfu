@@ -674,8 +674,9 @@ export const handleLiveSignals = async (ctx: BotContext) => {
       });
     }
 
-    // 3. Aggregate by Mint (Initial Pass - FAST)
-    // We only iterate through the DB results, no external calls yet
+    const loadingMsg = await ctx.reply('⏳ Loading live data...');
+
+    // 3. Aggregate by Mint (Initial Pass)
     const aggregated = new Map<string, {
         symbol: string;
         mint: string;
@@ -684,139 +685,107 @@ export const handleLiveSignals = async (ctx: BotContext) => {
         mentions: number;
         pnl: number;
         currentPrice: number;
-        meta?: any; 
-        entryPrice: number;
+        meta?: any; // TokenMeta
     }>();
 
     for (const sig of signals) {
         if (!aggregated.has(sig.mint)) {
             const caller = sig.user?.username ? `@${sig.user.username}` : (sig.group?.name || 'Unknown');
-            
-            // Use stored metrics for initial sorting if available (fallback to entry price)
-            const storedPrice = sig.metrics?.athMultiple ? sig.entryPrice! * sig.metrics.athMultiple : 0;
-            
             aggregated.set(sig.mint, {
                 symbol: sig.symbol || 'N/A',
                 mint: sig.mint,
                 earliestDate: sig.detectedAt,
                 earliestCaller: caller,
                 mentions: 0,
-                pnl: 0, // Calculated later
-                currentPrice: storedPrice, // Placeholder
-                entryPrice: sig.entryPrice || 0
+                pnl: 0,
+                currentPrice: 0
             });
         }
         aggregated.get(sig.mint)!.mentions++;
     }
 
-    // 4. Sort and Filter Candidates (Pre-Enrichment)
-    // We want the most relevant signals to be enriched.
-    // If filtering by "Recent", we just take the last 20 active mints.
-    // If filtering by "Gainers", we might miss some if we don't fetch all prices?
-    // Optimization: Fetch prices for ALL candidates (batch JUP), but only fetch Metadata for TOP 10.
-    
-    // Batch Fetch Prices for ALL aggregated mints (much cheaper than full metadata)
-    const allMints = Array.from(aggregated.keys());
-    const priceMap = new Map<string, number>();
-    
-    // Chunk price fetch (Jup is fast)
-    // We can use a simpler provider method just for price if available, or just reuse getQuote
-    // Let's do it in chunks of 10
-    const priceChunks = (arr: string[], size: number) => Array.from({ length: Math.ceil(arr.length / size) }, (v, i) => arr.slice(i * size, i * size + size));
-    
-    // NOTE: For true "Live" gainers, we need the price. 
-    // If the list is huge (100s), this might still be slow. 
-    // But typically active signals are < 50.
-    
-    await Promise.all(priceChunks(allMints, 10).map(async (batch) => {
-        await Promise.all(batch.map(async (mint) => {
-            try {
-                const quote = await provider.getQuote(mint);
-                priceMap.set(mint, quote.price);
-            } catch {}
-        }));
-    }));
+    // 4. Batch Price Fetching (OPTIMIZATION)
+    const uniqueMints = Array.from(aggregated.keys());
+    const prices = await provider.getMultipleTokenPrices(uniqueMints);
 
-    // Update prices and PnL in aggregation
-    for (const [mint, entry] of aggregated.entries()) {
-        const livePrice = priceMap.get(mint);
-        if (livePrice) {
-            entry.currentPrice = livePrice;
-            if (entry.entryPrice > 0) {
-                entry.pnl = ((livePrice - entry.entryPrice) / entry.entryPrice) * 100;
-            }
-        }
-    }
-
-    // 5. Apply Filters & Sort
+    // Apply Filters & Calculate PnL (Pre-Sort)
     const { minMult = 0, onlyGainers = false } = ctx.session?.liveFilters || {};
     
-    let candidates = Array.from(aggregated.values());
-    
-    if (minMult > 0) {
-        candidates = candidates.filter(r => (r.currentPrice / (r.entryPrice || 1)) >= minMult);
-    }
-    if (onlyGainers) {
-        candidates = candidates.filter(r => r.pnl > 0);
-    }
-    
-    // Default Sort: PnL Descending (Hot) or Recent? User suggested "Most Recently Mentioned"
-    // Let's stick to PnL for "Live Signals" dashboard feel, but maybe add "Recent" toggle later.
-    // Actually user said: "arranged by most recently mentioned... or most amount of price difference".
-    // Let's sort by Recency (earliestDate desc) if no filter, or PnL if filter?
-    // The previous code sorted by PnL. Let's keep PnL for now as it's a "Dashboard".
-    candidates.sort((a, b) => b.pnl - a.pnl);
-    
-    // Top 10 for display
-    const displayRows = candidates.slice(0, 10);
+    // Sort and Filter based on Price ONLY first (fast)
+    const candidates = Array.from(aggregated.values())
+        .map(row => {
+             const price = prices[row.mint] || 0;
+             row.currentPrice = price;
+             
+             // Find entry price from earliest signal
+             const sig = signals.find(s => s.mint === row.mint);
+             const entryPrice = sig?.entryPrice || 0;
+             
+             if (price > 0 && entryPrice > 0) {
+                 row.pnl = ((price - entryPrice) / entryPrice) * 100;
+             }
+             return row;
+        })
+        .filter(row => {
+            if (onlyGainers && row.pnl < 0) return false;
+            // MinMult check
+            const mult = (row.pnl / 100) + 1;
+            if (minMult > 0 && mult < minMult) return false;
+            return true;
+        })
+        .sort((a, b) => b.pnl - a.pnl); // Sort by PnL Desc
 
-    // 6. Enrich ONLY Displayed Rows (Socials, Audit)
-    // This is the key optimization: Only fetch heavy metadata for the 10 items we show.
-    await Promise.all(displayRows.map(async (row) => {
+    // 5. Lazy Load Metadata (Top 10 Only)
+    const top10 = candidates.slice(0, 10);
+    const metaMap = new Map<string, any>();
+    
+    // Parallel fetch for top 10
+    await Promise.all(top10.map(async (row) => {
         try {
             const meta = await provider.getTokenMeta(row.mint);
-            row.meta = meta;
-            // Refine symbol/price if meta is better
-            if (meta.symbol) row.symbol = meta.symbol;
+            metaMap.set(row.mint, meta);
         } catch {}
     }));
 
-    // 7. Construct Message with UIHelper
+    // 6. Construct Message
     let message = UIHelper.header('Live Signals (Active)');
     
-    for (const row of displayRows) {
-        // ... (Rendering logic same as before)
-        // 🟢 ACORN | +120% | 5 mentions
-        // 👤 @AlphaCaller | 5m ago
-        // 🍬 Dex: ✅ | 👥 Team: ✅
+    if (top10.length === 0) {
+        message += '\nNo signals match your filters.';
+    }
+
+    for (const row of top10) {
+        const meta = metaMap.get(row.mint);
         
+        // PnL & formatting
         const pnlStr = UIHelper.formatPercent(row.pnl);
         const icon = row.pnl >= 0 ? '🟢' : '🔴';
         const timeAgo = UIHelper.formatTimeAgo(row.earliestDate);
         
-        message += `\n${icon} *${row.symbol}* | \`${pnlStr}\`\n`;
+        // Use symbol from meta if available
+        const displaySymbol = meta?.symbol || row.symbol;
+        
+        message += `\n${icon} *${displaySymbol}* | \`${pnlStr}\`\n`;
         message += `👤 ${row.earliestCaller} | ${row.mentions} mentions\n`;
         
-        // Enrichment Row
-        if (row.meta) {
-            const hasSocials = row.meta.socialLinks && Object.keys(row.meta.socialLinks).length > 0;
-            const isAudited = row.meta.audit && (!row.meta.audit.mintAuthorityDisabled || !row.meta.audit.freezeAuthorityDisabled) ? false : true; 
-            // Audit: If authorities disabled => Good (Green check). 
-            // Actually 'isAudited' usually means 'Has Audit'. 
-            // Let's show: "🍬 Dex: [status] | 🐦 Socials: [status]"
+        // Enrichment
+        if (meta) {
+            const hasSocials = meta.socialLinks && Object.keys(meta.socialLinks).length > 0;
+            // Audit logic: If authorities disabled => Good. 
+            const auditGood = meta.audit && (!meta.audit.mintAuthorityDisabled || !meta.audit.freezeAuthorityDisabled) ? false : true; 
             
             const socialIcon = hasSocials ? '✅' : '❌';
-            const auditIcon = isAudited ? '✅' : '⚠️'; // Warning if authorities enabled
+            const auditIcon = auditGood ? '✅' : '⚠️';
             
             message += `🍬 Audit: ${auditIcon} | 🐦 Socials: ${socialIcon}\n`;
         }
         
         message += `🕒 ${timeAgo} | $${row.currentPrice.toFixed(6)}\n`;
         message += `\`${row.mint}\`\n`;
-        message += `───────────────────`; 
+        message += UIHelper.separator('LIGHT'); 
     }
 
-    // 5. Filters UI
+    // 7. Filters UI
     const filters = [
         [
             { text: '🚀 > 2x', callback_data: 'live_filter:2x' },
@@ -829,14 +798,15 @@ export const handleLiveSignals = async (ctx: BotContext) => {
         ]
     ];
 
-    await ctx.reply(message, { 
+    // Edit the loading message
+    await ctx.telegram.editMessageText(loadingMsg.chat.id, loadingMsg.message_id, undefined, message, { 
         parse_mode: 'Markdown',
         reply_markup: { inline_keyboard: filters }
     });
 
   } catch (error) {
     logger.error('Error loading live signals:', error);
-    ctx.reply('Error loading live signals.');
+    try { await ctx.reply('Error loading live signals.'); } catch {}
   }
 };
 
