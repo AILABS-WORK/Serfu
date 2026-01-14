@@ -64,7 +64,9 @@ const formatEntityStats = (stats: EntityStats, type: 'GROUP' | 'USER'): string =
   msg += UIHelper.subHeader('BEHAVIORAL ANALYSIS', '🔹');
   msg += `   💰 *Avg MCap:* $${(stats.mcapAvg / 1000).toFixed(1)}k\n`;
   msg += `   ⚡ *Sniper Score:* ${stats.sniperScore.toFixed(0)}%\n`;
-  msg += `   ⏳ *Time to Peak:* ${stats.timeToPeak.toFixed(0)} min\n`;
+  msg += `   🚀 *Speed Score:* ${stats.speedScore.toFixed(0)}/100\n`;
+  msg += `   💎 *Diamond Hands:* ${(stats.diamondHands * 100).toFixed(0)}%\n`;
+  msg += `   ⏳ *Avg Lifespan:* ${stats.avgLifespan.toFixed(1)}h\n`;
   msg += `   🔥 *Streak:* ${stats.consecutiveWins} wins\n`;
 
   if (stats.bestCall) {
