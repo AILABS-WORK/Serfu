@@ -84,7 +84,7 @@ const formatEntityStats = (stats: EntityStats, type: 'GROUP' | 'USER'): string =
 
 // ... existing handler code ...
 
-export const handleGroupStatsCommand = async (ctx: Context, groupIdStr?: string, window: '7D' | '30D' | 'ALL' = 'ALL') => {
+export const handleGroupStatsCommand = async (ctx: Context, groupIdStr?: string, window: '1D' | '7D' | '30D' | 'ALL' = 'ALL') => {
   try {
     const userId = ctx.from?.id ? BigInt(ctx.from.id) : null;
     if (!userId) return ctx.reply('❌ Unable to identify user.');
@@ -114,6 +114,7 @@ export const handleGroupStatsCommand = async (ctx: Context, groupIdStr?: string,
     const keyboard = {
         inline_keyboard: [
           [
+            { text: window === '1D' ? '✅ 1D' : '1D', callback_data: `group_stats_window:${targetGroupId}:1D` },
             { text: window === '7D' ? '✅ 7D' : '7D', callback_data: `group_stats_window:${targetGroupId}:7D` },
             { text: window === '30D' ? '✅ 30D' : '30D', callback_data: `group_stats_window:${targetGroupId}:30D` },
             { text: window === 'ALL' ? '✅ ALL' : 'ALL', callback_data: `group_stats_window:${targetGroupId}:ALL` },
@@ -137,7 +138,7 @@ export const handleGroupStatsCommand = async (ctx: Context, groupIdStr?: string,
   }
 };
 
-export const handleUserStatsCommand = async (ctx: Context, userIdStr?: string, window: '7D' | '30D' | 'ALL' = 'ALL') => {
+export const handleUserStatsCommand = async (ctx: Context, userIdStr?: string, window: '1D' | '7D' | '30D' | 'ALL' = 'ALL') => {
   try {
     if (!userIdStr) {
         const user = await prisma.user.findUnique({ where: { userId: BigInt(ctx.from!.id) }});
@@ -181,7 +182,7 @@ export const handleUserStatsCommand = async (ctx: Context, userIdStr?: string, w
   }
 };
 
-export const handleGroupLeaderboardCommand = async (ctx: Context, window: '7D' | '30D' | 'ALL' = '30D') => {
+export const handleGroupLeaderboardCommand = async (ctx: Context, window: '1D' | '7D' | '30D' | 'ALL' = '30D') => {
   try {
     const statsList = await getLeaderboard('GROUP', window, 'SCORE', 10);
     
@@ -209,6 +210,7 @@ export const handleGroupLeaderboardCommand = async (ctx: Context, window: '7D' |
         inline_keyboard: [
             ...entityButtons,
             [
+                { text: '1D', callback_data: 'leaderboard_groups:1D' },
                 { text: '7D', callback_data: 'leaderboard_groups:7D' },
                 { text: '30D', callback_data: 'leaderboard_groups:30D' },
                 { text: 'ALL', callback_data: 'leaderboard_groups:ALL' },
@@ -230,7 +232,7 @@ export const handleGroupLeaderboardCommand = async (ctx: Context, window: '7D' |
   }
 };
 
-export const handleUserLeaderboardCommand = async (ctx: Context, window: '7D' | '30D' | 'ALL' = '30D') => {
+export const handleUserLeaderboardCommand = async (ctx: Context, window: '1D' | '7D' | '30D' | 'ALL' = '30D') => {
   try {
     const statsList = await getLeaderboard('USER', window, 'SCORE', 10);
     
@@ -255,6 +257,7 @@ export const handleUserLeaderboardCommand = async (ctx: Context, window: '7D' | 
         inline_keyboard: [
             ...entityButtons,
             [
+                { text: '1D', callback_data: 'leaderboard_users:1D' },
                 { text: '7D', callback_data: 'leaderboard_users:7D' },
                 { text: '30D', callback_data: 'leaderboard_users:30D' },
                 { text: 'ALL', callback_data: 'leaderboard_users:ALL' },
@@ -276,7 +279,7 @@ export const handleUserLeaderboardCommand = async (ctx: Context, window: '7D' | 
   }
 };
 
-export const handleSignalLeaderboardCommand = async (ctx: Context, window: '7D' | '30D' | 'ALL' = '30D') => {
+export const handleSignalLeaderboardCommand = async (ctx: Context, window: '1D' | '7D' | '30D' | 'ALL' = '30D') => {
   try {
     const { getSignalLeaderboard } = await import('../../analytics/aggregator');
     const signals = await getSignalLeaderboard(window, 10);
@@ -292,6 +295,15 @@ export const handleSignalLeaderboardCommand = async (ctx: Context, window: '7D' 
         const rank = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `${i+1}.`;
         message += `${rank} *${s.symbol}* (${s.athMultiple.toFixed(2)}x)\n`;
         message += `   Caller: ${s.sourceName} | 📅 ${s.detectedAt.toLocaleDateString()}\n`;
+        
+        // Entry MC, ATH MC, Current MC, Time to ATH
+        const entryMcStr = s.entryMarketCap ? UIHelper.formatMarketCap(s.entryMarketCap) : 'N/A';
+        const athMcStr = s.athMarketCap ? UIHelper.formatMarketCap(s.athMarketCap) : 'N/A';
+        const currentMcStr = s.currentMarketCap ? UIHelper.formatMarketCap(s.currentMarketCap) : 'N/A';
+        const timeToAthStr = s.timeToAth ? s.timeToAth < 60 ? `${Math.round(s.timeToAth)}m` : `${(s.timeToAth / 60).toFixed(1)}h` : 'N/A';
+        
+        message += `   Entry MC: ${entryMcStr} | ATH MC: ${athMcStr} | Now MC: ${currentMcStr}\n`;
+        message += `   Time to ATH: ${timeToAthStr}\n`;
         message += `   \`${s.mint}\`\n\n`;
 
         if (i < 5) {
@@ -303,6 +315,7 @@ export const handleSignalLeaderboardCommand = async (ctx: Context, window: '7D' 
         inline_keyboard: [
             ...signalButtons,
             [
+                { text: '1D', callback_data: 'leaderboard_signals:1D' },
                 { text: '7D', callback_data: 'leaderboard_signals:7D' },
                 { text: '30D', callback_data: 'leaderboard_signals:30D' },
                 { text: 'ALL', callback_data: 'leaderboard_signals:ALL' },
@@ -833,7 +846,23 @@ export const handleLiveSignals = async (ctx: BotContext) => {
       });
     }
 
-    const loadingMsg = await ctx.reply('⏳ Loading live data...');
+    // Check if we're updating an existing message (from filter/sort action)
+    let loadingMsg: any = null;
+    if (ctx.callbackQuery && ctx.callbackQuery.message) {
+      // Edit existing message instead of creating new one
+      loadingMsg = ctx.callbackQuery.message;
+      try {
+        await ctx.telegram.editMessageText(
+          loadingMsg.chat.id,
+          loadingMsg.message_id,
+          undefined,
+          '⏳ Loading live data...',
+          { parse_mode: 'Markdown' }
+        );
+      } catch {}
+    } else {
+      loadingMsg = await ctx.reply('⏳ Loading live data...');
+    }
 
     // 3. Aggregate by Mint (Initial Pass)
     const aggregated = new Map<string, {
@@ -866,26 +895,22 @@ export const handleLiveSignals = async (ctx: BotContext) => {
     // 4. Batch Market Cap Fetching (OPTIMIZATION - Using Market Cap instead of Price)
     const uniqueMints = Array.from(aggregated.keys());
     
-    // Fetch metadata for all mints to get market caps
-    const metaPromises = uniqueMints.map(mint => provider.getTokenMeta(mint));
-    const metas = await Promise.all(metaPromises);
-    const marketCaps = new Map<string, number>();
-    const prices = new Map<string, number>();
+    // Use batch price fetching for better performance
+    const { getMultipleTokenPrices } = await import('../../providers/jupiter');
+    const prices = await getMultipleTokenPrices(uniqueMints);
     
-    for (let i = 0; i < uniqueMints.length; i++) {
-      const mint = uniqueMints[i];
-      const meta = metas[i];
-      if (meta) {
-        // Prefer liveMarketCap, then marketCap, then calculate
-        let mcap = meta.liveMarketCap || meta.marketCap;
-        if (!mcap && meta.supply) {
-          const priceQuote = await provider.getQuote(mint).catch(() => null);
-          if (priceQuote) {
-            prices.set(mint, priceQuote.price);
-            mcap = priceQuote.price * meta.supply;
-          }
+    // Fetch metadata only for top signals (lazy loading)
+    const marketCaps = new Map<string, number>();
+    
+    // Calculate market caps from prices and supply (we'll get supply from signals)
+    for (const mint of uniqueMints) {
+      const price = prices[mint] || null;
+      if (price) {
+        const sig = signals.find(s => s.mint === mint);
+        const supply = sig?.entrySupply;
+        if (supply) {
+          marketCaps.set(mint, price * supply);
         }
-        if (mcap) marketCaps.set(mint, mcap);
       }
     }
 
@@ -920,8 +945,8 @@ export const handleLiveSignals = async (ctx: BotContext) => {
     // Sort and Filter based on Market Cap (not price)
     const candidates = Array.from(aggregated.values())
         .map(row => {
-             const currentMc = marketCaps.get(row.mint) || 0;
-             const currentPrice = prices.get(row.mint) || 0;
+             const currentMc = marketCaps.get(row.mint) ?? 0;
+             const currentPrice = prices[row.mint] ?? 0;
              row.currentPrice = currentPrice;
              
              // Find entry market cap from earliest signal
@@ -943,7 +968,7 @@ export const handleLiveSignals = async (ctx: BotContext) => {
              let velocity = 0;
              if (sig) {
                const history = mcapHistory.get(sig.id);
-               if (history && history.tenMinAgo > 0) {
+               if (history && history.tenMinAgo && history.tenMinAgo > 0) {
                  velocity = ((history.current - history.tenMinAgo) / history.tenMinAgo) * 100;
                }
              }
@@ -970,15 +995,26 @@ export const handleLiveSignals = async (ctx: BotContext) => {
         candidates.sort((a, b) => b.pnl - a.pnl);
     }
 
-    // 5. Lazy Load Metadata (Top 10 Only)
+    // 5. Lazy Load Metadata (Top 10 Only) - Also update market caps with fresh data
     const top10 = candidates.slice(0, 10);
     const metaMap = new Map<string, any>();
     
-    // Parallel fetch for top 10
+    // Parallel fetch for top 10 - also get fresh market caps
     await Promise.all(top10.map(async (row) => {
         try {
             const meta = await provider.getTokenMeta(row.mint);
             metaMap.set(row.mint, meta);
+            
+            // Update market cap with fresh data
+            const freshMc = meta.liveMarketCap || meta.marketCap;
+            if (freshMc) {
+                marketCaps.set(row.mint, freshMc);
+                (row as any).currentMarketCap = freshMc;
+            } else if (meta.supply && prices[row.mint] !== null && prices[row.mint] !== undefined) {
+                const calculatedMc = prices[row.mint]! * meta.supply;
+                marketCaps.set(row.mint, calculatedMc);
+                (row as any).currentMarketCap = calculatedMc;
+            }
         } catch {}
     }));
 
@@ -1006,20 +1042,10 @@ export const handleLiveSignals = async (ctx: BotContext) => {
         message += `└ \`${row.mint.slice(0, 8)}...${row.mint.slice(-4)}\`\n`;
         
         // Entry -> Current Market Cap (preferred) or Price (fallback)
-        const entryMc = sig?.entryMarketCap || 0;
-        const currentMc = (row as any).currentMarketCap || 0;
-        let entryStr = 'N/A';
-        let currentStr = 'N/A';
-        
-        if (entryMc > 0 && currentMc > 0) {
-          entryStr = `$${(entryMc / 1000).toFixed(1)}k`;
-          currentStr = `$${(currentMc / 1000).toFixed(1)}k`;
-        } else {
-          // Fallback to price
-          const entryPrice = sig?.entryPrice || 0;
-          entryStr = entryPrice > 0 ? `$${entryPrice.toFixed(6)}` : 'N/A';
-          currentStr = row.currentPrice > 0 ? `$${row.currentPrice.toFixed(6)}` : 'N/A';
-        }
+        const entryMc = sig?.entryMarketCap || null;
+        const currentMc = (row as any).currentMarketCap || null;
+        const entryStr = entryMc ? UIHelper.formatMarketCap(entryMc) : 'N/A';
+        const currentStr = currentMc ? UIHelper.formatMarketCap(currentMc) : 'N/A';
         message += `💰 Entry MC: ${entryStr} ➔ Now MC: ${currentStr} (*${pnlStr}*)\n`;
         
         // Dex/Migrated/Team flags

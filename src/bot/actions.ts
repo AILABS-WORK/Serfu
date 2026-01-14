@@ -609,19 +609,19 @@ Source: ${priceSource}
   });
 
   bot.action(/^leaderboard_groups:(.*)$/, async (ctx) => {
-      const window = ctx.match[1] as '7D' | '30D' | 'ALL';
+      const window = ctx.match[1] as '1D' | '7D' | '30D' | 'ALL';
       const { handleGroupLeaderboardCommand } = await import('./commands/analytics');
       await handleGroupLeaderboardCommand(ctx as any, window);
   });
 
   bot.action(/^leaderboard_users:(.*)$/, async (ctx) => {
-      const window = ctx.match[1] as '7D' | '30D' | 'ALL';
+      const window = ctx.match[1] as '1D' | '7D' | '30D' | 'ALL';
       const { handleUserLeaderboardCommand } = await import('./commands/analytics');
       await handleUserLeaderboardCommand(ctx as any, window);
   });
 
   bot.action(/^leaderboard_signals:(.*)$/, async (ctx) => {
-      const window = ctx.match[1] as '7D' | '30D' | 'ALL';
+      const window = ctx.match[1] as '1D' | '7D' | '30D' | 'ALL';
       const { handleSignalLeaderboardCommand } = await import('./commands/analytics');
       await handleSignalLeaderboardCommand(ctx as any, window);
   });

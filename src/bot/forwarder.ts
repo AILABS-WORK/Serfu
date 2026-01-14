@@ -7,6 +7,7 @@ import { scheduleAutoDelete } from '../utils/messageCleanup';
 import { checkDuplicateCA, generateFirstSignalCard, generateDuplicateSignalCard } from './signalCard';
 import { provider } from '../providers';
 import { TokenMeta } from '../providers/types';
+import { UIHelper } from '../utils/ui';
 
 export const forwardSignalToDestination = async (signal: Signal) => {
   try {
@@ -76,6 +77,17 @@ export const forwardSignalToDestination = async (signal: Signal) => {
             });
             if (existing) continue;
 
+            // Check if this mint already exists in the destination group (from any source)
+            // This handles the case where a channel sends a CA, then user sends same CA to destination
+            const existingSignalInDest = await prisma.signal.findFirst({
+                where: {
+                    chatId: destGroup.chatId,
+                    mint: signal.mint,
+                },
+                orderBy: { detectedAt: 'asc' }, // Get the first one
+                include: { group: true }
+            });
+
             // Check if we've already sent this mint from this specific source group to this destination
             // (Avoid spamming the same group mention repeatedly)
             const alreadySentFromSource = await prisma.forwardedSignal.findFirst({
@@ -89,7 +101,22 @@ export const forwardSignalToDestination = async (signal: Signal) => {
 
             // Generate Card
             let message: string;
-            if (isDup && duplicateCheck.firstSignal) {
+            if (existingSignalInDest) {
+                // Signal already exists in destination group - show repost with comparison
+                const entryMc = existingSignalInDest.entryMarketCap || 0;
+                const currentMc = metaWithLive.liveMarketCap || metaWithLive.marketCap || 0;
+                const mcChange = entryMc > 0 && currentMc > 0 
+                    ? ((currentMc - entryMc) / entryMc) * 100 
+                    : 0;
+                const mcChangeStr = mcChange >= 0 ? `+${mcChange.toFixed(1)}%` : `${mcChange.toFixed(1)}%`;
+                
+                message = `🔁 *CA REPOSTED*\n\n`;
+                message += `*${metaWithLive.name || 'Unknown'}* (${metaWithLive.symbol || 'N/A'})\n`;
+                message += `\`${signal.mint}\`\n\n`;
+                message += `📊 *Entry MC:* ${UIHelper.formatMarketCap(entryMc)} ➔ *Now MC:* ${UIHelper.formatMarketCap(currentMc)} (*${mcChangeStr}*)\n`;
+                message += `\nFirst detected: ${existingSignalInDest.detectedAt.toLocaleString()}\n`;
+                message += `Reposted from: ${groupName}`;
+            } else if (isDup && duplicateCheck.firstSignal) {
                 message = generateDuplicateSignalCard(
                     signal,
                     metaWithLive,

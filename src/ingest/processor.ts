@@ -15,9 +15,16 @@ export const processMessage = async (message: RawMessage) => {
   logger.debug(`Processing message ${messageId} from chat ${chatId}: ${rawText?.substring(0, 50)}...`);
   
   // Event detection (dex payment / bonding / migrating)
+  let dexPaid = false;
+  let migrated = false;
+  
   try {
     const events = detectEvents(rawText);
+    
     if (events.length > 0) {
+      if (events.includes('dex_payment')) dexPaid = true;
+      if (events.includes('migrating')) migrated = true;
+      
       const rawMsg = await prisma.rawMessage.findUnique({
         where: { id: message.id },
         include: { group: { include: { owner: { include: { notificationSettings: true } } } }, user: true },
@@ -147,6 +154,25 @@ export const processMessage = async (message: RawMessage) => {
       ownerForDuplicate = rawMsg.group.ownerId;
     }
 
+    // Check if this is a destination group and if the mint already exists there
+    // If so, we should not create a new signal but show "CA reposted" instead
+    if (groupId && rawMsg?.group?.type === 'destination') {
+      const existingSignal = await prisma.signal.findFirst({
+        where: {
+          chatId: message.chatId,
+          mint: mint,
+        },
+        orderBy: { detectedAt: 'asc' },
+      });
+      
+      if (existingSignal) {
+        // Signal already exists in destination - don't create new one
+        // Instead, we could send a "CA reposted" message, but for now just skip
+        logger.info(`Signal ${mint} already exists in destination group ${message.chatId}, skipping duplicate creation`);
+        return;
+      }
+    }
+
     // Create Signal
     const signal = await createSignal({
       chatId,
@@ -163,6 +189,8 @@ export const processMessage = async (message: RawMessage) => {
       entrySupply,
       trackingStatus,
       detectedAt: new Date(),
+      dexPaid,
+      migrated,
       ...(groupId ? { group: { connect: { id: groupId } } } : {}),
       ...(userId ? { user: { connect: { id: userId } } } : {}),
     });

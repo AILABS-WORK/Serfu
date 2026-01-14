@@ -44,7 +44,7 @@ export interface EntityStats {
   reliabilityTier: string; // 'S', 'A', 'B', 'C', 'F'
 }
 
-type TimeFrame = '7D' | '30D' | 'ALL';
+type TimeFrame = '1D' | '7D' | '30D' | 'ALL';
 
 // Type alias for signal with metrics loaded (and optional relations allowed)
 type SignalWithMetrics = Signal & { 
@@ -55,6 +55,7 @@ type SignalWithMetrics = Signal & {
 
 const getDateFilter = (timeframe: TimeFrame) => {
   const now = new Date();
+  if (timeframe === '1D') return new Date(now.setDate(now.getDate() - 1));
   if (timeframe === '7D') return new Date(now.setDate(now.getDate() - 7));
   if (timeframe === '30D') return new Date(now.setDate(now.getDate() - 30));
   return new Date(0); // ALL
@@ -491,12 +492,16 @@ export const getSignalLeaderboard = async (
   timeframe: TimeFrame, 
   limit = 10
 ): Promise<Array<{
-  id: number, // Add ID
+  id: number,
   mint: string,
   symbol: string,
   athMultiple: number,
   sourceName: string,
-  detectedAt: Date
+  detectedAt: Date,
+  entryMarketCap: number | null,
+  athMarketCap: number | null,
+  currentMarketCap: number | null,
+  timeToAth: number | null
 }>> => {
   const since = getDateFilter(timeframe);
   
@@ -512,14 +517,35 @@ export const getSignalLeaderboard = async (
     take: limit
   });
 
-  return signals.map(s => ({
+  // Get current market caps for all signals
+  const { getMultipleTokenPrices } = await import('../providers/jupiter');
+  const mints = signals.map(s => s.mint);
+  const prices = await getMultipleTokenPrices(mints);
+
+  return signals.map(s => {
+    const currentPrice = prices[s.mint] || null;
+    const supply = s.entrySupply;
+    const currentMc = currentPrice && supply ? currentPrice * supply : null;
+    
+    // Calculate time to ATH in minutes
+    let timeToAth: number | null = null;
+    if (s.metrics?.athAt && s.detectedAt) {
+      timeToAth = (s.metrics.athAt.getTime() - s.detectedAt.getTime()) / (1000 * 60);
+    }
+    
+    return {
       id: s.id,
       mint: s.mint,
       symbol: s.symbol || 'Unknown',
       athMultiple: s.metrics?.athMultiple || 0,
       sourceName: s.user?.username || s.group?.name || 'Unknown',
-      detectedAt: s.detectedAt
-  }));
+      detectedAt: s.detectedAt,
+      entryMarketCap: s.entryMarketCap,
+      athMarketCap: s.metrics?.athMarketCap || null,
+      currentMarketCap: currentMc,
+      timeToAth
+    };
+  });
 };
 
 export interface DistributionStats {
