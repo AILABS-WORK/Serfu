@@ -57,6 +57,11 @@ model Signal {
 
   trackingStatus TrackingStatus @default(ACTIVE) @map("tracking_status")
   trackingEndAt  DateTime?      @map("tracking_end_at")
+  
+  // Enrichment Flags
+  dexPaid         Boolean   @default(false) @map("dex_paid")
+  migrated        Boolean   @default(false)
+  socials         Json?     // { twitter: boolean, telegram: boolean, website: boolean }
 
   // Relations (using Int foreign keys)
   groupId          Int?              @map("group_id")
@@ -68,6 +73,7 @@ model Signal {
   metrics          SignalMetric?
   forwardedSignals ForwardedSignal[]
   topHolders       SignalTopHolder[]
+  watchlistItems   Watchlist[]
 
   @@unique([chatId, messageId])
   @@index([mint])
@@ -123,6 +129,9 @@ model SignalMetric {
   athPrice        Float    @map("ath_price")
   athMultiple     Float    @map("ath_multiple")
   athAt           DateTime @map("ath_at")
+  timeToAth       Int?     @map("time_to_ath") // ms to reach ATH
+  timeTo2x        Int?     @map("time_to_2x") // ms to reach 2x
+  timeTo5x        Int?     @map("time_to_5x") // ms to reach 5x
   maxDrawdown     Float    @default(0) @map("max_drawdown") // negative %
   updatedAt       DateTime @default(now()) @map("updated_at")
 
@@ -192,6 +201,7 @@ model User {
   userMetrics          UserMetric[]
   ownedGroups          Group[]                    @relation("OwnedGroups") // Groups this user owns/manages
   notificationSettings UserNotificationSettings?  @relation("NotificationSettings")
+  watchlist            Watchlist[]
 
   @@index([userId])
   @@map("users")
@@ -359,4 +369,18 @@ model SignalTopHolder {
   @@unique([signalId, holderId]) // A holder appears once per signal
   @@index([holderId]) // Fast lookup: "Which other signals did this holder hold?"
   @@map("signal_top_holders")
+}
+
+model Watchlist {
+  id        Int      @id @default(autoincrement())
+  userId    Int      @map("user_id")
+  signalId  Int      @map("signal_id")
+  addedAt   DateTime @default(now()) @map("added_at")
+
+  user      User     @relation(fields: [userId], references: [id])
+  signal    Signal   @relation(fields: [signalId], references: [id])
+
+  @@unique([userId, signalId])
+  @@index([userId])
+  @@map("watchlists")
 }
