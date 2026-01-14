@@ -59,11 +59,22 @@ export const runSamplingCycle = async () => {
     for (const signal of dueSignals) {
       try {
         const quote = await provider.getQuote(signal.mint);
+        const meta = await provider.getTokenMeta(signal.mint);
         
-        await addPriceSample(signal.id, signal.mint, quote.price, quote.source);
+        // Calculate market cap: prefer liveMarketCap, then marketCap, then calculate from price * supply
+        let marketCap: number | null = null;
+        if (meta.liveMarketCap) {
+          marketCap = meta.liveMarketCap;
+        } else if (meta.marketCap) {
+          marketCap = meta.marketCap;
+        } else if (quote.price && meta.supply) {
+          marketCap = quote.price * meta.supply;
+        }
         
-        // Update Metrics & Check Thresholds
-        await updateSignalMetrics(signal.id, quote.price);
+        await addPriceSample(signal.id, signal.mint, quote.price, quote.source, marketCap);
+        
+        // Update Metrics & Check Thresholds (using market cap)
+        await updateSignalMetrics(signal.id, marketCap || quote.price, quote.price);
         
       } catch (error) {
         logger.error(`Failed to sample ${signal.mint}:`, error);

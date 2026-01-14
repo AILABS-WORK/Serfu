@@ -96,6 +96,7 @@ model PriceSample {
   signalId   Int      @map("signal_id")
   mint       String
   price      Float
+  marketCap  Float?   @map("market_cap") // Market cap at sample time
   sampledAt  DateTime @default(now()) @map("sampled_at")
   provider   String   @default("helius")
   liquidity  Float?
@@ -113,6 +114,7 @@ model ThresholdEvent {
   signalId          Int      @map("signal_id")
   multipleThreshold Int      @map("multiple_threshold") // 2, 3, 4, 5, 10
   hitPrice          Float    @map("hit_price")
+  hitMarketCap      Float?   @map("hit_market_cap") // Market cap when threshold hit
   hitAt             DateTime @map("hit_at")
   provider          String   @default("helius")
 
@@ -125,14 +127,20 @@ model ThresholdEvent {
 model SignalMetric {
   signalId        Int      @id @map("signal_id")
   currentPrice    Float    @map("current_price")
-  currentMultiple Float    @map("current_multiple")
+  currentMarketCap Float?  @map("current_market_cap") // Current market cap
+  currentMultiple Float    @map("current_multiple") // Based on market cap
   athPrice        Float    @map("ath_price")
-  athMultiple     Float    @map("ath_multiple")
+  athMarketCap    Float?   @map("ath_market_cap") // ATH market cap
+  athMultiple     Float    @map("ath_multiple") // Based on market cap
   athAt           DateTime @map("ath_at")
   timeToAth       Int?     @map("time_to_ath") // ms to reach ATH
   timeTo2x        Int?     @map("time_to_2x") // ms to reach 2x
+  timeTo3x        Int?     @map("time_to_3x") // ms to reach 3x
   timeTo5x        Int?     @map("time_to_5x") // ms to reach 5x
-  maxDrawdown     Float    @default(0) @map("max_drawdown") // negative %
+  timeTo10x       Int?     @map("time_to_10x") // ms to reach 10x
+  maxDrawdown     Float    @default(0) @map("max_drawdown") // negative % (market cap based)
+  stagnationTime  Int?     @map("stagnation_time") // ms spent < 1.1x before pumping
+  drawdownDuration Int?     @map("drawdown_duration") // ms spent underwater before ATH
   updatedAt       DateTime @default(now()) @map("updated_at")
 
   signal Signal @relation(fields: [signalId], references: [id])

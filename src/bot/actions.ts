@@ -10,6 +10,7 @@ import { getGroupStats, getUserStats, getLeaderboard } from '../analytics/aggreg
 import { handleRecentCalls, handleAnalyticsCommand } from './commands/analytics';
 import { updateHistoricalMetrics } from '../jobs/historicalMetrics';
 import { getDeepHolderAnalysis } from '../analytics/holders';
+import { UIHelper } from '../utils/ui';
 
 export const registerActions = (bot: Telegraf<BotContext>) => {
   // --- EXISTING ACTIONS ---
@@ -212,8 +213,25 @@ Source: ${priceSource}
         let report = `🕵️ *WHALE INSPECTOR* for ${signal.symbol} (${mode === 'deep' ? 'DEEP' : 'Standard'})\n\n`;
 
         for (const s of summaries) {
-            report += `👤 *Rank #${s.rank}* (${s.percentage.toFixed(2)}%)\n`;
-            report += `   Address: \`${s.address.slice(0, 4)}...${s.address.slice(-4)}\`\n`;
+            report += `🐋 *Wallet:* \`${s.address.slice(0, 4)}...${s.address.slice(-4)}\` (Rank #${s.rank})\n`;
+            report += `   Holding: ${s.percentage.toFixed(2)}% of supply\n`;
+            
+            // Top Trade (Best Play)
+            if (s.topTrade) {
+                const profitStr = s.topTrade.pnl > 1000 
+                    ? `$${(s.topTrade.pnl / 1000).toFixed(1)}k` 
+                    : `$${Math.round(s.topTrade.pnl)}`;
+                const roiStr = s.topTrade.pnlPercent === 999 
+                    ? 'Early Entry' 
+                    : `${Math.round(s.topTrade.pnlPercent)}%`;
+                report += `   🏆 *Best Play:* ${s.topTrade.symbol} (+${profitStr} / ${roiStr})\n`;
+            }
+            
+            // Win Rate
+            if (s.totalTrades && s.totalTrades > 0) {
+                const wrIcon = s.winRate! >= 0.6 ? '🟢' : s.winRate! >= 0.4 ? '🟡' : '🔴';
+                report += `   📉 *Win Rate:* ${wrIcon} ${(s.winRate! * 100).toFixed(0)}% (Last ${s.totalTrades} Txs)\n`;
+            }
             
             // Notable holdings
             if (s.notableHoldings.length > 0) {
@@ -224,22 +242,21 @@ Source: ${priceSource}
                 }
             }
             
-            // Best Trades (Helius Derived)
+            // Best Trades (Top 3)
             if (s.bestTrades.length > 0) {
-                 report += `   🏆 *Best Wins (Last ${mode === 'deep' ? '1000' : '100'} Txs):*\n`;
-                 for (const trade of s.bestTrades) {
+                 report += `   🏆 *Top Trades (Last ${mode === 'deep' ? '1000' : '100'} Txs):*\n`;
+                 for (const trade of s.bestTrades.slice(0, 3)) {
                      const profit = Math.round(trade.pnl).toLocaleString();
                      const bought = Math.round(trade.buyUsd).toLocaleString();
                      const sold = Math.round(trade.sellUsd).toLocaleString();
                      
-                     // Handle "Moonbag" case (999% ROI)
                      const roiStr = trade.pnlPercent === 999 ? 'Early Entry' : `${Math.round(trade.pnlPercent)}%`;
                      
                      report += `      • ${trade.symbol}: +$${profit} (${roiStr}) (In $${bought} ➔ Out $${sold})\n`;
                  }
             }
             
-            report += '\n';
+            report += UIHelper.separator('LIGHT');
         }
 
         const keyboard = [[{ text: '❌ Close', callback_data: 'delete_msg' }]];
@@ -312,9 +329,38 @@ Source: ${priceSource}
       }
   });
 
+  bot.action(/^live_sort:(.*)$/, async (ctx) => {
+      try {
+          const sortBy = ctx.match[1];
+          // Initialize session if not exists
+          if (!ctx.session) ctx.session = {};
+          if (!ctx.session.liveFilters) ctx.session.liveFilters = {};
+
+          // Set sort option
+          if (['trending', 'newest', 'pnl'].includes(sortBy)) {
+              ctx.session.liveFilters.sortBy = sortBy;
+          }
+
+          // Reload view
+          const { handleLiveSignals } = await import('./commands/analytics');
+          await handleLiveSignals(ctx);
+          await ctx.answerCbQuery(`Sorted by ${sortBy}`);
+      } catch (error) {
+          logger.error('Sort action error:', error);
+          ctx.answerCbQuery('Error updating sort');
+      }
+  });
+
   bot.action('distributions', async (ctx) => {
       const { handleDistributions } = await import('./commands/analytics');
-      await handleDistributions(ctx as any);
+      await handleDistributions(ctx as any, 'mcap');
+  });
+
+  bot.action(/^dist_view:(.*)$/, async (ctx) => {
+      const view = ctx.match[1];
+      const { handleDistributions } = await import('./commands/analytics');
+      await handleDistributions(ctx as any, view);
+      await ctx.answerCbQuery();
   });
 
   bot.action('groups_menu', async (ctx) => {
@@ -528,7 +574,14 @@ Source: ${priceSource}
 
   bot.action('analytics_confirms', async (ctx) => {
       const { handleCrossGroupConfirms } = await import('./commands/analytics');
-      await handleCrossGroupConfirms(ctx as any);
+      await handleCrossGroupConfirms(ctx as any, 'lag');
+  });
+
+  bot.action(/^confirms_view:(.*)$/, async (ctx) => {
+      const view = ctx.match[1];
+      const { handleCrossGroupConfirms } = await import('./commands/analytics');
+      await handleCrossGroupConfirms(ctx as any, view);
+      await ctx.answerCbQuery();
   });
   
   bot.action('analytics_refresh', async (ctx) => {

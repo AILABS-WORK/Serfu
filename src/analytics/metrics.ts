@@ -4,37 +4,122 @@ import { getBotInstance } from '../bot/instance';
 
 const THRESHOLDS = [2, 3, 4, 5, 10];
 
-export const updateSignalMetrics = async (signalId: number, currentPrice: number) => {
+export const updateSignalMetrics = async (signalId: number, currentMarketCap: number | null, currentPrice: number) => {
   const signal = await prisma.signal.findUnique({
     where: { id: signalId },
     include: { metrics: true }
   });
 
-  if (!signal || !signal.entryPrice) return;
+  if (!signal) return;
 
+  // Use market cap for calculations (preferred), fallback to price if market cap not available
+  const entryMarketCap = signal.entryMarketCap;
   const entryPrice = signal.entryPrice;
-  const currentMultiple = currentPrice / entryPrice;
   
-  // Calculate Drawdown (simplistic: from entry. PRD says min(Pt)/P0 - 1)
-  // To do this accurately we need min price history.
-  // For v1, we can just update max drawdown if current price is lower than ever seen?
-  // Or query min price from samples?
-  // Let's query min price from samples efficiently or just track it incrementally if we had it.
-  // We'll query aggregate for now.
+  // Prefer market cap-based calculations
+  let currentMultiple = 0;
+  if (entryMarketCap && currentMarketCap) {
+    currentMultiple = currentMarketCap / entryMarketCap;
+  } else if (entryPrice && currentPrice) {
+    // Fallback to price if market cap not available
+    currentMultiple = currentPrice / entryPrice;
+  } else {
+    return; // Can't calculate without entry data
+  }
+  
+  // Calculate Drawdown using market cap (preferred) or price (fallback)
+  // Query min/max market cap from samples
   const agg = await prisma.priceSample.aggregate({
     where: { signalId },
-    _min: { price: true },
-    _max: { price: true }
+    _min: { marketCap: true, price: true },
+    _max: { marketCap: true, price: true }
   });
   
-  const minPrice = agg._min.price || currentPrice;
-  const maxPrice = agg._max.price || currentPrice;
+  // Use market cap if available, otherwise fallback to price
+  const useMarketCap = entryMarketCap && currentMarketCap && agg._max.marketCap;
+  const minValue = useMarketCap ? (agg._min.marketCap || currentMarketCap) : (agg._min.price || currentPrice);
+  const maxValue = useMarketCap ? (agg._max.marketCap || currentMarketCap) : (agg._max.price || currentPrice);
+  const entryValue = useMarketCap ? entryMarketCap : entryPrice!;
   
-  const maxDrawdown = (minPrice / entryPrice) - 1; // negative %
-  const athPrice = maxPrice;
-  const athMultiple = athPrice / entryPrice;
-  const athAt = new Date(); // Approximation if we don't store time of max in agg. 
-  // Ideally we find the sample with max price.
+  const maxDrawdown = (minValue / entryValue) - 1; // negative %
+  const athValue = maxValue;
+  const athMultiple = athValue / entryValue;
+  
+  // Find the actual timestamp of ATH from price samples (using market cap if available)
+  const athSample = useMarketCap 
+    ? await prisma.priceSample.findFirst({
+        where: { signalId, marketCap: { not: null } },
+        orderBy: { marketCap: 'desc' }
+      })
+    : await prisma.priceSample.findFirst({
+        where: { signalId },
+        orderBy: { price: 'desc' }
+      });
+  const athAt = athSample?.sampledAt || new Date();
+  
+  // Calculate timeToAth if we have detectedAt
+  let timeToAth = null;
+  if (signal.detectedAt && athSample) {
+    timeToAth = athSample.sampledAt.getTime() - signal.detectedAt.getTime();
+  }
+  
+  // Calculate stagnation time and drawdown duration
+  let stagnationTime: number | null = null;
+  let drawdownDuration: number | null = null;
+  
+  if (signal.detectedAt) {
+    // Stagnation: time spent < 1.1x before first pump (>1.1x)
+    const samples = await prisma.priceSample.findMany({
+      where: { signalId },
+      orderBy: { sampledAt: 'asc' }
+    });
+    
+    let firstPumpTime: Date | null = null;
+    for (const sample of samples) {
+      const sampleValue = useMarketCap ? (sample.marketCap || 0) : sample.price;
+      const sampleMultiple = entryValue > 0 ? sampleValue / entryValue : 0;
+      if (sampleMultiple >= 1.1) {
+        firstPumpTime = sample.sampledAt;
+        break;
+      }
+    }
+    
+    if (firstPumpTime) {
+      stagnationTime = firstPumpTime.getTime() - signal.detectedAt.getTime();
+    }
+    
+    // Drawdown duration: time spent underwater (< entry) before ATH
+    if (athSample) {
+      let underwaterStart: Date | null = null;
+      let underwaterEnd: Date | null = null;
+      let maxUnderwaterDuration = 0;
+      
+      for (const sample of samples) {
+        const sampleValue = useMarketCap ? (sample.marketCap || 0) : sample.price;
+        const sampleMultiple = entryValue > 0 ? sampleValue / entryValue : 0;
+        
+        if (sampleMultiple < 1.0) {
+          if (!underwaterStart) {
+            underwaterStart = sample.sampledAt;
+          }
+          underwaterEnd = sample.sampledAt;
+        } else {
+          if (underwaterStart && underwaterEnd) {
+            const duration = underwaterEnd.getTime() - underwaterStart.getTime();
+            if (duration > maxUnderwaterDuration) {
+              maxUnderwaterDuration = duration;
+            }
+          }
+          underwaterStart = null;
+          underwaterEnd = null;
+        }
+      }
+      
+      if (maxUnderwaterDuration > 0) {
+        drawdownDuration = maxUnderwaterDuration;
+      }
+    }
+  }
   
   // Update Metrics Table
   await prisma.signalMetric.upsert({
@@ -42,23 +127,34 @@ export const updateSignalMetrics = async (signalId: number, currentPrice: number
     create: {
       signalId,
       currentPrice,
+      currentMarketCap: currentMarketCap,
       currentMultiple,
-      athPrice,
+      athPrice: useMarketCap ? undefined : athValue,
+      athMarketCap: useMarketCap ? athValue : undefined,
       athMultiple,
-      athAt: new Date(),
+      athAt,
       maxDrawdown,
+      timeToAth,
+      stagnationTime,
+      drawdownDuration,
     },
     update: {
       currentPrice,
+      currentMarketCap: currentMarketCap,
       currentMultiple,
-      athPrice,
+      athPrice: useMarketCap ? undefined : athValue,
+      athMarketCap: useMarketCap ? athValue : undefined,
       athMultiple,
+      athAt,
       maxDrawdown, // Update constantly
+      timeToAth, // Update if new ATH
+      stagnationTime,
+      drawdownDuration,
       updatedAt: new Date(),
     }
   });
 
-  // Check Thresholds
+  // Check Thresholds (using market cap multiple)
   for (const k of THRESHOLDS) {
     if (currentMultiple >= k) {
       // Check if already hit
@@ -72,34 +168,69 @@ export const updateSignalMetrics = async (signalId: number, currentPrice: number
       });
 
       if (!existing) {
-        // Record Event
+        const now = new Date();
+        const hitAt = now;
+        
+        // Record Event (with market cap)
         await prisma.thresholdEvent.create({
           data: {
             signalId,
             multipleThreshold: k,
             hitPrice: currentPrice,
-            hitAt: new Date(),
+            hitMarketCap: currentMarketCap,
+            hitAt,
             provider: 'helius'
           }
         });
 
-        // Notify
-        await notifyThreshold(signal, k, currentPrice);
+        // Calculate time to threshold (in milliseconds)
+        const timeToThreshold = signal.detectedAt 
+          ? hitAt.getTime() - signal.detectedAt.getTime() 
+          : null;
+
+        // Update time metrics based on threshold
+        const updateData: any = {};
+        if (k === 2 && timeToThreshold !== null) {
+          updateData.timeTo2x = timeToThreshold;
+        } else if (k === 3 && timeToThreshold !== null) {
+          updateData.timeTo3x = timeToThreshold;
+        } else if (k === 5 && timeToThreshold !== null) {
+          updateData.timeTo5x = timeToThreshold;
+        } else if (k === 10 && timeToThreshold !== null) {
+          updateData.timeTo10x = timeToThreshold;
+        }
+
+        // Also update timeToAth if this is a new ATH
+        if (currentMultiple >= athMultiple && signal.detectedAt) {
+          updateData.timeToAth = timeToThreshold;
+        }
+
+        if (Object.keys(updateData).length > 0) {
+          await prisma.signalMetric.update({
+            where: { signalId },
+            data: updateData
+          });
+        }
+
+        // Notify (using market cap multiple in message)
+        await notifyThreshold(signal, k, currentPrice, currentMarketCap, currentMultiple);
       }
     }
   }
 };
 
-const notifyThreshold = async (signal: any, multiple: number, price: number) => {
+const notifyThreshold = async (signal: any, multiple: number, price: number, marketCap: number | null, mcapMultiple: number) => {
   try {
     const bot = getBotInstance();
+    const entryMc = signal.entryMarketCap ? `$${(signal.entryMarketCap / 1000).toFixed(1)}k` : 'N/A';
+    const currentMc = marketCap ? `$${(marketCap / 1000).toFixed(1)}k` : 'N/A';
     const message = `
 🚀 *${multiple}x HIT!* 🚀
 
 *Token:* ${signal.name} (${signal.symbol})
 *Mint:* \`${signal.mint}\`
-*Entry:* $${signal.entryPrice?.toFixed(6)}
-*Current:* $${price.toFixed(6)} (${multiple.toFixed(1)}x)
+*Entry MC:* ${entryMc}
+*Current MC:* ${currentMc} (${mcapMultiple.toFixed(1)}x)
 
 [View on Solscan](https://solscan.io/token/${signal.mint})
 `;
@@ -116,6 +247,10 @@ const notifyThreshold = async (signal: any, multiple: number, price: number) => 
     logger.error(`Failed to notify threshold for ${signal.id}`, err);
   }
 };
+
+
+
+
 
 
 

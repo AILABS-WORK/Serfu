@@ -66,8 +66,12 @@ const formatEntityStats = (stats: EntityStats, type: 'GROUP' | 'USER'): string =
   msg += `   ⚡ *Sniper Score:* ${stats.sniperScore.toFixed(0)}%\n`;
   msg += `   🚀 *Speed Score:* ${stats.speedScore.toFixed(0)}/100\n`;
   msg += `   💎 *Diamond Hands:* ${(stats.diamondHands * 100).toFixed(0)}%\n`;
+  msg += `   📄 *Paper Hands:* ${(stats.paperHands * 100).toFixed(0)}%\n`;
   msg += `   ⏳ *Avg Lifespan:* ${stats.avgLifespan.toFixed(1)}h\n`;
   msg += `   🔥 *Streak:* ${stats.consecutiveWins} wins\n`;
+  msg += `   📊 *Volatility Index:* ${stats.volatilityIndex.toFixed(2)}\n`;
+  msg += `   🏆 *Reliability Tier:* ${stats.reliabilityTier}\n`;
+  msg += `   🎯 *Favorite Sector:* ${stats.topSector}\n`;
 
   if (stats.bestCall) {
     msg += UIHelper.subHeader('CROWN JEWEL (Best Call)', '🔹');
@@ -456,7 +460,7 @@ export const handleEarliestCallers = async (ctx: Context) => {
   }
 };
 
-export const handleCrossGroupConfirms = async (ctx: Context) => {
+export const handleCrossGroupConfirms = async (ctx: Context, view: string = 'lag') => {
   try {
     const ownerTelegramId = ctx.from?.id ? BigInt(ctx.from.id) : null;
     if (!ownerTelegramId) return ctx.reply('❌ Unable to identify user.');
@@ -521,21 +525,50 @@ export const handleCrossGroupConfirms = async (ctx: Context) => {
         }
     }
 
-    // 4. Analyze Pairs
-    // Map: "id1-id2" -> { count, lagSum, id1LeadCount }
+    // 4. Analyze Pairs - Enhanced with all metrics
+    // Map: "id1-id2" -> { count, lagSum, id1LeadCount, confluenceWins, uniqueG1, uniqueG2 }
     const pairStats = new Map<string, {
         g1Name: string;
         g2Name: string;
         count: number;
-        lagSum: number; // in seconds
+        lagSum: number; // in milliseconds
         g1LeadCount: number;
+        confluenceWins: number; // Both called same token and it won (>2x)
+        uniqueG1: Set<string>; // Unique mints for G1
+        uniqueG2: Set<string>; // Unique mints for G2
     }>();
 
-    for (const calls of byMint.values()) {
+    // Track unique signals per group
+    const groupUniqueMints = new Map<number, Set<string>>();
+    for (const gid of groupIds) {
+        groupUniqueMints.set(gid, new Set());
+    }
+
+    // Fetch signals with metrics for win detection
+    const signalsWithMetrics = await prisma.signal.findMany({
+        where: {
+            groupId: { in: groupIds },
+            detectedAt: { gte: sevenDaysAgo },
+            metrics: { isNot: null }
+        },
+        include: { metrics: true, group: true }
+    });
+
+    const mintWinMap = new Map<string, boolean>();
+    for (const s of signalsWithMetrics) {
+        groupUniqueMints.get(s.groupId!)?.add(s.mint);
+        const isWin = s.metrics?.athMultiple && s.metrics.athMultiple > 2;
+        if (isWin) mintWinMap.set(s.mint, true);
+    }
+
+    for (const [mint, calls] of byMint.entries()) {
         if (calls.length < 2) continue;
         
         // Sort by time to see who was first for THIS token
         calls.sort((a, b) => a.time - b.time);
+        
+        // Check if this mint was a winner
+        const isWin = mintWinMap.get(mint) || false;
 
         // Generate pairs
         for (let i = 0; i < calls.length; i++) {
@@ -553,67 +586,187 @@ export const handleCrossGroupConfirms = async (ctx: Context) => {
                         g2Name: p2.groupName,
                         count: 0,
                         lagSum: 0,
-                        g1LeadCount: 0
+                        g1LeadCount: 0,
+                        confluenceWins: 0,
+                        uniqueG1: new Set(),
+                        uniqueG2: new Set()
                     });
                 }
                 
                 const stat = pairStats.get(key)!;
                 stat.count++;
                 
-                // Lag
+                // Lag (in milliseconds)
                 const diff = Math.abs(c1.time - c2.time);
                 stat.lagSum += diff;
                 
                 // Who led? 
-                // Since we sorted `calls` by time, `c1` (at index i) is earlier than `c2` (at index j).
-                // But p1/p2 are sorted by ID.
                 if (c1.groupId === p1.groupId) {
-                    stat.g1LeadCount++; // p1 was c1 (earlier)
+                    stat.g1LeadCount++;
+                    stat.uniqueG1.add(Array.from(byMint.entries()).find(([_, cs]) => cs.includes(c1))?.[0] || '');
+                } else {
+                    stat.uniqueG2.add(Array.from(byMint.entries()).find(([_, cs]) => cs.includes(c2))?.[0] || '');
                 }
+                
+                // Confluence win
+                if (isWin) stat.confluenceWins++;
             }
         }
     }
 
-    // 5. Format Output
-    // Sort by Count (Correlation)
-    const topPairs = Array.from(pairStats.values())
-        .sort((a, b) => b.count - a.count)
-        .slice(0, 10);
+    // 5. Format Output based on view
+    let message = '';
+    let keyboard: any[] = [];
 
-    if (topPairs.length === 0) {
-        return ctx.reply('No cross-group correlations found (no shared calls).');
-    }
+    if (view === 'lag') {
+        // Lag Matrix View (Default)
+        const topPairs = Array.from(pairStats.values())
+            .sort((a, b) => b.count - a.count)
+            .slice(0, 10);
 
-    let message = UIHelper.header('CLUSTER ANALYSIS (7D)', '🕸️');
-    
-    for (const p of topPairs) {
-        // Calculate percentages
-        const avgLagSec = p.lagSum / p.count / 1000;
-        const avgLagMin = (avgLagSec / 60).toFixed(1);
-        
-        // Determine Leader
-        const g1LeadPct = (p.g1LeadCount / p.count) * 100;
-        let relation = '';
-        
-        if (g1LeadPct > 60) {
-            relation = `${p.g1Name} ⚡ leads ${p.g2Name}`;
-        } else if (g1LeadPct < 40) {
-            relation = `${p.g2Name} ⚡ leads ${p.g1Name}`;
-        } else {
-            relation = `${p.g1Name} 🤝 ${p.g2Name} (Sync)`;
+        if (topPairs.length === 0) {
+            return ctx.reply('No cross-group correlations found (no shared calls).');
         }
 
-        message += `🔗 *${p.count} Shared Calls*\n`;
-        message += `   ${relation}\n`;
-        message += `   ⏱️ Avg Lag: \`${avgLagMin}m\`\n`;
-        message += UIHelper.separator('LIGHT');
+        message = UIHelper.header('LAG MATRIX (7D)', '⏱️');
+        
+        for (const p of topPairs) {
+            const avgLagMin = (p.lagSum / p.count / 1000 / 60).toFixed(1);
+            const g1LeadPct = (p.g1LeadCount / p.count) * 100;
+            let relation = '';
+            
+            if (g1LeadPct > 60) {
+                relation = `${p.g1Name} ⚡ leads by ~${avgLagMin}m`;
+            } else if (g1LeadPct < 40) {
+                relation = `${p.g2Name} ⚡ leads by ~${avgLagMin}m`;
+            } else {
+                relation = `${p.g1Name} 🤝 ${p.g2Name} (Sync)`;
+            }
+
+            message += `🔗 *${p.count} Shared Calls*\n`;
+            message += `   ${relation}\n`;
+            message += UIHelper.separator('LIGHT');
+        }
+
+        keyboard = [
+            [{ text: '🤝 Confluence', callback_data: 'confirms_view:confluence' }, { text: '🎯 Unique Ratio', callback_data: 'confirms_view:unique' }],
+            [{ text: '🕸️ Cluster Graph', callback_data: 'confirms_view:cluster' }, { text: '👑 Copy-Trade Lead', callback_data: 'confirms_view:lead' }],
+            [{ text: '🔙 Back', callback_data: 'analytics' }]
+        ];
+    }
+    else if (view === 'confluence') {
+        // Confluence Win Rate
+        message = UIHelper.header('CONFLUENCE WIN RATE', '🤝');
+        const topPairs = Array.from(pairStats.values())
+            .filter(p => p.count >= 3)
+            .map(p => ({
+                ...p,
+                confluenceWR: p.count > 0 ? p.confluenceWins / p.count : 0
+            }))
+            .sort((a, b) => b.confluenceWR - a.confluenceWR)
+            .slice(0, 10);
+
+        for (const p of topPairs) {
+            message += `*${p.g1Name} + ${p.g2Name}*\n`;
+            message += `   ${p.count} shared calls | ${(p.confluenceWR * 100).toFixed(0)}% Win Rate\n`;
+            message += UIHelper.separator('LIGHT');
+        }
+
+        keyboard = [[{ text: '🔙 Lag Matrix', callback_data: 'confirms_view:lag' }]];
+    }
+    else if (view === 'unique') {
+        // Unique Signal Ratio
+        message = UIHelper.header('UNIQUE SIGNAL RATIO', '🎯');
+        const groupStats = Array.from(groupUniqueMints.entries())
+            .map(([gid, mints]) => ({
+                name: groupMap.get(gid) || 'Unknown',
+                uniqueCount: mints.size,
+                totalSignals: signals.filter(s => s.groupId === gid).length,
+                uniqueRatio: signals.filter(s => s.groupId === gid).length > 0 
+                    ? mints.size / signals.filter(s => s.groupId === gid).length 
+                    : 0
+            }))
+            .sort((a, b) => b.uniqueRatio - a.uniqueRatio);
+
+        for (const g of groupStats) {
+            const icon = g.uniqueRatio > 0.8 ? '🟢' : g.uniqueRatio > 0.5 ? '🟡' : '🔴';
+            message += `${icon} *${g.name}:*\n`;
+            message += `   ${(g.uniqueRatio * 100).toFixed(0)}% unique (${g.uniqueCount}/${g.totalSignals})\n`;
+            message += UIHelper.separator('LIGHT');
+        }
+
+        keyboard = [[{ text: '🔙 Lag Matrix', callback_data: 'confirms_view:lag' }]];
+    }
+    else if (view === 'cluster') {
+        // Cluster Graph
+        message = UIHelper.header('CLUSTER GRAPH', '🕸️');
+        message += `*Groups that frequently call together:*\n\n`;
+        
+        const clusters = new Map<string, Set<string>>();
+        for (const [key, p] of pairStats.entries()) {
+            if (p.count >= 5) {
+                const clusterKey = p.g1Name < p.g2Name ? p.g1Name : p.g2Name;
+                if (!clusters.has(clusterKey)) {
+                    clusters.set(clusterKey, new Set());
+                }
+                clusters.get(clusterKey)!.add(p.g1Name);
+                clusters.get(clusterKey)!.add(p.g2Name);
+            }
+        }
+
+        for (const [leader, members] of clusters.entries()) {
+            if (members.size >= 2) {
+                message += `🔗 *Cluster:* ${Array.from(members).join(' ↔ ')}\n`;
+                message += `   ${members.size} groups | High correlation\n`;
+                message += UIHelper.separator('LIGHT');
+            }
+        }
+
+        keyboard = [[{ text: '🔙 Lag Matrix', callback_data: 'confirms_view:lag' }]];
+    }
+    else if (view === 'lead') {
+        // Copy-Trade Lead Identification
+        message = UIHelper.header('COPY-TRADE LEAD IDENTIFICATION', '👑');
+        
+        const leadStats = new Map<number, { name: string; leadCount: number; totalPairs: number }>();
+        for (const p of pairStats.values()) {
+            const g1LeadPct = p.count > 0 ? p.g1LeadCount / p.count : 0;
+            const g1Id = Array.from(groupMap.entries()).find(([_, n]) => n === p.g1Name)?.[0];
+            const g2Id = Array.from(groupMap.entries()).find(([_, n]) => n === p.g2Name)?.[0];
+            
+            if (g1LeadPct > 0.6 && g1Id) {
+                if (!leadStats.has(g1Id)) {
+                    leadStats.set(g1Id, { name: p.g1Name, leadCount: 0, totalPairs: 0 });
+                }
+                leadStats.get(g1Id)!.leadCount++;
+                leadStats.get(g1Id)!.totalPairs++;
+            }
+            if (g1LeadPct < 0.4 && g2Id) {
+                if (!leadStats.has(g2Id)) {
+                    leadStats.set(g2Id, { name: p.g2Name, leadCount: 0, totalPairs: 0 });
+                }
+                leadStats.get(g2Id)!.leadCount++;
+                leadStats.get(g2Id)!.totalPairs++;
+            }
+        }
+
+        const topLeaders = Array.from(leadStats.values())
+            .sort((a, b) => b.leadCount - a.leadCount)
+            .slice(0, 10);
+
+        for (const leader of topLeaders) {
+            const leadRatio = leader.totalPairs > 0 ? leader.leadCount / leader.totalPairs : 0;
+            message += `👑 *${leader.name}:*\n`;
+            message += `   Leads ${leader.leadCount} pairs | ${(leadRatio * 100).toFixed(0)}% lead rate\n`;
+            message += UIHelper.separator('LIGHT');
+        }
+
+        keyboard = [[{ text: '🔙 Lag Matrix', callback_data: 'confirms_view:lag' }]];
     }
 
     await ctx.reply(message, { 
         parse_mode: 'Markdown',
-        reply_markup: {
-            inline_keyboard: [[{ text: '🔙 Back', callback_data: 'analytics' }, { text: '❌ Close', callback_data: 'delete_msg' }]]
-        }
+        reply_markup: { inline_keyboard: keyboard }
     });
 
   } catch (error) {
@@ -706,26 +859,90 @@ export const handleLiveSignals = async (ctx: BotContext) => {
         aggregated.get(sig.mint)!.mentions++;
     }
 
-    // 4. Batch Price Fetching (OPTIMIZATION)
+    // 4. Batch Market Cap Fetching (OPTIMIZATION - Using Market Cap instead of Price)
     const uniqueMints = Array.from(aggregated.keys());
-    const prices = await provider.getMultipleTokenPrices(uniqueMints);
-
-    // Apply Filters & Calculate PnL (Pre-Sort)
-    const { minMult = 0, onlyGainers = false } = ctx.session?.liveFilters || {};
     
-    // Sort and Filter based on Price ONLY first (fast)
+    // Fetch metadata for all mints to get market caps
+    const metaPromises = uniqueMints.map(mint => provider.getTokenMeta(mint));
+    const metas = await Promise.all(metaPromises);
+    const marketCaps = new Map<string, number>();
+    const prices = new Map<string, number>();
+    
+    for (let i = 0; i < uniqueMints.length; i++) {
+      const mint = uniqueMints[i];
+      const meta = metas[i];
+      if (meta) {
+        // Prefer liveMarketCap, then marketCap, then calculate
+        let mcap = meta.liveMarketCap || meta.marketCap;
+        if (!mcap && meta.supply) {
+          const priceQuote = await provider.getQuote(mint).catch(() => null);
+          if (priceQuote) {
+            prices.set(mint, priceQuote.price);
+            mcap = priceQuote.price * meta.supply;
+          }
+        }
+        if (mcap) marketCaps.set(mint, mcap);
+      }
+    }
+
+    // Apply Filters & Calculate PnL (Pre-Sort) - Using Market Cap
+    const { minMult = 0, onlyGainers = false, sortBy = 'pnl' } = ctx.session?.liveFilters || {};
+    
+    // Get market cap samples for trending calculation (last 10 minutes)
+    const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000);
+    const recentSamples = await prisma.priceSample.findMany({
+      where: {
+        signalId: { in: signals.map(s => s.id) },
+        sampledAt: { gte: tenMinutesAgo },
+        marketCap: { not: null }
+      },
+      orderBy: { sampledAt: 'desc' }
+    });
+    
+    // Build market cap history map: signalId -> { current, tenMinAgo }
+    const mcapHistory = new Map<number, { current: number; tenMinAgo: number }>();
+    for (const sig of signals) {
+      const samples = recentSamples.filter(s => s.signalId === sig.id && s.marketCap);
+      if (samples.length > 0) {
+        const current = samples[0].marketCap || 0;
+        const tenMinAgo = samples[samples.length - 1]?.marketCap || current;
+        mcapHistory.set(sig.id, { current, tenMinAgo });
+      }
+    }
+    
+    // Sort and Filter based on Market Cap (not price)
     const candidates = Array.from(aggregated.values())
         .map(row => {
-             const price = prices[row.mint] || 0;
-             row.currentPrice = price;
+             const currentMc = marketCaps.get(row.mint) || 0;
+             const currentPrice = prices.get(row.mint) || 0;
+             row.currentPrice = currentPrice;
              
-             // Find entry price from earliest signal
+             // Find entry market cap from earliest signal
              const sig = signals.find(s => s.mint === row.mint);
-             const entryPrice = sig?.entryPrice || 0;
+             const entryMc = sig?.entryMarketCap || 0;
              
-             if (price > 0 && entryPrice > 0) {
-                 row.pnl = ((price - entryPrice) / entryPrice) * 100;
+             // Calculate PnL based on market cap (preferred)
+             if (currentMc > 0 && entryMc > 0) {
+                 row.pnl = ((currentMc - entryMc) / entryMc) * 100;
+             } else {
+                 // Fallback to price if market cap not available
+                 const entryPrice = sig?.entryPrice || 0;
+                 if (currentPrice > 0 && entryPrice > 0) {
+                     row.pnl = ((currentPrice - entryPrice) / entryPrice) * 100;
+                 }
              }
+             
+             // Calculate trending velocity (10min % change in market cap)
+             let velocity = 0;
+             if (sig) {
+               const history = mcapHistory.get(sig.id);
+               if (history && history.tenMinAgo > 0) {
+                 velocity = ((history.current - history.tenMinAgo) / history.tenMinAgo) * 100;
+               }
+             }
+             (row as any).velocity = velocity;
+             (row as any).currentMarketCap = currentMc;
+             
              return row;
         })
         .filter(row => {
@@ -734,8 +951,17 @@ export const handleLiveSignals = async (ctx: BotContext) => {
             const mult = (row.pnl / 100) + 1;
             if (minMult > 0 && mult < minMult) return false;
             return true;
-        })
-        .sort((a, b) => b.pnl - a.pnl); // Sort by PnL Desc
+        });
+    
+    // Apply sorting based on sortBy
+    if (sortBy === 'trending') {
+        candidates.sort((a, b) => (b as any).velocity - (a as any).velocity);
+    } else if (sortBy === 'newest') {
+        candidates.sort((a, b) => b.earliestDate.getTime() - a.earliestDate.getTime());
+    } else {
+        // Default: Highest PnL
+        candidates.sort((a, b) => b.pnl - a.pnl);
+    }
 
     // 5. Lazy Load Metadata (Top 10 Only)
     const top10 = candidates.slice(0, 10);
@@ -758,6 +984,7 @@ export const handleLiveSignals = async (ctx: BotContext) => {
 
     for (const row of top10) {
         const meta = metaMap.get(row.mint);
+        const sig = signals.find(s => s.mint === row.mint);
         
         // PnL & formatting
         const pnlStr = UIHelper.formatPercent(row.pnl);
@@ -767,28 +994,45 @@ export const handleLiveSignals = async (ctx: BotContext) => {
         // Use symbol from meta if available
         const displaySymbol = meta?.symbol || row.symbol;
         
-        message += `\n${icon} *${displaySymbol}* | \`${pnlStr}\`\n`;
-        message += `👤 ${row.earliestCaller} | ${row.mentions} mentions\n`;
+        // Card Layout per Plan: Symbol, Entry->Now, Dex/Migrated flags, Age, Caller
+        message += `\n${icon} *${displaySymbol}* (${row.symbol || 'N/A'})\n`;
+        message += `└ \`${row.mint.slice(0, 8)}...${row.mint.slice(-4)}\`\n`;
         
-        // Enrichment
-        if (meta) {
-            const hasSocials = meta.socialLinks && Object.keys(meta.socialLinks).length > 0;
-            // Audit logic: If authorities disabled => Good. 
-            const auditGood = meta.audit && (!meta.audit.mintAuthorityDisabled || !meta.audit.freezeAuthorityDisabled) ? false : true; 
-            
-            const socialIcon = hasSocials ? '✅' : '❌';
-            const auditIcon = auditGood ? '✅' : '⚠️';
-            
-            message += `🍬 Audit: ${auditIcon} | 🐦 Socials: ${socialIcon}\n`;
+        // Entry -> Current Market Cap (preferred) or Price (fallback)
+        const entryMc = sig?.entryMarketCap || 0;
+        const currentMc = (row as any).currentMarketCap || 0;
+        let entryStr = 'N/A';
+        let currentStr = 'N/A';
+        
+        if (entryMc > 0 && currentMc > 0) {
+          entryStr = `$${(entryMc / 1000).toFixed(1)}k`;
+          currentStr = `$${(currentMc / 1000).toFixed(1)}k`;
+        } else {
+          // Fallback to price
+          const entryPrice = sig?.entryPrice || 0;
+          entryStr = entryPrice > 0 ? `$${entryPrice.toFixed(6)}` : 'N/A';
+          currentStr = row.currentPrice > 0 ? `$${row.currentPrice.toFixed(6)}` : 'N/A';
         }
+        message += `💰 Entry MC: ${entryStr} ➔ Now MC: ${currentStr} (*${pnlStr}*)\n`;
         
-        message += `🕒 ${timeAgo} | $${row.currentPrice.toFixed(6)}\n`;
-        message += `\`${row.mint}\`\n`;
+        // Dex/Migrated/Team flags
+        const dexPaid = sig?.dexPaid ? '✅' : '❌';
+        const migrated = sig?.migrated ? '✅' : '❌';
+        const hasTeam = meta?.audit?.devBalancePercentage && meta.audit.devBalancePercentage < 5 ? '✅' : '❌';
+        message += `🍬 Dex: ${dexPaid} | 📦 Migrated: ${migrated} | 👥 Team: ${hasTeam}\n`;
+        
+        // Age and Caller
+        message += `⏱️ Age: ${timeAgo} | 👤 ${row.earliestCaller}\n`;
         message += UIHelper.separator('LIGHT'); 
     }
 
-    // 7. Filters UI
+    // 7. Filters & Sort UI
     const filters = [
+        [
+            { text: '🔥 Trending', callback_data: 'live_sort:trending' },
+            { text: '🆕 Newest', callback_data: 'live_sort:newest' },
+            { text: '💰 Highest PnL', callback_data: 'live_sort:pnl' }
+        ],
         [
             { text: '🚀 > 2x', callback_data: 'live_filter:2x' },
             { text: '🌕 > 5x', callback_data: 'live_filter:5x' },
@@ -812,7 +1056,7 @@ export const handleLiveSignals = async (ctx: BotContext) => {
   }
 };
 
-export const handleDistributions = async (ctx: Context) => {
+export const handleDistributions = async (ctx: Context, view: string = 'mcap') => {
   try {
     const ownerTelegramId = ctx.from?.id ? BigInt(ctx.from.id) : null;
     if (!ownerTelegramId) return ctx.reply('❌ Unable to identify user.');
@@ -828,56 +1072,136 @@ export const handleDistributions = async (ctx: Context) => {
         });
     }
 
-    let message = UIHelper.header('MARKET CAP STRATEGY (30D)', '📈');
-    message += `Target: *Your Workspace*\n`;
-    message += UIHelper.separator('HEAVY');
-    
-    // Table Header
-    message += `\`MCap Range   | Win Rate | Avg X \`\n`;
-    message += `\`─────────────┼──────────┼───────\`\n`;
+    let message = '';
+    let keyboard: any[] = [];
 
-    // Table Body
-    for (const b of stats.mcBuckets) {
-        // Label padding (13 chars)
-        const label = b.label.padEnd(13, ' ');
+    // MCap Buckets View (Default)
+    if (view === 'mcap') {
+        message = UIHelper.header('MARKET CAP STRATEGY (30D)', '📈');
+        message += `Target: *Your Workspace*\n`;
+        message += UIHelper.separator('HEAVY');
+        message += `\`MCap Range   | Win Rate | Avg X \`\n`;
+        message += `\`─────────────┼──────────┼───────\`\n`;
+
+        for (const b of stats.mcBuckets) {
+            const label = b.label.padEnd(13, ' ');
+            const winRate = b.count > 0 ? (b.wins / b.count) * 100 : 0;
+            const icon = winRate >= 50 ? '🟢' : winRate >= 30 ? '🟡' : b.count === 0 ? '⚪' : '🔴';
+            const winStr = `${icon} ${winRate.toFixed(0)}%`.padEnd(8, ' ');
+            const avgStr = `${b.avgMult.toFixed(1)}x`.padEnd(5, ' ');
+            message += `\`${label}| ${winStr} | ${avgStr}\`\n`;
+        }
         
-        let winRate = 0;
-        if (b.count > 0) winRate = (b.wins / b.count) * 100;
-        
-        let icon = '🔴';
-        if (winRate >= 50) icon = '🟢';
-        else if (winRate >= 30) icon = '🟡';
-        if (b.count === 0) icon = '⚪';
+        const bestBucket = stats.mcBuckets.reduce((prev, curr) => {
+            const currWR = curr.count > 0 ? curr.wins / curr.count : 0;
+            const prevWR = prev.count > 0 ? prev.wins / prev.count : 0;
+            return currWR > prevWR ? curr : prev;
+        });
+        if (bestBucket.count > 0) {
+            const wr = (bestBucket.wins / bestBucket.count) * 100;
+            message += UIHelper.separator('HEAVY');
+            message += `💡 *BEST RANGE:* ${bestBucket.label.trim()} (${wr.toFixed(0)}% WR)\n`;
+        }
 
-        const winStr = `${icon} ${winRate.toFixed(0)}%`.padEnd(8, ' '); // 8 chars roughly
-        const avgStr = `${b.avgMult.toFixed(1)}x`.padEnd(5, ' ');
-
-        message += `\`${label}| ${winStr} | ${avgStr}\`\n`;
+        keyboard = [
+            [{ text: '🕐 Time of Day', callback_data: 'dist_view:time' }, { text: '📅 Day of Week', callback_data: 'dist_view:day' }],
+            [{ text: '👥 Group Compare', callback_data: 'dist_view:groups' }, { text: '📊 Volume', callback_data: 'dist_view:volume' }],
+            [{ text: '💀 Rug Ratio', callback_data: 'dist_view:rug' }, { text: '🚀 Moonshot', callback_data: 'dist_view:moonshot' }],
+            [{ text: '🔥 Streaks', callback_data: 'dist_view:streak' }, { text: '⏰ Token Age', callback_data: 'dist_view:age' }],
+            [{ text: '💧 Liquidity', callback_data: 'dist_view:liquidity' }, { text: '🔙 Back', callback_data: 'analytics' }]
+        ];
     }
-    
-    message += UIHelper.separator('HEAVY');
-    
-    // Suggestion logic
-    const bestBucket = stats.mcBuckets.reduce((prev, curr) => {
-        const currWR = curr.count > 0 ? curr.wins / curr.count : 0;
-        const prevWR = prev.count > 0 ? prev.wins / prev.count : 0;
-        return currWR > prevWR ? curr : prev;
-    });
-
-    if (bestBucket.count > 0) {
-        const wr = (bestBucket.wins / bestBucket.count) * 100;
-        message += `💡 *STRATEGY SUGGESTION:*\n`;
-        message += `"Focus on tokens in the *${bestBucket.label.trim()}* range.\n`;
-        message += `Win Rate is highest here (*${wr.toFixed(0)}%*)."\n`;
+    // Time of Day Heatmap
+    else if (view === 'time') {
+        message = UIHelper.header('TIME OF DAY HEATMAP (UTC)', '🕐');
+        const bestHours = stats.timeOfDay
+            .map((h, i) => ({ hour: i, ...h }))
+            .filter(h => h.count > 0)
+            .sort((a, b) => b.winRate - a.winRate)
+            .slice(0, 5);
+        
+        message += `*Best Hours to Trade:*\n`;
+        for (const h of bestHours) {
+            message += `${h.hour.toString().padStart(2, '0')}:00 UTC: ${(h.winRate * 100).toFixed(0)}% WR (${h.count} calls)\n`;
+        }
+        keyboard = [[{ text: '🔙 MCap View', callback_data: 'dist_view:mcap' }]];
+    }
+    // Day of Week Analysis
+    else if (view === 'day') {
+        message = UIHelper.header('DAY OF WEEK ANALYSIS', '📅');
+        for (const d of stats.dayOfWeek) {
+            if (d.count > 0) {
+                const icon = d.winRate >= 0.5 ? '🟢' : d.winRate >= 0.3 ? '🟡' : '🔴';
+                message += `${icon} *${d.day}:* ${(d.winRate * 100).toFixed(0)}% WR | ${d.avgMult.toFixed(1)}x avg | ${d.count} calls\n`;
+            }
+        }
+        keyboard = [[{ text: '🔙 MCap View', callback_data: 'dist_view:mcap' }]];
+    }
+    // Group vs Group Win Rate
+    else if (view === 'groups') {
+        message = UIHelper.header('GROUP WIN RATE COMPARISON', '👥');
+        const topGroups = stats.groupWinRates.slice(0, 10);
+        for (const g of topGroups) {
+            message += `*${g.groupName}:* ${(g.winRate * 100).toFixed(0)}% WR | ${g.avgMult.toFixed(1)}x | ${g.count} calls\n`;
+        }
+        keyboard = [[{ text: '🔙 MCap View', callback_data: 'dist_view:mcap' }]];
+    }
+    // Volume Correlation
+    else if (view === 'volume') {
+        message = UIHelper.header('VOLUME CORRELATION', '📊');
+        message += `*High Volume (>10k):*\n`;
+        message += `  WR: ${(stats.volumeCorrelation.highVolume.winRate * 100).toFixed(0)}% | Avg: ${stats.volumeCorrelation.highVolume.avgMult.toFixed(1)}x | ${stats.volumeCorrelation.highVolume.count} calls\n\n`;
+        message += `*Low Volume (<1k):*\n`;
+        message += `  WR: ${(stats.volumeCorrelation.lowVolume.winRate * 100).toFixed(0)}% | Avg: ${stats.volumeCorrelation.lowVolume.avgMult.toFixed(1)}x | ${stats.volumeCorrelation.lowVolume.count} calls\n`;
+        keyboard = [[{ text: '🔙 MCap View', callback_data: 'dist_view:mcap' }]];
+    }
+    // Rug Pull Ratio
+    else if (view === 'rug') {
+        message = UIHelper.header('RUG PULL ANALYSIS', '💀');
+        message += `*Rug Pull Ratio:* ${(stats.rugPullRatio * 100).toFixed(1)}%\n`;
+        message += `(${Math.round(stats.rugPullRatio * stats.totalSignals)} of ${stats.totalSignals} signals)\n\n`;
+        message += `*Definition:* ATH < 0.5x OR Drawdown > 90%\n`;
+        keyboard = [[{ text: '🔙 MCap View', callback_data: 'dist_view:mcap' }]];
+    }
+    // Moonshot Probability
+    else if (view === 'moonshot') {
+        message = UIHelper.header('MOONSHOT PROBABILITY', '🚀');
+        message += `*>10x Hit Rate:* ${(stats.moonshotProbability * 100).toFixed(2)}%\n`;
+        message += `(${Math.round(stats.moonshotProbability * stats.totalSignals)} of ${stats.totalSignals} signals)\n\n`;
+        message += `*Typical Range:* 1-2% for most callers\n`;
+        keyboard = [[{ text: '🔙 MCap View', callback_data: 'dist_view:mcap' }]];
+    }
+    // Streak Analysis
+    else if (view === 'streak') {
+        message = UIHelper.header('STREAK ANALYSIS', '🔥');
+        message += `*After 3 Losses:*\n`;
+        message += `  Next Win Rate: ${(stats.streakAnalysis.after3Losses.winRate * 100).toFixed(0)}% (${stats.streakAnalysis.after3Losses.count} instances)\n\n`;
+        message += `*After 3 Wins:*\n`;
+        message += `  Next Win Rate: ${(stats.streakAnalysis.after3Wins.winRate * 100).toFixed(0)}% (${stats.streakAnalysis.after3Wins.count} instances)\n`;
+        keyboard = [[{ text: '🔙 MCap View', callback_data: 'dist_view:mcap' }]];
+    }
+    // Token Age Preference
+    else if (view === 'age') {
+        message = UIHelper.header('TOKEN AGE PREFERENCE', '⏰');
+        message += `*New Pairs (0-5m old):*\n`;
+        message += `  WR: ${(stats.tokenAgePreference.newPairs.winRate * 100).toFixed(0)}% | Avg: ${stats.tokenAgePreference.newPairs.avgMult.toFixed(1)}x | ${stats.tokenAgePreference.newPairs.count} calls\n\n`;
+        message += `*Established (1h+ old):*\n`;
+        message += `  WR: ${(stats.tokenAgePreference.established.winRate * 100).toFixed(0)}% | Avg: ${stats.tokenAgePreference.established.avgMult.toFixed(1)}x | ${stats.tokenAgePreference.established.count} calls\n`;
+        keyboard = [[{ text: '🔙 MCap View', callback_data: 'dist_view:mcap' }]];
+    }
+    // Liquidity vs Return
+    else if (view === 'liquidity') {
+        message = UIHelper.header('LIQUIDITY VS RETURN', '💧');
+        message += `*High Liquidity (>50k):*\n`;
+        message += `  WR: ${(stats.liquidityVsReturn.highLiquidity.winRate * 100).toFixed(0)}% | Avg: ${stats.liquidityVsReturn.highLiquidity.avgMult.toFixed(1)}x | ${stats.liquidityVsReturn.highLiquidity.count} calls\n\n`;
+        message += `*Low Liquidity (<10k):*\n`;
+        message += `  WR: ${(stats.liquidityVsReturn.lowLiquidity.winRate * 100).toFixed(0)}% | Avg: ${stats.liquidityVsReturn.lowLiquidity.avgMult.toFixed(1)}x | ${stats.liquidityVsReturn.lowLiquidity.count} calls\n`;
+        keyboard = [[{ text: '🔙 MCap View', callback_data: 'dist_view:mcap' }]];
     }
 
     await ctx.reply(message, { 
         parse_mode: 'Markdown',
-        reply_markup: {
-            inline_keyboard: [
-                [{ text: '🔙 Back', callback_data: 'analytics' }, { text: '❌ Close', callback_data: 'delete_msg' }]
-            ]
-        }
+        reply_markup: { inline_keyboard: keyboard }
     });
 
   } catch (error) {

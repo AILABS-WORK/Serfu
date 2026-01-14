@@ -125,6 +125,13 @@ export interface PortfolioSummary {
     lastTradeDate: string;
   }[];
   totalValueUsd?: number;
+  winRate?: number; // Win rate from last 100 transactions
+  totalTrades?: number; // Total trades analyzed
+  topTrade?: {
+    symbol: string;
+    pnl: number;
+    pnlPercent: number;
+  }; // Best single trade
 }
 
 export const getDeepHolderAnalysis = async (mint: string, mode: 'standard' | 'deep' = 'standard'): Promise<PortfolioSummary[]> => {
@@ -272,6 +279,24 @@ export const getDeepHolderAnalysis = async (mint: string, mode: 'standard' | 'de
 
       bestTrades.sort((a, b) => b.pnl - a.pnl);
 
+      // Calculate Win Rate from trades
+      const closedTrades = tokenStats.entries()
+        .filter(([_, stats]) => stats.buyUsd > 0 && stats.sellUsd > 0)
+        .map(([_, stats]) => ({
+          pnl: stats.sellUsd - stats.buyUsd,
+          pnlPercent: (stats.sellUsd - stats.buyUsd) / stats.buyUsd * 100
+        }));
+      
+      const wins = closedTrades.filter(t => t.pnl > 0).length;
+      const winRate = closedTrades.length > 0 ? wins / closedTrades.length : 0;
+      
+      // Find top trade
+      const topTrade = bestTrades.length > 0 ? {
+        symbol: bestTrades[0].symbol,
+        pnl: bestTrades[0].pnl,
+        pnlPercent: bestTrades[0].pnlPercent
+      } : undefined;
+
       summaries.push({
         address: h.address,
         rank: h.rank,
@@ -279,7 +304,10 @@ export const getDeepHolderAnalysis = async (mint: string, mode: 'standard' | 'de
         solBalance,
         notableHoldings: notable.slice(0, 3), 
         bestTrades: bestTrades.slice(0, 3), 
-        totalValueUsd: totalValue
+        totalValueUsd: totalValue,
+        winRate,
+        totalTrades: closedTrades.length,
+        topTrade
       });
     }
 

@@ -19,6 +19,15 @@ export interface BitqueryTradeStats {
   roi: number;
 }
 
+export interface BitqueryOHLCV {
+  timestamp: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+}
+
 export class BitqueryProvider {
   private apiKey: string;
 
@@ -120,7 +129,83 @@ export class BitqueryProvider {
       return [];
     }
   }
+
+  async getOHLCV(mint: string, timeframe: 'minute' | 'hour' | 'day', limit: number = 100): Promise<BitqueryOHLCV[]> {
+    // Bitquery interval syntax: {count: 1, in: minutes} or {count: 1, in: hours}
+    const interval = timeframe === 'minute' ? 'minutes' : timeframe === 'hour' ? 'hours' : 'days';
+    
+    // We want price in USD. Usually against specific quote token, but Bitquery has `PriceInUSD` helper.
+    const query = `
+      query TokenOHLCV($mint: String!, $limit: Int!, $interval: String!) {
+        Solana {
+          DEXTradeByTokens(
+            options: {desc: "Block_Time", limit: $limit}
+            where: {
+              Trade: {
+                Currency: {
+                  MintAddress: {is: $mint}
+                }
+              }
+            }
+          ) {
+            Block {
+              Time(interval: {count: 1, in: $interval})
+            }
+            Trade {
+              high: PriceInUSD(maximum: Trade_PriceInUSD)
+              low: PriceInUSD(minimum: Trade_PriceInUSD)
+              open: PriceInUSD(minimum: Block_Number) 
+              close: PriceInUSD(maximum: Block_Number)
+            }
+            volume: sum(of: Trade_Side_AmountInUSD)
+          }
+        }
+      }
+    `;
+
+    try {
+      const response = await axios.post(
+        BITQUERY_ENDPOINT,
+        {
+          query,
+          variables: { mint, limit, interval: interval }, // Pass "minutes", "hours", "days" as string
+        },
+        {
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${this.apiKey}`,
+          },
+        }
+      );
+
+      if (response.data.errors) {
+         // Bitquery often returns "no data" as empty array, but if error, log it.
+         // logger.error('Bitquery OHLCV errors:', response.data.errors);
+         return [];
+      }
+
+      const results = response.data.data?.Solana?.DEXTradeByTokens || [];
+      
+      // Map results to OHLCV
+      // Note: Bitquery returns descending by default with our option.
+      // We want chronological order usually (oldest first) for ATH calculation? 
+      // Actually standard is chronological.
+      // Let's reverse it.
+      
+      return results.map((item: any) => ({
+          timestamp: new Date(item.Block.Time).getTime(),
+          open: Number(item.Trade.open),
+          high: Number(item.Trade.high),
+          low: Number(item.Trade.low),
+          close: Number(item.Trade.close),
+          volume: Number(item.volume)
+      })).reverse();
+
+    } catch (error) {
+      logger.error(`Error fetching Bitquery OHLCV for ${mint}:`, error);
+      return [];
+    }
+  }
 }
 
 export const bitquery = new BitqueryProvider(process.env.BIT_QUERY_API_KEY || '');
-

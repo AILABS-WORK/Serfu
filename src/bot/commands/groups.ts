@@ -71,37 +71,26 @@ export const handleGroupsCommand = async (ctx: Context) => {
     const channels = groups.filter((g: any) => g.chatType === 'channel');
     const normalGroups = groups.filter((g: any) => g.chatType !== 'channel');
 
-    // Fetch accurate signal counts by chatId (aggregating across all owner instances if needed, or just raw signals)
-    const allChatIds = groups.map(g => g.chatId);
-    const signalCounts = await (await import('../../db')).prisma.signal.groupBy({
-        by: ['chatId'],
-        _count: { id: true },
-        where: { chatId: { in: allChatIds } }
-    });
-    const countMap = new Map(signalCounts.map(s => [s.chatId.toString(), s._count.id]));
-
     let message = '📋 *Your Monitored Groups*\n\n';
     
     for (const group of normalGroups) {
-      const count = countMap.get(group.chatId.toString()) || 0;
       const status = group.isActive ? '✅' : '❌';
       const type = group.type === 'destination' ? '📤 Destination' : '📥 Source';
       message += `${status} *${group.name || `Group ${group.chatId}`}*\n`;
       message += `   Type: ${type}\n`;
       message += `   ID: \`${group.chatId}\`\n`;
-      message += `   Signals: ${count}\n\n`;
+      message += `   Signals: ${group.signals?.length || 0}\n\n`;
     }
 
     if (channels.length > 0) {
       message += '📡 *Your Monitored Channels*\n\n';
       for (const ch of channels) {
-        const count = countMap.get(ch.chatId.toString()) || 0;
         const status = ch.isActive ? '✅' : '❌';
         const type = ch.type === 'destination' ? '📤 Destination' : '📥 Source';
         message += `${status} *${ch.name || `Channel ${ch.chatId}`}*\n`;
         message += `   Type: ${type}\n`;
         message += `   ID: \`${ch.chatId}\`\n`;
-        message += `   Signals: ${count}\n\n`;
+        message += `   Signals: ${ch.signals?.length || 0}\n\n`;
       }
     }
 
