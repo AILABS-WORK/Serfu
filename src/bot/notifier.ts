@@ -122,7 +122,7 @@ export const notifySignal = async (
             { text: '🐋 Analyze Holders', callback_data: `analyze_holders:${signal.id}` },
           ],
           [
-            { text: '⭐ Watchlist', callback_data: `watchlist:${signal.id}` },
+            { text: '⭐ Watch', callback_data: `watchlist_add:${signal.id}` },
             { text: '🔄 Refresh', callback_data: `refresh:${signal.id}` },
             { text: '🙈 Hide', callback_data: 'hide' },
           ],
@@ -151,7 +151,7 @@ export const notifySignal = async (
             { text: '🐋 Analyze Holders', callback_data: `analyze_holders:${signal.id}` },
           ],
           [
-            { text: '⭐ Watchlist', callback_data: `watchlist:${signal.id}` },
+            { text: '⭐ Watch', callback_data: `watchlist_add:${signal.id}` },
             { text: '🙈 Hide', callback_data: 'hide' },
           ],
         ],
