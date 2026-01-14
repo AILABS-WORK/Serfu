@@ -100,6 +100,14 @@ export const ingestMiddleware: Middleware<Context> = async (ctx, next) => {
       const message = channelPost as any;
       const chatId = message.chat?.id;
       const messageId = message.message_id;
+      const messageDate = message.date;
+      
+      // Safety: Skip messages older than 2 minutes to prevent spam on restart
+      if (Date.now() / 1000 - messageDate > 120) {
+          logger.debug(`Skipping old channel post ${messageId} from ${chatId} (age: ${Math.round(Date.now()/1000 - messageDate)}s)`);
+          return next();
+      }
+
       const senderId = message.from?.id || null; // Channels might not have senderId
       const senderUsername = message.from?.username;
       const sentAt = new Date(message.date * 1000);
@@ -176,6 +184,12 @@ export const ingestMiddleware: Middleware<Context> = async (ctx, next) => {
       const message = ctx.message;
       const chatId = message.chat.id;
       const messageId = message.message_id;
+      
+      // Safety: Skip old messages (2 mins)
+      if (Date.now() / 1000 - message.date > 120) {
+          return next();
+      }
+
       const senderId = message.from?.id;
       const senderUsername = message.from?.username;
       const sentAt = new Date(message.date * 1000);
@@ -242,6 +256,12 @@ export const ingestMiddleware: Middleware<Context> = async (ctx, next) => {
       const message = channelPost as any;
       const chatId = message.chat?.id;
       const messageId = message.message_id;
+      
+      // Safety: Skip old messages (2 mins)
+      if (Date.now() / 1000 - message.date > 120) {
+          return next();
+      }
+
       const senderId = message.from?.id || null;
       const senderUsername = message.from?.username;
       const sentAt = new Date(message.date * 1000);
@@ -306,6 +326,12 @@ export const ingestMiddleware: Middleware<Context> = async (ctx, next) => {
         const message = ctx.message;
         const chatId = message.chat.id;
         const messageId = message.message_id;
+        
+        // Safety: Skip old messages (2 mins)
+        if (Date.now() / 1000 - message.date > 120) {
+            return next();
+        }
+
         const senderId = message.from?.id;
         const senderUsername = message.from?.username;
         const sentAt = new Date(message.date * 1000);
