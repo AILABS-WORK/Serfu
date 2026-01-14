@@ -771,7 +771,7 @@ export const handleLiveSignals = async (ctx: BotContext) => {
     
     // Filter and Sort
     // We can apply session filters here if we want strict filtering before display
-    const { minMult, onlyGainers } = ctx.session.liveFilters || { minMult: 0, onlyGainers: false };
+    const { minMult = 0, onlyGainers = false } = ctx.session?.liveFilters || {};
     
     const rows = Array.from(aggregated.values())
         .filter(row => {
