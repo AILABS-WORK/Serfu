@@ -338,7 +338,7 @@ Source: ${priceSource}
 
           // Set sort option
           if (['trending', 'newest', 'pnl'].includes(sortBy)) {
-              ctx.session.liveFilters.sortBy = sortBy;
+              (ctx.session.liveFilters as any).sortBy = sortBy;
           }
 
           // Reload view

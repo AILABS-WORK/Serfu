@@ -538,6 +538,10 @@ export const handleCrossGroupConfirms = async (ctx: Context, view: string = 'lag
         uniqueG2: Set<string>; // Unique mints for G2
     }>();
 
+    const groupIds = userGroups.map(g => g.id);
+    const groupMap = new Map(userGroups.map(g => [g.id, g.name || `Group ${g.chatId}`]));
+    const sevenDaysAgo = subDays(new Date(), 7);
+
     // Track unique signals per group
     const groupUniqueMints = new Map<number, Set<string>>();
     for (const gid of groupIds) {
@@ -731,8 +735,8 @@ export const handleCrossGroupConfirms = async (ctx: Context, view: string = 'lag
         const leadStats = new Map<number, { name: string; leadCount: number; totalPairs: number }>();
         for (const p of pairStats.values()) {
             const g1LeadPct = p.count > 0 ? p.g1LeadCount / p.count : 0;
-            const g1Id = Array.from(groupMap.entries()).find(([_, n]) => n === p.g1Name)?.[0];
-            const g2Id = Array.from(groupMap.entries()).find(([_, n]) => n === p.g2Name)?.[0];
+            const g1Id = Array.from(groupMap.entries()).find(([_, n]: [number, string]) => n === p.g1Name)?.[0];
+            const g2Id = Array.from(groupMap.entries()).find(([_, n]: [number, string]) => n === p.g2Name)?.[0];
             
             if (g1LeadPct > 0.6 && g1Id) {
                 if (!leadStats.has(g1Id)) {
@@ -886,7 +890,10 @@ export const handleLiveSignals = async (ctx: BotContext) => {
     }
 
     // Apply Filters & Calculate PnL (Pre-Sort) - Using Market Cap
-    const { minMult = 0, onlyGainers = false, sortBy = 'pnl' } = ctx.session?.liveFilters || {};
+    const liveFilters = ctx.session?.liveFilters || {};
+    const minMult = liveFilters.minMult || 0;
+    const onlyGainers = liveFilters.onlyGainers || false;
+    const sortBy = (liveFilters as any).sortBy || 'pnl';
     
     // Get market cap samples for trending calculation (last 10 minutes)
     const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000);
@@ -1115,14 +1122,14 @@ export const handleDistributions = async (ctx: Context, view: string = 'mcap') =
     else if (view === 'time') {
         message = UIHelper.header('TIME OF DAY HEATMAP (UTC)', '🕐');
         const bestHours = stats.timeOfDay
-            .map((h, i) => ({ hour: i, ...h }))
+            .map((h, i) => ({ hourNum: i, count: h.count, winRate: h.winRate, avgMult: h.avgMult }))
             .filter(h => h.count > 0)
             .sort((a, b) => b.winRate - a.winRate)
             .slice(0, 5);
         
         message += `*Best Hours to Trade:*\n`;
         for (const h of bestHours) {
-            message += `${h.hour.toString().padStart(2, '0')}:00 UTC: ${(h.winRate * 100).toFixed(0)}% WR (${h.count} calls)\n`;
+            message += `${h.hourNum.toString().padStart(2, '0')}:00 UTC: ${(h.winRate * 100).toFixed(0)}% WR (${h.count} calls)\n`;
         }
         keyboard = [[{ text: '🔙 MCap View', callback_data: 'dist_view:mcap' }]];
     }

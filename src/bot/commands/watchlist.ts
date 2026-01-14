@@ -1,8 +1,8 @@
 import { Context } from 'telegraf';
 import { prisma } from '../../db';
 import { logger } from '../../utils/logger';
-import { provider } from '../../providers';
 import { UIHelper } from '../../utils/ui';
+import { getMultipleTokenPrices } from '../../providers/jupiter';
 
 export const handleWatchlistCommand = async (ctx: Context) => {
   try {
@@ -23,7 +23,7 @@ export const handleWatchlistCommand = async (ctx: Context) => {
 
     // Batch fetch prices
     const mints = items.map(i => i.signal.mint);
-    const prices = await provider.getMultipleTokenPrices(mints);
+    const prices = await getMultipleTokenPrices(mints);
 
     let message = UIHelper.header('Watchlist', '⭐');
     

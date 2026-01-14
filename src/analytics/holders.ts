@@ -280,14 +280,14 @@ export const getDeepHolderAnalysis = async (mint: string, mode: 'standard' | 'de
       bestTrades.sort((a, b) => b.pnl - a.pnl);
 
       // Calculate Win Rate from trades
-      const closedTrades = tokenStats.entries()
-        .filter(([_, stats]) => stats.buyUsd > 0 && stats.sellUsd > 0)
-        .map(([_, stats]) => ({
+      const closedTrades = Array.from(tokenStats.entries())
+        .filter(([_, stats]: [string, any]) => stats.buyUsd > 0 && stats.sellUsd > 0)
+        .map(([_, stats]: [string, any]) => ({
           pnl: stats.sellUsd - stats.buyUsd,
           pnlPercent: (stats.sellUsd - stats.buyUsd) / stats.buyUsd * 100
         }));
       
-      const wins = closedTrades.filter(t => t.pnl > 0).length;
+      const wins = closedTrades.filter((t: any) => t.pnl > 0).length;
       const winRate = closedTrades.length > 0 ? wins / closedTrades.length : 0;
       
       // Find top trade

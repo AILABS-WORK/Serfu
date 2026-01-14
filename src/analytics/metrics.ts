@@ -42,8 +42,8 @@ export const updateSignalMetrics = async (signalId: number, currentMarketCap: nu
   const entryValue = useMarketCap ? entryMarketCap : entryPrice!;
   
   const maxDrawdown = (minValue / entryValue) - 1; // negative %
-  const athValue = maxValue;
-  const athMultiple = athValue / entryValue;
+  const athValue = maxValue || 0;
+  const athMultiple = entryValue > 0 ? athValue / entryValue : 0;
   
   // Find the actual timestamp of ATH from price samples (using market cap if available)
   const athSample = useMarketCap 
@@ -122,36 +122,48 @@ export const updateSignalMetrics = async (signalId: number, currentMarketCap: nu
   }
   
   // Update Metrics Table
+  const createData: any = {
+    signalId,
+    currentPrice,
+    currentMarketCap: currentMarketCap || null,
+    currentMultiple,
+    athMultiple,
+    athAt,
+    maxDrawdown,
+    timeToAth: timeToAth || null,
+    stagnationTime: stagnationTime || null,
+    drawdownDuration: drawdownDuration || null,
+  };
+  
+  if (useMarketCap) {
+    createData.athMarketCap = athValue || null;
+  } else {
+    createData.athPrice = athValue || 0;
+  }
+
+  const updateData: any = {
+    currentPrice,
+    currentMarketCap: currentMarketCap || null,
+    currentMultiple,
+    athMultiple,
+    athAt,
+    maxDrawdown,
+    timeToAth: timeToAth || null,
+    stagnationTime: stagnationTime || null,
+    drawdownDuration: drawdownDuration || null,
+    updatedAt: new Date(),
+  };
+  
+  if (useMarketCap) {
+    updateData.athMarketCap = athValue || null;
+  } else {
+    updateData.athPrice = athValue || 0;
+  }
+
   await prisma.signalMetric.upsert({
     where: { signalId },
-    create: {
-      signalId,
-      currentPrice,
-      currentMarketCap: currentMarketCap,
-      currentMultiple,
-      athPrice: useMarketCap ? undefined : athValue,
-      athMarketCap: useMarketCap ? athValue : undefined,
-      athMultiple,
-      athAt,
-      maxDrawdown,
-      timeToAth,
-      stagnationTime,
-      drawdownDuration,
-    },
-    update: {
-      currentPrice,
-      currentMarketCap: currentMarketCap,
-      currentMultiple,
-      athPrice: useMarketCap ? undefined : athValue,
-      athMarketCap: useMarketCap ? athValue : undefined,
-      athMultiple,
-      athAt,
-      maxDrawdown, // Update constantly
-      timeToAth, // Update if new ATH
-      stagnationTime,
-      drawdownDuration,
-      updatedAt: new Date(),
-    }
+    create: createData,
+    update: updateData
   });
 
   // Check Thresholds (using market cap multiple)

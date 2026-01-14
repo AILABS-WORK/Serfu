@@ -51,6 +51,11 @@ export const getMultipleTokenPrices = async (mints: string[]): Promise<Record<st
     return {};
   }
 };
+
+/**
+ * Fetch single price via Jupiter price/v3 API.
+ */
+const getJupiterPriceV3 = async (mint: string): Promise<{ price: number | null; error?: string }> => {
   try {
     const headers: Record<string, string> = {};
     if (JUP_API_KEY) {
