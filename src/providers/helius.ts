@@ -288,19 +288,18 @@ export class HeliusProvider implements MarketDataProvider {
               
               let response: any[] = [];
               
-              if (this.helius.rpc?.getEnrichedTransactions) {
-                  response = await this.helius.rpc.getEnrichedTransactions({
-                      account: address,
-                      type: 'SWAP', // Filter for swaps
-                      limit: batchLimit,
-                      before: lastSignature,
-                  });
-              } else {
-                  // Fallback to HTTP API
-                  const url = `https://api.helius.xyz/v0/addresses/${address}/transactions?api-key=${this.apiKey}&type=SWAP&limit=${batchLimit}${lastSignature ? `&before=${lastSignature}` : ''}`;
-                  const res = await fetch(url);
-                  response = await res.json() as any[];
+              // Helius v0 API for Enriched Transactions
+              // Use direct HTTP fetch to ensure v0 endpoint compatibility as requested
+              // Format: https://api-mainnet.helius-rpc.com/v0/addresses/<ADDRESS>/transactions?api-key=<KEY>&type=SWAP
+              const url = `https://api-mainnet.helius-rpc.com/v0/addresses/${address}/transactions?api-key=${this.apiKey}&type=SWAP&limit=${batchLimit}${lastSignature ? `&before=${lastSignature}` : ''}`;
+              
+              const res = await fetch(url);
+              if (!res.ok) {
+                  logger.warn(`Helius history fetch failed: ${res.status}`);
+                  break;
               }
+              
+              response = await res.json() as any[];
 
               if (!response || response.length === 0) break;
 
