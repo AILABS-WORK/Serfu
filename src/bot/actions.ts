@@ -546,7 +546,7 @@ Max Drawdown: ${(dd * 100).toFixed(2)}%
   bot.action(/^strategy_target:(OVERALL|GROUP|USER)$/, async (ctx) => {
       if (!ctx.session) ctx.session = {} as any;
       if (!ctx.session.strategyDraft) ctx.session.strategyDraft = {};
-      ctx.session.strategyDraft.targetType = ctx.match[1];
+      ctx.session.strategyDraft.targetType = ctx.match[1] as 'OVERALL' | 'GROUP' | 'USER';
       if (ctx.match[1] === 'OVERALL') {
           const { handleStrategyTimeframeSelect } = await import('./commands/copyTrading');
           await handleStrategyTimeframeSelect(ctx as any);
@@ -865,6 +865,7 @@ Max Drawdown: ${(dd * 100).toFixed(2)}%
       if (!ctx.session) ctx.session = {} as any;
       if (!ctx.session.strategyDraft) ctx.session.strategyDraft = {};
       if (!ctx.session.strategyDraft.schedule) ctx.session.strategyDraft.schedule = { timezone: 'UTC', days: [], windows: [], dayGroups: {} };
+      if (!ctx.session.strategyDraft.schedule.dayGroups) ctx.session.strategyDraft.schedule.dayGroups = {};
       ctx.session.strategyDraft.schedule.dayGroups[day] = [];
       const { handleStrategyDayGroupList } = await import('./commands/copyTrading');
       await handleStrategyDayGroupList(ctx as any, day);
@@ -875,7 +876,7 @@ Max Drawdown: ${(dd * 100).toFixed(2)}%
       const day = ctx.match[1];
       if (!ctx.session) ctx.session = {} as any;
       if (!ctx.session.strategyDraft) ctx.session.strategyDraft = {};
-      if (!ctx.session.strategyDraft.schedule) ctx.session.strategyDraft.schedule = { timezone: 'UTC', days: [], windows: [] };
+      if (!ctx.session.strategyDraft.schedule) ctx.session.strategyDraft.schedule = { timezone: 'UTC', days: [], windows: [], dayGroups: {} };
       const schedule = ctx.session.strategyDraft.schedule;
       schedule.days = schedule.days || [];
       if (schedule.days.includes(day)) {
@@ -898,7 +899,7 @@ Max Drawdown: ${(dd * 100).toFixed(2)}%
   bot.action('strategy_clear_windows', async (ctx) => {
       if (!ctx.session) ctx.session = {} as any;
       if (!ctx.session.strategyDraft) ctx.session.strategyDraft = {};
-      if (!ctx.session.strategyDraft.schedule) ctx.session.strategyDraft.schedule = { timezone: 'UTC', days: [], windows: [] };
+      if (!ctx.session.strategyDraft.schedule) ctx.session.strategyDraft.schedule = { timezone: 'UTC', days: [], windows: [], dayGroups: {} };
       ctx.session.strategyDraft.schedule.windows = [];
       const { handleStrategyScheduleView } = await import('./commands/copyTrading');
       await handleStrategyScheduleView(ctx as any);
@@ -974,7 +975,10 @@ Max Drawdown: ${(dd * 100).toFixed(2)}%
       await ctx.answerCbQuery();
   });
   
-  bot.action('analytics_recent', handleRecentCalls);
+  bot.action('analytics_recent', async (ctx) => {
+      const { handleRecentCalls } = await import('./commands/analytics');
+      await handleRecentCalls(ctx as any);
+  });
 
   bot.action(/^recent_window:(.*)$/, async (ctx) => {
       const tf = ctx.match[1];

@@ -117,8 +117,6 @@ export const handleStrategyDraftSummary = async (ctx: Context) => {
   const slRules = (conditions.stopLossRules || []) as Array<{ multiple: number; maxMinutes?: number; sellPct?: number }>;
   const rulePriority = conditions.rulePriority || 'TP_FIRST';
   const stopOnFirstRuleHit = conditions.stopOnFirstRuleHit ?? false;
-  const rulePriority = conditions.rulePriority || 'TP_FIRST';
-  const stopOnFirstRuleHit = conditions.stopOnFirstRuleHit ?? false;
 
   if (targetType === 'GROUP' && draft.targetId) {
     const group = await prisma.group.findUnique({ where: { id: draft.targetId } });
@@ -135,13 +133,14 @@ export const handleStrategyDraftSummary = async (ctx: Context) => {
   message += `Start Balance: *${startBalanceSol} SOL* | Fee/Side: *${feePerSideSol} SOL*\n`;
   message += `Schedule: *${schedule.days?.length ? schedule.days.join(', ') : 'All days'}* | *${schedule.windows?.length ? schedule.windows.map((w: any) => `${w.start}-${w.end}`).join(', ') : 'All day'}* (UTC)\n`;
   if (schedule.dayGroups && Object.keys(schedule.dayGroups).length > 0) {
-    const allGroupIds = Array.from(new Set(Object.values(schedule.dayGroups).flat()));
+    const dayGroups = schedule.dayGroups as Record<string, number[]>;
+    const allGroupIds = Array.from(new Set(Object.values(dayGroups).flat() as number[]));
     const groups = allGroupIds.length > 0
       ? await prisma.group.findMany({ where: { id: { in: allGroupIds } }, select: { id: true, name: true, chatId: true } })
       : [];
     const groupNameMap = new Map(groups.map(g => [g.id, g.name || `Group ${g.chatId}`]));
-    const dayMap = Object.entries(schedule.dayGroups).map(([day, ids]: any) => {
-      const names = ids.map((id: number) => groupNameMap.get(id) || `Group ${id}`).join(', ');
+    const dayMap = Object.entries(dayGroups).map(([day, ids]) => {
+      const names = (ids as number[]).map((id: number) => groupNameMap.get(id) || `Group ${id}`).join(', ');
       return `${day}: ${names || 'None'}`;
     }).join(' | ');
     message += `Day Groups: ${dayMap}\n`;
@@ -232,9 +231,9 @@ export const handleStrategyScheduleView = async (ctx: Context) => {
   let message = UIHelper.header('STRATEGY SCHEDULE', '🗓️');
   message += `Timezone: *${schedule.timezone || 'UTC'}*\n`;
   message += `Days: ${days.length > 0 ? days.join(', ') : 'All'}\n`;
-  message += `Windows: ${windows.length > 0 ? windows.map(w => `${w.start}-${w.end}`).join(', ') : 'All day'}\n`;
-  const mapLines = Object.entries(dayGroups)
-    .map(([day, ids]) => `${day}: ${ids.length} group${ids.length === 1 ? '' : 's'}`)
+  message += `Windows: ${windows.length > 0 ? windows.map((w: any) => `${w.start}-${w.end}`).join(', ') : 'All day'}\n`;
+  const mapLines = Object.entries(dayGroups as Record<string, number[]>)
+    .map(([day, ids]) => `${day}: ${(ids as number[]).length} group${(ids as number[]).length === 1 ? '' : 's'}`)
     .join(' | ');
   message += `Day Groups: ${mapLines || 'All groups'}\n`;
 
@@ -462,13 +461,14 @@ export const handleStrategyPresetDetails = async (ctx: Context, presetId: number
   message += `Schedule Days: ${schedule.days?.length ? schedule.days.join(', ') : 'All'}\n`;
   message += `Windows: ${schedule.windows?.length ? schedule.windows.map((w: any) => `${w.start}-${w.end}`).join(', ') : 'All day'}\n`;
   if (schedule.dayGroups && Object.keys(schedule.dayGroups).length > 0) {
-    const allGroupIds = Array.from(new Set(Object.values(schedule.dayGroups).flat()));
+    const dayGroups = schedule.dayGroups as Record<string, number[]>;
+    const allGroupIds = Array.from(new Set(Object.values(dayGroups).flat() as number[]));
     const groups = allGroupIds.length > 0
       ? await prisma.group.findMany({ where: { id: { in: allGroupIds } }, select: { id: true, name: true, chatId: true } })
       : [];
     const groupNameMap = new Map(groups.map(g => [g.id, g.name || `Group ${g.chatId}`]));
-    const dayMap = Object.entries(schedule.dayGroups).map(([day, ids]: any) => {
-      const names = ids.map((id: number) => groupNameMap.get(id) || `Group ${id}`).join(', ');
+    const dayMap = Object.entries(dayGroups).map(([day, ids]) => {
+      const names = (ids as number[]).map((id: number) => groupNameMap.get(id) || `Group ${id}`).join(', ');
       return `${day}: ${names || 'None'}`;
     }).join(' | ');
     message += `Day Groups: ${dayMap}\n`;
@@ -489,10 +489,10 @@ export const handleStrategyPresetDetails = async (ctx: Context, presetId: number
   });
 
   const keyboard: any[] = [];
-  tpRules.slice(0, 5).forEach((_, idx: number) => {
+  tpRules.slice(0, 5).forEach((_: any, idx: number) => {
     keyboard.push([{ text: `Delete TP #${idx}`, callback_data: `strategy_preset_tp_rule_del:${preset.id}:${idx}` }]);
   });
-  slRules.slice(0, 5).forEach((_, idx: number) => {
+  slRules.slice(0, 5).forEach((_: any, idx: number) => {
     keyboard.push([{ text: `Delete SL #${idx}`, callback_data: `strategy_preset_sl_rule_del:${preset.id}:${idx}` }]);
   });
   keyboard.push([{ text: '🔙 Presets', callback_data: 'strategy_presets' }]);
@@ -582,6 +582,12 @@ export const handleStrategyBacktest = async (ctx: Context) => {
   const totalFee = feePerSideSol * 2;
   const schedule = draft.schedule || { days: [], windows: [], timezone: 'UTC', dayGroups: {} };
   const conditions = draft.conditions || {};
+  const tp = conditions.takeProfitMultiple;
+  const sl = conditions.stopLossMultiple;
+  const tpRules = (conditions.takeProfitRules || []) as Array<{ multiple: number; maxMinutes?: number; sellPct?: number }>;
+  const slRules = (conditions.stopLossRules || []) as Array<{ multiple: number; maxMinutes?: number; sellPct?: number }>;
+  const rulePriority = conditions.rulePriority || 'TP_FIRST';
+  const stopOnFirstRuleHit = conditions.stopOnFirstRuleHit ?? false;
 
   const timeframe = draft.timeframe as string;
   const since = UIHelper.parseTimeframeInput(timeframe) ? new Date(Date.now() - UIHelper.parseTimeframeInput(timeframe)!.ms) : null;

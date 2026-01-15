@@ -669,15 +669,6 @@ export const handleCrossGroupConfirms = async (ctx: Context, view: string = 'lag
     }
 
     // 5. Format Output based on view
-    let targetLabel = 'Overall';
-    if (targetType === 'GROUP' && targetId) {
-      const group = await prisma.group.findUnique({ where: { id: targetId } });
-      if (group) targetLabel = `Group: ${group.name || group.chatId}`;
-    } else if (targetType === 'USER' && targetId) {
-      const user = await prisma.user.findUnique({ where: { id: targetId } });
-      if (user) targetLabel = `User: ${user.username ? `@${user.username}` : (user.firstName || `User ${user.id}`)}`;
-    }
-
     let message = '';
     let keyboard: any[] = [];
 
@@ -832,14 +823,6 @@ export const handleCrossGroupConfirms = async (ctx: Context, view: string = 'lag
             parse_mode: 'Markdown',
             reply_markup: { inline_keyboard: keyboard }
         });
-    } else if (session.distributions?.lastChatId && session.distributions?.lastMessageId) {
-        await ctx.telegram.editMessageText(
-            session.distributions.lastChatId,
-            session.distributions.lastMessageId,
-            undefined,
-            message,
-            { parse_mode: 'Markdown', reply_markup: { inline_keyboard: keyboard } }
-        );
     } else {
         await ctx.reply(message, { 
             parse_mode: 'Markdown',
@@ -1164,6 +1147,14 @@ export const handleDistributions = async (ctx: Context, view: string = 'mcap') =
     const timeframe = session.distributions.timeframe || '30D';
     const targetType = session.distributions.targetType || 'OVERALL';
     const targetId = session.distributions.targetId;
+    let targetLabel = 'Overall';
+    if (targetType === 'GROUP' && targetId) {
+      const group = await prisma.group.findUnique({ where: { id: targetId } });
+      if (group) targetLabel = `Group: ${group.name || group.chatId}`;
+    } else if (targetType === 'USER' && targetId) {
+      const user = await prisma.user.findUnique({ where: { id: targetId } });
+      if (user) targetLabel = `User: ${user.username ? `@${user.username}` : (user.firstName || `User ${user.id}`)}`;
+    }
 
     if (ctx.chat?.id) {
       session.distributions.lastChatId = Number(ctx.chat.id);
