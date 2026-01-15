@@ -86,6 +86,9 @@ export const updateHistoricalMetrics = async (targetSignalIds?: number[]) => {
                 let athPrice = signal.entryPrice;
                 let athAt = signal.detectedAt;
                 let minPrice = signal.entryPrice;
+                let timeTo2x: number | null = null;
+                let timeTo5x: number | null = null;
+                let timeTo10x: number | null = null;
 
                 for (const candle of validCandles) {
                     if (candle.high > athPrice) {
@@ -94,6 +97,15 @@ export const updateHistoricalMetrics = async (targetSignalIds?: number[]) => {
                     }
                     if (candle.low < minPrice) {
                         minPrice = candle.low;
+                    }
+                    if (!timeTo2x && candle.high >= signal.entryPrice * 2) {
+                        timeTo2x = candle.timestamp - signalTime;
+                    }
+                    if (!timeTo5x && candle.high >= signal.entryPrice * 5) {
+                        timeTo5x = candle.timestamp - signalTime;
+                    }
+                    if (!timeTo10x && candle.high >= signal.entryPrice * 10) {
+                        timeTo10x = candle.timestamp - signalTime;
                     }
                 }
 
@@ -115,6 +127,9 @@ export const updateHistoricalMetrics = async (targetSignalIds?: number[]) => {
                         athMultiple,
                         athAt,
                         maxDrawdown,
+                        timeTo2x,
+                        timeTo5x,
+                        timeTo10x,
                         updatedAt: new Date()
                     },
                     update: {
@@ -124,6 +139,9 @@ export const updateHistoricalMetrics = async (targetSignalIds?: number[]) => {
                         athMultiple,
                         athAt,
                         maxDrawdown, 
+                        timeTo2x: timeTo2x || undefined,
+                        timeTo5x: timeTo5x || undefined,
+                        timeTo10x: timeTo10x || undefined,
                         updatedAt: new Date()
                     }
                 });
