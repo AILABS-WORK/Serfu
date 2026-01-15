@@ -8,6 +8,11 @@ export interface EntityStats {
   avgMultiple: number; // e.g. 3.5x
   winRate: number; // % of signals > 2x
   winRate5x: number; // % of signals > 5x
+  hit2Count: number;
+  hit5Count: number;
+  hit10Count: number;
+  moonCount: number;
+  moonRate: number;
   bestCall: {
     mint: string;
     symbol: string;
@@ -22,6 +27,8 @@ export interface EntityStats {
   consistency: number; // Standard Deviation of ATH Multiples
   rugRate: number; // % of calls with < 0.5x ATH or >90% Drawdown
   mcapAvg: number; // Average Entry Market Cap
+  avgEntryMarketCap: number;
+  avgAthMarketCap: number;
   timeToPeak: number; // Avg time to ATH (same as avgTimeToAth, keeping alias)
   sniperScore: number; // % of calls within 10m of token creation (mocked if no creation date)
   consecutiveWins: number; // Current streak of > 2x calls
@@ -44,7 +51,7 @@ export interface EntityStats {
   reliabilityTier: string; // 'S', 'A', 'B', 'C', 'F'
 }
 
-type TimeFrame = '1D' | '7D' | '30D' | 'ALL';
+type TimeFrame = '1D' | '7D' | '30D' | 'ALL' | string;
 
 // Type alias for signal with metrics loaded (and optional relations allowed)
 type SignalWithMetrics = Signal & { 
@@ -58,7 +65,14 @@ const getDateFilter = (timeframe: TimeFrame) => {
   if (timeframe === '1D') return new Date(now.setDate(now.getDate() - 1));
   if (timeframe === '7D') return new Date(now.setDate(now.getDate() - 7));
   if (timeframe === '30D') return new Date(now.setDate(now.getDate() - 30));
-  return new Date(0); // ALL
+  if (timeframe === 'ALL') return new Date(0);
+  const custom = String(timeframe).toUpperCase();
+  const match = custom.match(/^(\d+)(H|D|W|M)$/);
+  if (!match) return new Date(0);
+  const value = parseInt(match[1], 10);
+  const unit = match[2];
+  const hours = unit === 'H' ? value : unit === 'D' ? value * 24 : unit === 'W' ? value * 24 * 7 : value * 24 * 30;
+  return new Date(Date.now() - hours * 60 * 60 * 1000);
 };
 
 const calculateStats = (signals: SignalWithMetrics[]): EntityStats => {
@@ -70,6 +84,11 @@ const calculateStats = (signals: SignalWithMetrics[]): EntityStats => {
       avgMultiple: 0,
       winRate: 0,
       winRate5x: 0,
+      hit2Count: 0,
+      hit5Count: 0,
+      hit10Count: 0,
+      moonCount: 0,
+      moonRate: 0,
       bestCall: null,
       avgDrawdown: 0,
       avgTimeToAth: 0,
@@ -77,6 +96,8 @@ const calculateStats = (signals: SignalWithMetrics[]): EntityStats => {
       consistency: 0,
       rugRate: 0,
       mcapAvg: 0,
+      avgEntryMarketCap: 0,
+      avgAthMarketCap: 0,
       timeToPeak: 0,
       sniperScore: 0,
       consecutiveWins: 0,
@@ -100,6 +121,7 @@ const calculateStats = (signals: SignalWithMetrics[]): EntityStats => {
   let totalMult = 0;
   let wins = 0;
   let wins5x = 0;
+  let wins10x = 0;
   let totalDrawdown = 0;
   let totalTime = 0; // minutes
   let timeCount = 0;
@@ -110,6 +132,8 @@ const calculateStats = (signals: SignalWithMetrics[]): EntityStats => {
   let rugCount = 0;
   let totalMcap = 0;
   let mcapCount = 0;
+  let totalAthMcap = 0;
+  let athMcapCount = 0;
   const multiples: number[] = [];
   let sniperCount = 0; // Calls early
   
@@ -149,6 +173,7 @@ const calculateStats = (signals: SignalWithMetrics[]): EntityStats => {
     totalMult += mult;
     if (mult > 2) wins++;
     if (mult > 5) wins5x++;
+    if (mult > 10) wins10x++;
     if (mult > maxMult) {
       maxMult = mult;
       bestSignal = s;
@@ -230,6 +255,10 @@ const calculateStats = (signals: SignalWithMetrics[]): EntityStats => {
         totalMcap += s.entryMarketCap;
         mcapCount++;
     }
+    if (s.metrics?.athMarketCap) {
+        totalAthMcap += s.metrics.athMarketCap;
+        athMcapCount++;
+    }
     
     // Sniper Score: Proxy - if entry supply ~ total supply and low mcap? 
     // Or just check if we caught it very early? 
@@ -244,6 +273,7 @@ const calculateStats = (signals: SignalWithMetrics[]): EntityStats => {
   const avgMultiple = count ? totalMult / count : 0;
   const winRate = count ? wins / count : 0;
   const winRate5x = count ? wins5x / count : 0;
+  const winRate10x = count ? wins10x / count : 0;
   const avgDrawdown = count ? totalDrawdown / count : 0; 
   const avgTimeToAth = timeCount ? totalTime / timeCount : 0;
   
@@ -274,6 +304,7 @@ const calculateStats = (signals: SignalWithMetrics[]): EntityStats => {
 
   const rugRate = count ? rugCount / count : 0;
   const mcapAvg = mcapCount ? totalMcap / mcapCount : 0;
+  const avgAthMarketCap = athMcapCount ? totalAthMcap / athMcapCount : 0;
   const sniperScore = count ? (sniperCount / count) * 100 : 0;
   
   // Consistency (Std Dev) - same as Volatility Index
@@ -331,6 +362,11 @@ const calculateStats = (signals: SignalWithMetrics[]): EntityStats => {
     avgMultiple,
     winRate,
     winRate5x,
+    hit2Count: wins,
+    hit5Count: wins5x,
+    hit10Count: wins10x,
+    moonCount: wins5x,
+    moonRate: count ? wins5x / count : 0,
     avgDrawdown,
     avgTimeToAth,
     bestCall: bestSignal ? {
@@ -343,6 +379,8 @@ const calculateStats = (signals: SignalWithMetrics[]): EntityStats => {
     consistency,
     rugRate,
     mcapAvg,
+    avgEntryMarketCap: mcapAvg,
+    avgAthMarketCap,
     timeToPeak: avgTimeToAth,
     sniperScore,
     consecutiveWins,
@@ -566,32 +604,63 @@ export interface DistributionStats {
     avgMult: number;
   }>;
   timeOfDay: Array<{ hour: number; count: number; winRate: number; avgMult: number }>;
+  timeOfDayByDay: Array<{ day: string; hours: Array<{ hour: number; count: number; winRate: number; avgMult: number }> }>;
   dayOfWeek: Array<{ day: string; count: number; winRate: number; avgMult: number }>;
-  groupWinRates: Array<{ groupName: string; count: number; winRate: number; avgMult: number }>;
-  volumeCorrelation: {
-    highVolume: { count: number; winRate: number; avgMult: number };
-    lowVolume: { count: number; winRate: number; avgMult: number };
-  };
+  groupWinRates: Array<{ 
+    groupName: string; 
+    count: number; 
+    winRate: number; 
+    avgMult: number; 
+    avgEntryMc: number; 
+    avgAthMult: number; 
+    avgTimeToAth: number; 
+    moonRate: number;
+  }>;
+  volumeBuckets: Array<{
+    label: string;
+    min: number;
+    max: number;
+    count: number;
+    wins: number;
+    avgMult: number;
+  }>;
   rugPullRatio: number;
   moonshotProbability: number;
+  moonshotCounts: { gt2x: number; gt5x: number; gt10x: number };
+  moonshotTimes: { timeTo2x: number; timeTo5x: number; timeTo10x: number };
   streakAnalysis: {
+    after1Loss: { count: number; winRate: number };
+    after2Losses: { count: number; winRate: number };
     after3Losses: { count: number; winRate: number };
+    after1Win: { count: number; winRate: number };
+    after2Wins: { count: number; winRate: number };
     after3Wins: { count: number; winRate: number };
   };
-  tokenAgePreference: {
-    newPairs: { count: number; winRate: number; avgMult: number }; // 0-5m old
-    established: { count: number; winRate: number; avgMult: number }; // 1h+
-  };
-  liquidityVsReturn: {
-    highLiquidity: { count: number; winRate: number; avgMult: number };
-    lowLiquidity: { count: number; winRate: number; avgMult: number };
-  };
+  tokenAgeBuckets: Array<{
+    label: string;
+    minMinutes: number;
+    maxMinutes: number;
+    count: number;
+    wins: number;
+    avgMult: number;
+  }>;
+  tokenAgeHasData: boolean;
+  liquidityBuckets: Array<{
+    label: string;
+    min: number;
+    max: number;
+    count: number;
+    wins: number;
+    avgMult: number;
+  }>;
+  currentStreak: { type: 'win' | 'loss'; count: number };
   totalSignals: number;
 }
 
 export const getDistributionStats = async (
   ownerTelegramId: bigint, 
-  timeframe: TimeFrame
+  timeframe: TimeFrame,
+  target?: { type: 'OVERALL' | 'GROUP' | 'USER'; id?: number }
 ): Promise<DistributionStats> => {
   const since = getDateFilter(timeframe);
   
@@ -614,14 +683,27 @@ export const getDistributionStats = async (
   }
 
   // 2. Fetch signals with all needed relations
+  const targetType = target?.type || 'OVERALL';
+  const allowedGroupIds = new Set(userGroups.map(g => g.id));
+
+  let scopeFilter: any = {
+    OR: [
+      { chatId: { in: ownedChatIds } },
+      { id: { in: forwardedSignalIds } }
+    ]
+  };
+
+  if (targetType === 'GROUP' && target?.id && allowedGroupIds.has(target.id)) {
+    scopeFilter = { groupId: target.id };
+  } else if (targetType === 'USER' && target?.id) {
+    scopeFilter = { userId: target.id };
+  }
+
   const signals = await prisma.signal.findMany({
     where: {
       detectedAt: { gte: since },
       metrics: { isNot: null },
-      OR: [
-          { chatId: { in: ownedChatIds } },
-          { id: { in: forwardedSignalIds } }
-      ]
+      ...scopeFilter
     },
     include: { 
       metrics: true,
@@ -642,9 +724,20 @@ export const getDistributionStats = async (
       { label: '20k-50k', min: 20000, max: 50000, count: 0, wins: 0, avgMult: 0 },
       { label: '50k-100k', min: 50000, max: 100000, count: 0, wins: 0, avgMult: 0 },
       { label: '100k-250k', min: 100000, max: 250000, count: 0, wins: 0, avgMult: 0 },
-      { label: '> 250k', min: 250000, max: 1000000000, count: 0, wins: 0, avgMult: 0 },
+      { label: '250k-500k', min: 250000, max: 500000, count: 0, wins: 0, avgMult: 0 },
+      { label: '500k-1M', min: 500000, max: 1000000, count: 0, wins: 0, avgMult: 0 },
+      { label: '1M+', min: 1000000, max: 1000000000, count: 0, wins: 0, avgMult: 0 },
     ],
     timeOfDay: Array.from({ length: 24 }, (_, i) => ({ hour: i, count: 0, winRate: 0, avgMult: 0 })),
+    timeOfDayByDay: [
+      { day: 'Mon', hours: Array.from({ length: 24 }, (_, i) => ({ hour: i, count: 0, winRate: 0, avgMult: 0 })) },
+      { day: 'Tue', hours: Array.from({ length: 24 }, (_, i) => ({ hour: i, count: 0, winRate: 0, avgMult: 0 })) },
+      { day: 'Wed', hours: Array.from({ length: 24 }, (_, i) => ({ hour: i, count: 0, winRate: 0, avgMult: 0 })) },
+      { day: 'Thu', hours: Array.from({ length: 24 }, (_, i) => ({ hour: i, count: 0, winRate: 0, avgMult: 0 })) },
+      { day: 'Fri', hours: Array.from({ length: 24 }, (_, i) => ({ hour: i, count: 0, winRate: 0, avgMult: 0 })) },
+      { day: 'Sat', hours: Array.from({ length: 24 }, (_, i) => ({ hour: i, count: 0, winRate: 0, avgMult: 0 })) },
+      { day: 'Sun', hours: Array.from({ length: 24 }, (_, i) => ({ hour: i, count: 0, winRate: 0, avgMult: 0 })) },
+    ],
     dayOfWeek: [
       { day: 'Mon', count: 0, winRate: 0, avgMult: 0 },
       { day: 'Tue', count: 0, winRate: 0, avgMult: 0 },
@@ -655,22 +748,76 @@ export const getDistributionStats = async (
       { day: 'Sun', count: 0, winRate: 0, avgMult: 0 },
     ],
     groupWinRates: [],
-    volumeCorrelation: { highVolume: { count: 0, winRate: 0, avgMult: 0 }, lowVolume: { count: 0, winRate: 0, avgMult: 0 } },
+    volumeBuckets: [
+      { label: '0-1k', min: 0, max: 1000, count: 0, wins: 0, avgMult: 0 },
+      { label: '1k-5k', min: 1000, max: 5000, count: 0, wins: 0, avgMult: 0 },
+      { label: '5k-10k', min: 5000, max: 10000, count: 0, wins: 0, avgMult: 0 },
+      { label: '10k-25k', min: 10000, max: 25000, count: 0, wins: 0, avgMult: 0 },
+      { label: '25k-50k', min: 25000, max: 50000, count: 0, wins: 0, avgMult: 0 },
+      { label: '50k-100k', min: 50000, max: 100000, count: 0, wins: 0, avgMult: 0 },
+      { label: '100k+', min: 100000, max: 1000000000, count: 0, wins: 0, avgMult: 0 },
+    ],
     rugPullRatio: 0,
     moonshotProbability: 0,
-    streakAnalysis: { after3Losses: { count: 0, winRate: 0 }, after3Wins: { count: 0, winRate: 0 } },
-    tokenAgePreference: { newPairs: { count: 0, winRate: 0, avgMult: 0 }, established: { count: 0, winRate: 0, avgMult: 0 } },
-    liquidityVsReturn: { highLiquidity: { count: 0, winRate: 0, avgMult: 0 }, lowLiquidity: { count: 0, winRate: 0, avgMult: 0 } },
+    moonshotCounts: { gt2x: 0, gt5x: 0, gt10x: 0 },
+    moonshotTimes: { timeTo2x: 0, timeTo5x: 0, timeTo10x: 0 },
+    streakAnalysis: {
+      after1Loss: { count: 0, winRate: 0 },
+      after2Losses: { count: 0, winRate: 0 },
+      after3Losses: { count: 0, winRate: 0 },
+      after1Win: { count: 0, winRate: 0 },
+      after2Wins: { count: 0, winRate: 0 },
+      after3Wins: { count: 0, winRate: 0 }
+    },
+    tokenAgeBuckets: [
+      { label: '0-5m', minMinutes: 0, maxMinutes: 5, count: 0, wins: 0, avgMult: 0 },
+      { label: '5-15m', minMinutes: 5, maxMinutes: 15, count: 0, wins: 0, avgMult: 0 },
+      { label: '15-45m', minMinutes: 15, maxMinutes: 45, count: 0, wins: 0, avgMult: 0 },
+      { label: '45m-2h', minMinutes: 45, maxMinutes: 120, count: 0, wins: 0, avgMult: 0 },
+      { label: '2h-6h', minMinutes: 120, maxMinutes: 360, count: 0, wins: 0, avgMult: 0 },
+      { label: '6h-24h', minMinutes: 360, maxMinutes: 1440, count: 0, wins: 0, avgMult: 0 },
+      { label: '1d-7d', minMinutes: 1440, maxMinutes: 10080, count: 0, wins: 0, avgMult: 0 },
+      { label: '7d+', minMinutes: 10080, maxMinutes: 1000000000, count: 0, wins: 0, avgMult: 0 },
+    ],
+    tokenAgeHasData: false,
+    liquidityBuckets: [
+      { label: '0-5k', min: 0, max: 5000, count: 0, wins: 0, avgMult: 0 },
+      { label: '5k-10k', min: 5000, max: 10000, count: 0, wins: 0, avgMult: 0 },
+      { label: '10k-25k', min: 10000, max: 25000, count: 0, wins: 0, avgMult: 0 },
+      { label: '25k-50k', min: 25000, max: 50000, count: 0, wins: 0, avgMult: 0 },
+      { label: '50k-100k', min: 50000, max: 100000, count: 0, wins: 0, avgMult: 0 },
+      { label: '100k+', min: 100000, max: 1000000000, count: 0, wins: 0, avgMult: 0 },
+    ],
+    currentStreak: { type: 'loss', count: 0 },
     totalSignals: signals.length
   };
 
   // Group tracking for win rates
-  const groupStats = new Map<string, { count: number; wins: number; totalMult: number }>();
+  const groupStats = new Map<string, { 
+    count: number; 
+    wins: number; 
+    totalMult: number; 
+    totalEntryMc: number;
+    entryMcCount: number;
+    totalAthMult: number;
+    totalTimeToAth: number;
+    timeToAthCount: number;
+    moonCount: number;
+  }>();
   
   // Streak tracking
   const sortedSignals = [...signals].sort((a, b) => a.detectedAt.getTime() - b.detectedAt.getTime());
   let currentStreak = 0;
   let streakType: 'win' | 'loss' = 'loss';
+  let lastStreakWasWin = false;
+
+  // Moonshot time accumulators
+  let timeTo2xSum = 0;
+  let timeTo2xCount = 0;
+  let timeTo5xSum = 0;
+  let timeTo5xCount = 0;
+  let timeTo10xSum = 0;
+  let timeTo10xCount = 0;
 
   for (const s of sortedSignals) {
     if (!s.metrics) continue;
@@ -711,76 +858,137 @@ export const getDistributionStats = async (
     stats.dayOfWeek[mappedDay].count++;
     if (isWin) stats.dayOfWeek[mappedDay].winRate++;
     stats.dayOfWeek[mappedDay].avgMult += mult;
+    const dayHour = stats.timeOfDayByDay[mappedDay].hours[hour];
+    dayHour.count++;
+    if (isWin) dayHour.winRate++;
+    dayHour.avgMult += mult;
 
     // Group Win Rates
     const groupName = s.group?.name || `Group ${s.groupId || 'Unknown'}`;
     if (!groupStats.has(groupName)) {
-      groupStats.set(groupName, { count: 0, wins: 0, totalMult: 0 });
+      groupStats.set(groupName, { 
+        count: 0, 
+        wins: 0, 
+        totalMult: 0, 
+        totalEntryMc: 0, 
+        entryMcCount: 0, 
+        totalAthMult: 0,
+        totalTimeToAth: 0,
+        timeToAthCount: 0,
+        moonCount: 0
+      });
     }
     const gStat = groupStats.get(groupName)!;
     gStat.count++;
     if (isWin) gStat.wins++;
     gStat.totalMult += mult;
+    if (entryMc > 0) {
+      gStat.totalEntryMc += entryMc;
+      gStat.entryMcCount++;
+    }
+    gStat.totalAthMult += mult;
+    if (s.metrics?.timeToAth) {
+      gStat.totalTimeToAth += s.metrics.timeToAth / (1000 * 60);
+      gStat.timeToAthCount++;
+    }
+    if (mult > 5) gStat.moonCount++;
 
     // Volume Correlation (using first price sample)
     const firstSample = s.priceSamples[0];
     const volume = firstSample?.volume || 0;
-    if (volume > 10000) {
-      stats.volumeCorrelation.highVolume.count++;
-      if (isWin) stats.volumeCorrelation.highVolume.winRate++;
-      stats.volumeCorrelation.highVolume.avgMult += mult;
-    } else if (volume > 0 && volume < 1000) {
-      stats.volumeCorrelation.lowVolume.count++;
-      if (isWin) stats.volumeCorrelation.lowVolume.winRate++;
-      stats.volumeCorrelation.lowVolume.avgMult += mult;
+    if (volume > 0) {
+      const vBucket = stats.volumeBuckets.find(b => volume >= b.min && volume < b.max);
+      if (vBucket) {
+        vBucket.count++;
+        if (isWin) vBucket.wins++;
+        vBucket.avgMult += mult;
+      }
     }
 
     // Rug Pull Ratio
     if (isRug) stats.rugPullRatio++;
 
     // Moonshot Probability
+    if (mult > 2) stats.moonshotCounts.gt2x++;
+    if (mult > 5) stats.moonshotCounts.gt5x++;
+    if (mult > 10) stats.moonshotCounts.gt10x++;
     if (isMoonshot) stats.moonshotProbability++;
 
+    // Moonshot Times (ms -> minutes)
+    if (s.metrics?.timeTo2x) {
+      timeTo2xSum += s.metrics.timeTo2x / (1000 * 60);
+      timeTo2xCount++;
+    }
+    if (s.metrics?.timeTo5x) {
+      timeTo5xSum += s.metrics.timeTo5x / (1000 * 60);
+      timeTo5xCount++;
+    }
+    if (s.metrics?.timeTo10x) {
+      timeTo10xSum += s.metrics.timeTo10x / (1000 * 60);
+      timeTo10xCount++;
+    }
+
     // Streak Analysis
-    if (isWin) {
-      if (streakType === 'loss' && currentStreak >= 3) {
-        stats.streakAnalysis.after3Losses.count++;
-        stats.streakAnalysis.after3Losses.winRate++;
+    if (currentStreak > 0) {
+      if (streakType === 'loss') {
+        if (currentStreak >= 1) {
+          stats.streakAnalysis.after1Loss.count++;
+          if (isWin) stats.streakAnalysis.after1Loss.winRate++;
+        }
+        if (currentStreak >= 2) {
+          stats.streakAnalysis.after2Losses.count++;
+          if (isWin) stats.streakAnalysis.after2Losses.winRate++;
+        }
+        if (currentStreak >= 3) {
+          stats.streakAnalysis.after3Losses.count++;
+          if (isWin) stats.streakAnalysis.after3Losses.winRate++;
+        }
+      } else {
+        if (currentStreak >= 1) {
+          stats.streakAnalysis.after1Win.count++;
+          if (isWin) stats.streakAnalysis.after1Win.winRate++;
+        }
+        if (currentStreak >= 2) {
+          stats.streakAnalysis.after2Wins.count++;
+          if (isWin) stats.streakAnalysis.after2Wins.winRate++;
+        }
+        if (currentStreak >= 3) {
+          stats.streakAnalysis.after3Wins.count++;
+          if (isWin) stats.streakAnalysis.after3Wins.winRate++;
+        }
       }
+    }
+
+    if (isWin) {
       currentStreak = currentStreak > 0 && streakType === 'win' ? currentStreak + 1 : 1;
       streakType = 'win';
     } else {
-      if (streakType === 'win' && currentStreak >= 3) {
-        stats.streakAnalysis.after3Wins.count++;
-        // Next signal after 3 wins
-      }
       currentStreak = currentStreak > 0 && streakType === 'loss' ? currentStreak + 1 : 1;
       streakType = 'loss';
     }
 
-    // Token Age Preference (using detectedAt vs firstPoolCreatedAt from meta - approximated)
-    // For now, use time since detection as proxy (new pairs = detected very early)
-    const ageMinutes = (Date.now() - s.detectedAt.getTime()) / (1000 * 60);
-    if (ageMinutes < 5) {
-      stats.tokenAgePreference.newPairs.count++;
-      if (isWin) stats.tokenAgePreference.newPairs.winRate++;
-      stats.tokenAgePreference.newPairs.avgMult += mult;
-    } else if (ageMinutes > 60) {
-      stats.tokenAgePreference.established.count++;
-      if (isWin) stats.tokenAgePreference.established.winRate++;
-      stats.tokenAgePreference.established.avgMult += mult;
+    // Token Age Preference (requires token creation timestamps; mark data only if available)
+    const tokenCreatedAt = (s as any).tokenCreatedAt || (s as any).createdAt || null;
+    if (tokenCreatedAt) {
+      const ageMinutes = (s.detectedAt.getTime() - new Date(tokenCreatedAt).getTime()) / (1000 * 60);
+      const aBucket = stats.tokenAgeBuckets.find(b => ageMinutes >= b.minMinutes && ageMinutes < b.maxMinutes);
+      if (aBucket) {
+        aBucket.count++;
+        if (isWin) aBucket.wins++;
+        aBucket.avgMult += mult;
+        stats.tokenAgeHasData = true;
+      }
     }
 
     // Liquidity vs Return
     const liquidity = firstSample?.liquidity || 0;
-    if (liquidity > 50000) {
-      stats.liquidityVsReturn.highLiquidity.count++;
-      if (isWin) stats.liquidityVsReturn.highLiquidity.winRate++;
-      stats.liquidityVsReturn.highLiquidity.avgMult += mult;
-    } else if (liquidity > 0 && liquidity < 10000) {
-      stats.liquidityVsReturn.lowLiquidity.count++;
-      if (isWin) stats.liquidityVsReturn.lowLiquidity.winRate++;
-      stats.liquidityVsReturn.lowLiquidity.avgMult += mult;
+    if (liquidity > 0) {
+      const lBucket = stats.liquidityBuckets.find(b => liquidity >= b.min && liquidity < b.max);
+      if (lBucket) {
+        lBucket.count++;
+        if (isWin) lBucket.wins++;
+        lBucket.avgMult += mult;
+      }
     }
   }
 
@@ -792,12 +1000,28 @@ export const getDistributionStats = async (
     }
   });
 
+  stats.volumeBuckets.forEach(b => {
+    if (b.count > 0) {
+      b.avgMult /= b.count;
+    }
+  });
+
   // Time of Day - convert wins to win rate
   stats.timeOfDay.forEach(h => {
     if (h.count > 0) {
       h.winRate = h.winRate / h.count;
       h.avgMult /= h.count;
     }
+  });
+
+  // Time of Day by Day
+  stats.timeOfDayByDay.forEach(d => {
+    d.hours.forEach(h => {
+      if (h.count > 0) {
+        h.winRate = h.winRate / h.count;
+        h.avgMult /= h.count;
+      }
+    });
   });
 
   // Day of Week - convert wins to win rate
@@ -815,21 +1039,15 @@ export const getDistributionStats = async (
         groupName: name,
         count: gStat.count,
         winRate: gStat.wins / gStat.count,
-        avgMult: gStat.totalMult / gStat.count
+        avgMult: gStat.totalMult / gStat.count,
+        avgEntryMc: gStat.entryMcCount ? gStat.totalEntryMc / gStat.entryMcCount : 0,
+        avgAthMult: gStat.totalAthMult / gStat.count,
+        avgTimeToAth: gStat.timeToAthCount ? gStat.totalTimeToAth / gStat.timeToAthCount : 0,
+        moonRate: gStat.count ? gStat.moonCount / gStat.count : 0
       });
     }
   }
   stats.groupWinRates.sort((a, b) => b.winRate - a.winRate);
-
-  // Volume Correlation - convert to win rates
-  if (stats.volumeCorrelation.highVolume.count > 0) {
-    stats.volumeCorrelation.highVolume.winRate /= stats.volumeCorrelation.highVolume.count;
-    stats.volumeCorrelation.highVolume.avgMult /= stats.volumeCorrelation.highVolume.count;
-  }
-  if (stats.volumeCorrelation.lowVolume.count > 0) {
-    stats.volumeCorrelation.lowVolume.winRate /= stats.volumeCorrelation.lowVolume.count;
-    stats.volumeCorrelation.lowVolume.avgMult /= stats.volumeCorrelation.lowVolume.count;
-  }
 
   // Rug Pull Ratio & Moonshot Probability (as percentages)
   if (stats.totalSignals > 0) {
@@ -837,33 +1055,47 @@ export const getDistributionStats = async (
     stats.moonshotProbability = stats.moonshotProbability / stats.totalSignals;
   }
 
+  stats.moonshotTimes = {
+    timeTo2x: timeTo2xCount ? timeTo2xSum / timeTo2xCount : 0,
+    timeTo5x: timeTo5xCount ? timeTo5xSum / timeTo5xCount : 0,
+    timeTo10x: timeTo10xCount ? timeTo10xSum / timeTo10xCount : 0
+  };
+
   // Streak Analysis - convert to win rates
+  if (stats.streakAnalysis.after1Loss.count > 0) {
+    stats.streakAnalysis.after1Loss.winRate /= stats.streakAnalysis.after1Loss.count;
+  }
+  if (stats.streakAnalysis.after2Losses.count > 0) {
+    stats.streakAnalysis.after2Losses.winRate /= stats.streakAnalysis.after2Losses.count;
+  }
   if (stats.streakAnalysis.after3Losses.count > 0) {
     stats.streakAnalysis.after3Losses.winRate /= stats.streakAnalysis.after3Losses.count;
+  }
+  if (stats.streakAnalysis.after1Win.count > 0) {
+    stats.streakAnalysis.after1Win.winRate /= stats.streakAnalysis.after1Win.count;
+  }
+  if (stats.streakAnalysis.after2Wins.count > 0) {
+    stats.streakAnalysis.after2Wins.winRate /= stats.streakAnalysis.after2Wins.count;
   }
   if (stats.streakAnalysis.after3Wins.count > 0) {
     stats.streakAnalysis.after3Wins.winRate /= stats.streakAnalysis.after3Wins.count;
   }
 
   // Token Age Preference
-  if (stats.tokenAgePreference.newPairs.count > 0) {
-    stats.tokenAgePreference.newPairs.winRate /= stats.tokenAgePreference.newPairs.count;
-    stats.tokenAgePreference.newPairs.avgMult /= stats.tokenAgePreference.newPairs.count;
-  }
-  if (stats.tokenAgePreference.established.count > 0) {
-    stats.tokenAgePreference.established.winRate /= stats.tokenAgePreference.established.count;
-    stats.tokenAgePreference.established.avgMult /= stats.tokenAgePreference.established.count;
-  }
+  stats.tokenAgeBuckets.forEach(b => {
+    if (b.count > 0) {
+      b.avgMult /= b.count;
+    }
+  });
 
   // Liquidity vs Return
-  if (stats.liquidityVsReturn.highLiquidity.count > 0) {
-    stats.liquidityVsReturn.highLiquidity.winRate /= stats.liquidityVsReturn.highLiquidity.count;
-    stats.liquidityVsReturn.highLiquidity.avgMult /= stats.liquidityVsReturn.highLiquidity.count;
-  }
-  if (stats.liquidityVsReturn.lowLiquidity.count > 0) {
-    stats.liquidityVsReturn.lowLiquidity.winRate /= stats.liquidityVsReturn.lowLiquidity.count;
-    stats.liquidityVsReturn.lowLiquidity.avgMult /= stats.liquidityVsReturn.lowLiquidity.count;
-  }
+  stats.liquidityBuckets.forEach(b => {
+    if (b.count > 0) {
+      b.avgMult /= b.count;
+    }
+  });
+
+  stats.currentStreak = { type: streakType, count: currentStreak };
 
   return stats;
 };

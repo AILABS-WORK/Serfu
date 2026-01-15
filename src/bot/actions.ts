@@ -49,30 +49,28 @@ export const registerActions = (bot: Telegraf<BotContext>) => {
 
       if (!signal) return ctx.answerCbQuery('Signal not found');
 
-      // Fetch fresh price
+      // Fetch fresh quote for MC
       let currentPrice = 0;
-      let priceSource = 'unknown';
       try {
         const quote = await provider.getQuote(signal.mint);
         currentPrice = quote.price;
-        priceSource = quote.source;
       } catch (e) {
-        logger.warn(`Could not fetch price for stats: ${e}`);
+        logger.warn(`Could not fetch quote for stats: ${e}`);
       }
 
-      const entry = signal.entryPrice || 0;
-      const multiple = entry > 0 ? currentPrice / entry : 0;
+      const entryMc = signal.entryMarketCap || 0;
+      const currentMc = signal.entrySupply && currentPrice ? currentPrice * signal.entrySupply : (signal.metrics?.currentMarketCap || 0);
+      const multiple = entryMc > 0 && currentMc > 0 ? currentMc / entryMc : 0;
       const ath = signal.metrics?.athMultiple || multiple; // Use stored ATH if available
       const dd = signal.metrics?.maxDrawdown || 0;
 
       const msg = `
 📊 *Signal Stats*
 Token: ${signal.symbol}
-Entry: $${entry.toFixed(6)}
-Current: $${currentPrice.toFixed(6)} (${multiple.toFixed(2)}x)
+Entry MC: ${UIHelper.formatMarketCap(entryMc)}
+Current MC: ${UIHelper.formatMarketCap(currentMc)} (${multiple.toFixed(2)}x)
 ATH: ${ath.toFixed(2)}x
 Max Drawdown: ${(dd * 100).toFixed(2)}%
-Source: ${priceSource}
       `.trim();
 
       await ctx.reply(msg, {
@@ -363,6 +361,95 @@ Source: ${priceSource}
       await ctx.answerCbQuery();
   });
 
+  bot.action(/^dist_time:(.*)$/, async (ctx) => {
+      const tf = ctx.match[1];
+      if (!ctx.session) ctx.session = {} as any;
+      if (!ctx.session.distributions) ctx.session.distributions = {};
+      if (tf === 'custom') {
+          ctx.session.pendingInput = { type: 'dist_timeframe' };
+          await ctx.reply('Enter custom timeframe (e.g., 6H, 3D, 2W, 1M):');
+          await ctx.answerCbQuery();
+          return;
+      }
+      ctx.session.distributions.timeframe = tf;
+      const { handleDistributions } = await import('./commands/analytics');
+      await handleDistributions(ctx as any, 'mcap');
+      await ctx.answerCbQuery();
+  });
+
+  bot.action('dist_target', async (ctx) => {
+      const ownerTelegramId = ctx.from?.id ? BigInt(ctx.from.id) : null;
+      if (!ownerTelegramId) return ctx.answerCbQuery('User not identified');
+
+      const groups = await prisma.group.findMany({
+          where: { owner: { userId: ownerTelegramId }, isActive: true },
+          take: 8
+      });
+
+      const recentSignals = await prisma.signal.findMany({
+          where: { group: { owner: { userId: ownerTelegramId } }, userId: { not: null } },
+          select: { userId: true },
+          orderBy: { detectedAt: 'desc' },
+          take: 50
+      });
+      const userIds = Array.from(new Set(recentSignals.map(s => s.userId!).filter(Boolean)));
+      const users = await prisma.user.findMany({
+          where: { id: { in: userIds } },
+          take: 8
+      });
+
+      const keyboard: any[] = [
+          [{ text: 'Overall', callback_data: 'dist_target_overall' }]
+      ];
+      if (groups.length > 0) {
+          groups.forEach(g => {
+              keyboard.push([{ text: `Group: ${g.name || g.chatId}`, callback_data: `dist_target_group:${g.id}` }]);
+          });
+      }
+      if (users.length > 0) {
+          users.forEach(u => {
+              keyboard.push([{ text: `User: ${u.username ? `@${u.username}` : (u.firstName || u.id)}`, callback_data: `dist_target_user:${u.id}` }]);
+          });
+      }
+      keyboard.push([{ text: '🔙 Back', callback_data: 'dist_view:mcap' }]);
+
+      await ctx.editMessageText('🎯 *Select Target*\nPick Overall, Group, or User:', {
+          parse_mode: 'Markdown',
+          reply_markup: { inline_keyboard: keyboard }
+      });
+      await ctx.answerCbQuery();
+  });
+
+  bot.action('dist_target_overall', async (ctx) => {
+      if (!ctx.session) ctx.session = {} as any;
+      if (!ctx.session.distributions) ctx.session.distributions = {};
+      ctx.session.distributions.targetType = 'OVERALL';
+      ctx.session.distributions.targetId = undefined;
+      const { handleDistributions } = await import('./commands/analytics');
+      await handleDistributions(ctx as any, 'mcap');
+      await ctx.answerCbQuery();
+  });
+
+  bot.action(/^dist_target_group:(\d+)$/, async (ctx) => {
+      if (!ctx.session) ctx.session = {} as any;
+      if (!ctx.session.distributions) ctx.session.distributions = {};
+      ctx.session.distributions.targetType = 'GROUP';
+      ctx.session.distributions.targetId = parseInt(ctx.match[1]);
+      const { handleDistributions } = await import('./commands/analytics');
+      await handleDistributions(ctx as any, 'mcap');
+      await ctx.answerCbQuery();
+  });
+
+  bot.action(/^dist_target_user:(\d+)$/, async (ctx) => {
+      if (!ctx.session) ctx.session = {} as any;
+      if (!ctx.session.distributions) ctx.session.distributions = {};
+      ctx.session.distributions.targetType = 'USER';
+      ctx.session.distributions.targetId = parseInt(ctx.match[1]);
+      const { handleDistributions } = await import('./commands/analytics');
+      await handleDistributions(ctx as any, 'mcap');
+      await ctx.answerCbQuery();
+  });
+
   bot.action('groups_menu', async (ctx) => {
       // Implement groups list similar to /groups command
       const { handleGroupsCommand } = await import('./commands/groups');
@@ -444,8 +531,466 @@ Source: ${priceSource}
   // --- ANALYTICS ACTIONS (Existing) ---
   
   bot.action('analytics', handleAnalyticsCommand);
+
+  bot.action('strategy_menu', async (ctx) => {
+      const { handleStrategyMenu } = await import('./commands/copyTrading');
+      await handleStrategyMenu(ctx as any);
+  });
+
+  bot.action('strategy_create', async (ctx) => {
+      const { handleStrategyTargetSelect } = await import('./commands/copyTrading');
+      await handleStrategyTargetSelect(ctx as any);
+      await ctx.answerCbQuery();
+  });
+
+  bot.action(/^strategy_target:(OVERALL|GROUP|USER)$/, async (ctx) => {
+      if (!ctx.session) ctx.session = {} as any;
+      if (!ctx.session.strategyDraft) ctx.session.strategyDraft = {};
+      ctx.session.strategyDraft.targetType = ctx.match[1];
+      if (ctx.match[1] === 'OVERALL') {
+          const { handleStrategyTimeframeSelect } = await import('./commands/copyTrading');
+          await handleStrategyTimeframeSelect(ctx as any);
+      } else {
+          const { handleStrategyTargetList } = await import('./commands/copyTrading');
+          await handleStrategyTargetList(ctx as any, ctx.match[1] as any);
+      }
+      await ctx.answerCbQuery();
+  });
+
+  bot.action(/^strategy_target_group:(\d+)$/, async (ctx) => {
+      if (!ctx.session) ctx.session = {} as any;
+      if (!ctx.session.strategyDraft) ctx.session.strategyDraft = {};
+      ctx.session.strategyDraft.targetType = 'GROUP';
+      ctx.session.strategyDraft.targetId = parseInt(ctx.match[1]);
+      const { handleStrategyTimeframeSelect } = await import('./commands/copyTrading');
+      await handleStrategyTimeframeSelect(ctx as any);
+      await ctx.answerCbQuery();
+  });
+
+  bot.action(/^strategy_target_user:(\d+)$/, async (ctx) => {
+      if (!ctx.session) ctx.session = {} as any;
+      if (!ctx.session.strategyDraft) ctx.session.strategyDraft = {};
+      ctx.session.strategyDraft.targetType = 'USER';
+      ctx.session.strategyDraft.targetId = parseInt(ctx.match[1]);
+      const { handleStrategyTimeframeSelect } = await import('./commands/copyTrading');
+      await handleStrategyTimeframeSelect(ctx as any);
+      await ctx.answerCbQuery();
+  });
+
+  bot.action(/^strategy_time:(.*)$/, async (ctx) => {
+      const tf = ctx.match[1];
+      if (!ctx.session) ctx.session = {} as any;
+      if (!ctx.session.strategyDraft) ctx.session.strategyDraft = {};
+      if (tf === 'custom') {
+          ctx.session.pendingInput = { type: 'strategy_timeframe' };
+          await ctx.reply('Enter custom timeframe (e.g., 6H, 3D, 2W, 1M):');
+          await ctx.answerCbQuery();
+          return;
+      }
+      ctx.session.strategyDraft.timeframe = tf;
+      const { handleStrategyDraftSummary } = await import('./commands/copyTrading');
+      await handleStrategyDraftSummary(ctx as any);
+      await ctx.answerCbQuery();
+  });
+
+  bot.action('strategy_view_existing', async (ctx) => {
+      const { handleCopyTradingCommand } = await import('./commands/copyTrading');
+      await handleCopyTradingCommand(ctx as any, '30D');
+      await ctx.answerCbQuery();
+  });
+
+  bot.action('strategy_presets', async (ctx) => {
+      const { handleStrategyPresetsList } = await import('./commands/copyTrading');
+      await handleStrategyPresetsList(ctx as any);
+      await ctx.answerCbQuery();
+  });
+
+  bot.action(/^strategy_preset_view:(\d+)$/, async (ctx) => {
+      const presetId = parseInt(ctx.match[1]);
+      const { handleStrategyPresetDetails } = await import('./commands/copyTrading');
+      await handleStrategyPresetDetails(ctx as any, presetId);
+      await ctx.answerCbQuery();
+  });
+
+  bot.action(/^strategy_preset_toggle:(\d+)$/, async (ctx) => {
+      const presetId = parseInt(ctx.match[1]);
+      const ownerTelegramId = ctx.from?.id ? BigInt(ctx.from.id) : null;
+      if (!ownerTelegramId) return ctx.answerCbQuery('User not identified');
+      const owner = await prisma.user.findUnique({ where: { userId: ownerTelegramId } });
+      if (!owner) return ctx.answerCbQuery('User not found');
+      const preset = await prisma.strategyPreset.findFirst({ where: { id: presetId, ownerId: owner.id } });
+      if (!preset) return ctx.answerCbQuery('Preset not found');
+      await prisma.strategyPreset.update({ where: { id: preset.id }, data: { isActive: !preset.isActive } });
+      const { handleStrategyPresetsList } = await import('./commands/copyTrading');
+      await handleStrategyPresetsList(ctx as any);
+      await ctx.answerCbQuery();
+  });
+
+  bot.action(/^strategy_preset_delete:(\d+)$/, async (ctx) => {
+      const presetId = parseInt(ctx.match[1]);
+      const ownerTelegramId = ctx.from?.id ? BigInt(ctx.from.id) : null;
+      if (!ownerTelegramId) return ctx.answerCbQuery('User not identified');
+      const owner = await prisma.user.findUnique({ where: { userId: ownerTelegramId } });
+      if (!owner) return ctx.answerCbQuery('User not found');
+      await prisma.strategyPreset.deleteMany({ where: { id: presetId, ownerId: owner.id } });
+      const { handleStrategyPresetsList } = await import('./commands/copyTrading');
+      await handleStrategyPresetsList(ctx as any);
+      await ctx.answerCbQuery();
+  });
+
+  bot.action(/^strategy_preset_days:(\d+)$/, async (ctx) => {
+      const presetId = parseInt(ctx.match[1]);
+      const { handleStrategyPresetDaySelect } = await import('./commands/copyTrading');
+      await handleStrategyPresetDaySelect(ctx as any, presetId);
+      await ctx.answerCbQuery();
+  });
+
+  bot.action(/^strategy_preset_day_select:(\d+):(.*)$/, async (ctx) => {
+      const presetId = parseInt(ctx.match[1]);
+      const day = ctx.match[2];
+      const { handleStrategyPresetDayGroupList } = await import('./commands/copyTrading');
+      await handleStrategyPresetDayGroupList(ctx as any, presetId, day);
+      await ctx.answerCbQuery();
+  });
+
+  bot.action(/^strategy_preset_day_group_toggle:(\d+):(.*):(\d+)$/, async (ctx) => {
+      const presetId = parseInt(ctx.match[1]);
+      const day = ctx.match[2];
+      const groupId = parseInt(ctx.match[3]);
+      const ownerTelegramId = ctx.from?.id ? BigInt(ctx.from.id) : null;
+      if (!ownerTelegramId) return ctx.answerCbQuery('User not identified');
+      const owner = await prisma.user.findUnique({ where: { userId: ownerTelegramId } });
+      if (!owner) return ctx.answerCbQuery('User not found');
+      const preset = await prisma.strategyPreset.findFirst({ where: { id: presetId, ownerId: owner.id } });
+      if (!preset) return ctx.answerCbQuery('Preset not found');
+      const schedule: any = preset.schedule || {};
+      if (!schedule.dayGroups) schedule.dayGroups = {};
+      const list = schedule.dayGroups[day] || [];
+      schedule.dayGroups[day] = list.includes(groupId) ? list.filter((id: number) => id !== groupId) : [...list, groupId];
+      await prisma.strategyPreset.update({ where: { id: preset.id }, data: { schedule } });
+      const { handleStrategyPresetDayGroupList } = await import('./commands/copyTrading');
+      await handleStrategyPresetDayGroupList(ctx as any, presetId, day);
+      await ctx.answerCbQuery();
+  });
+
+  bot.action(/^strategy_preset_day_group_clear:(\d+):(.*)$/, async (ctx) => {
+      const presetId = parseInt(ctx.match[1]);
+      const day = ctx.match[2];
+      const ownerTelegramId = ctx.from?.id ? BigInt(ctx.from.id) : null;
+      if (!ownerTelegramId) return ctx.answerCbQuery('User not identified');
+      const owner = await prisma.user.findUnique({ where: { userId: ownerTelegramId } });
+      if (!owner) return ctx.answerCbQuery('User not found');
+      const preset = await prisma.strategyPreset.findFirst({ where: { id: presetId, ownerId: owner.id } });
+      if (!preset) return ctx.answerCbQuery('Preset not found');
+      const schedule: any = preset.schedule || {};
+      if (!schedule.dayGroups) schedule.dayGroups = {};
+      schedule.dayGroups[day] = [];
+      await prisma.strategyPreset.update({ where: { id: preset.id }, data: { schedule } });
+      const { handleStrategyPresetDayGroupList } = await import('./commands/copyTrading');
+      await handleStrategyPresetDayGroupList(ctx as any, presetId, day);
+      await ctx.answerCbQuery();
+  });
+
+  bot.action(/^strategy_preset_tp_rule_add:(\d+)$/, async (ctx) => {
+      const presetId = parseInt(ctx.match[1]);
+      if (!ctx.session) ctx.session = {} as any;
+      ctx.session.pendingInput = { type: 'preset_tp_rule', presetId };
+      await ctx.reply('Enter TP rule like "4x 50% 1m" or "3x 100%".');
+      await ctx.answerCbQuery();
+  });
+
+  bot.action(/^strategy_preset_sl_rule_add:(\d+)$/, async (ctx) => {
+      const presetId = parseInt(ctx.match[1]);
+      if (!ctx.session) ctx.session = {} as any;
+      ctx.session.pendingInput = { type: 'preset_sl_rule', presetId };
+      await ctx.reply('Enter SL rule like "0.7x 50% 5m" or "0.6x 100%".');
+      await ctx.answerCbQuery();
+  });
+
+  bot.action(/^strategy_preset_tp_rule_del:(\d+):(\d+)$/, async (ctx) => {
+      const presetId = parseInt(ctx.match[1]);
+      const idx = parseInt(ctx.match[2]);
+      const ownerTelegramId = ctx.from?.id ? BigInt(ctx.from.id) : null;
+      if (!ownerTelegramId) return ctx.answerCbQuery('User not identified');
+      const owner = await prisma.user.findUnique({ where: { userId: ownerTelegramId } });
+      if (!owner) return ctx.answerCbQuery('User not found');
+      const preset = await prisma.strategyPreset.findFirst({ where: { id: presetId, ownerId: owner.id } });
+      if (!preset) return ctx.answerCbQuery('Preset not found');
+      const conditions: any = preset.conditions || {};
+      const rules = conditions.takeProfitRules || [];
+      if (idx >= 0 && idx < rules.length) rules.splice(idx, 1);
+      conditions.takeProfitRules = rules;
+      await prisma.strategyPreset.update({ where: { id: preset.id }, data: { conditions } });
+      const { handleStrategyPresetDetails } = await import('./commands/copyTrading');
+      await handleStrategyPresetDetails(ctx as any, presetId);
+      await ctx.answerCbQuery();
+  });
+
+  bot.action(/^strategy_preset_sl_rule_del:(\d+):(\d+)$/, async (ctx) => {
+      const presetId = parseInt(ctx.match[1]);
+      const idx = parseInt(ctx.match[2]);
+      const ownerTelegramId = ctx.from?.id ? BigInt(ctx.from.id) : null;
+      if (!ownerTelegramId) return ctx.answerCbQuery('User not identified');
+      const owner = await prisma.user.findUnique({ where: { userId: ownerTelegramId } });
+      if (!owner) return ctx.answerCbQuery('User not found');
+      const preset = await prisma.strategyPreset.findFirst({ where: { id: presetId, ownerId: owner.id } });
+      if (!preset) return ctx.answerCbQuery('Preset not found');
+      const conditions: any = preset.conditions || {};
+      const rules = conditions.stopLossRules || [];
+      if (idx >= 0 && idx < rules.length) rules.splice(idx, 1);
+      conditions.stopLossRules = rules;
+      await prisma.strategyPreset.update({ where: { id: preset.id }, data: { conditions } });
+      const { handleStrategyPresetDetails } = await import('./commands/copyTrading');
+      await handleStrategyPresetDetails(ctx as any, presetId);
+      await ctx.answerCbQuery();
+  });
+
+  bot.action(/^strategy_preset_tp_rule_clear:(\d+)$/, async (ctx) => {
+      const presetId = parseInt(ctx.match[1]);
+      const ownerTelegramId = ctx.from?.id ? BigInt(ctx.from.id) : null;
+      if (!ownerTelegramId) return ctx.answerCbQuery('User not identified');
+      const owner = await prisma.user.findUnique({ where: { userId: ownerTelegramId } });
+      if (!owner) return ctx.answerCbQuery('User not found');
+      const preset = await prisma.strategyPreset.findFirst({ where: { id: presetId, ownerId: owner.id } });
+      if (!preset) return ctx.answerCbQuery('Preset not found');
+      const conditions: any = preset.conditions || {};
+      conditions.takeProfitRules = [];
+      await prisma.strategyPreset.update({ where: { id: preset.id }, data: { conditions } });
+      await ctx.reply('✅ TP rules cleared.');
+      await ctx.answerCbQuery();
+  });
+
+  bot.action(/^strategy_preset_sl_rule_clear:(\d+)$/, async (ctx) => {
+      const presetId = parseInt(ctx.match[1]);
+      const ownerTelegramId = ctx.from?.id ? BigInt(ctx.from.id) : null;
+      if (!ownerTelegramId) return ctx.answerCbQuery('User not identified');
+      const owner = await prisma.user.findUnique({ where: { userId: ownerTelegramId } });
+      if (!owner) return ctx.answerCbQuery('User not found');
+      const preset = await prisma.strategyPreset.findFirst({ where: { id: presetId, ownerId: owner.id } });
+      if (!preset) return ctx.answerCbQuery('Preset not found');
+      const conditions: any = preset.conditions || {};
+      conditions.stopLossRules = [];
+      await prisma.strategyPreset.update({ where: { id: preset.id }, data: { conditions } });
+      await ctx.reply('✅ SL rules cleared.');
+      await ctx.answerCbQuery();
+  });
+
+  bot.action('strategy_simulate_help', async (ctx) => {
+      await ctx.reply('Use /simulate <user|group> <id> [capital]\nExample: /simulate user 123456789 1000');
+      await ctx.answerCbQuery();
+  });
+
+  bot.action('strategy_summary', async (ctx) => {
+      const { handleStrategyDraftSummary } = await import('./commands/copyTrading');
+      await handleStrategyDraftSummary(ctx as any);
+      await ctx.answerCbQuery();
+  });
+
+  bot.action('strategy_rule_priority', async (ctx) => {
+      if (!ctx.session) ctx.session = {} as any;
+      if (!ctx.session.strategyDraft) ctx.session.strategyDraft = {};
+      if (!ctx.session.strategyDraft.conditions) ctx.session.strategyDraft.conditions = {};
+      const current = ctx.session.strategyDraft.conditions.rulePriority || 'TP_FIRST';
+      const next = current === 'TP_FIRST' ? 'SL_FIRST' : current === 'SL_FIRST' ? 'INTERLEAVED' : 'TP_FIRST';
+      ctx.session.strategyDraft.conditions.rulePriority = next;
+      const { handleStrategyDraftSummary } = await import('./commands/copyTrading');
+      await handleStrategyDraftSummary(ctx as any);
+      await ctx.answerCbQuery();
+  });
+
+  bot.action('strategy_stop_first', async (ctx) => {
+      if (!ctx.session) ctx.session = {} as any;
+      if (!ctx.session.strategyDraft) ctx.session.strategyDraft = {};
+      if (!ctx.session.strategyDraft.conditions) ctx.session.strategyDraft.conditions = {};
+      ctx.session.strategyDraft.conditions.stopOnFirstRuleHit = !ctx.session.strategyDraft.conditions.stopOnFirstRuleHit;
+      const { handleStrategyDraftSummary } = await import('./commands/copyTrading');
+      await handleStrategyDraftSummary(ctx as any);
+      await ctx.answerCbQuery();
+  });
+
+  bot.action('strategy_set_balance', async (ctx) => {
+      if (!ctx.session) ctx.session = {} as any;
+      ctx.session.pendingInput = { type: 'strategy_balance' };
+      await ctx.reply('Enter starting balance in SOL (e.g., 1 or 2.5):');
+      await ctx.answerCbQuery();
+  });
+
+  bot.action('strategy_set_fees', async (ctx) => {
+      if (!ctx.session) ctx.session = {} as any;
+      ctx.session.pendingInput = { type: 'strategy_fee' };
+      await ctx.reply('Enter fee per side in SOL (e.g., 0.0001):');
+      await ctx.answerCbQuery();
+  });
+
+  bot.action('strategy_schedule', async (ctx) => {
+      const { handleStrategyScheduleView } = await import('./commands/copyTrading');
+      await handleStrategyScheduleView(ctx as any);
+      await ctx.answerCbQuery();
+  });
+
+  bot.action('strategy_day_groups', async (ctx) => {
+      const { handleStrategyDayGroupSelect } = await import('./commands/copyTrading');
+      await handleStrategyDayGroupSelect(ctx as any);
+      await ctx.answerCbQuery();
+  });
+
+  bot.action(/^strategy_day_select:(.*)$/, async (ctx) => {
+      const day = ctx.match[1];
+      const { handleStrategyDayGroupList } = await import('./commands/copyTrading');
+      await handleStrategyDayGroupList(ctx as any, day);
+      await ctx.answerCbQuery();
+  });
+
+  bot.action(/^strategy_day_group_toggle:(.*):(\d+)$/, async (ctx) => {
+      const day = ctx.match[1];
+      const groupId = parseInt(ctx.match[2]);
+      if (!ctx.session) ctx.session = {} as any;
+      if (!ctx.session.strategyDraft) ctx.session.strategyDraft = {};
+      if (!ctx.session.strategyDraft.schedule) ctx.session.strategyDraft.schedule = { timezone: 'UTC', days: [], windows: [], dayGroups: {} };
+      const schedule = ctx.session.strategyDraft.schedule;
+      if (!schedule.dayGroups) schedule.dayGroups = {};
+      const list = schedule.dayGroups[day] || [];
+      if (list.includes(groupId)) {
+          schedule.dayGroups[day] = list.filter((id: number) => id !== groupId);
+      } else {
+          schedule.dayGroups[day] = [...list, groupId];
+      }
+      const { handleStrategyDayGroupList } = await import('./commands/copyTrading');
+      await handleStrategyDayGroupList(ctx as any, day);
+      await ctx.answerCbQuery();
+  });
+
+  bot.action(/^strategy_day_group_clear:(.*)$/, async (ctx) => {
+      const day = ctx.match[1];
+      if (!ctx.session) ctx.session = {} as any;
+      if (!ctx.session.strategyDraft) ctx.session.strategyDraft = {};
+      if (!ctx.session.strategyDraft.schedule) ctx.session.strategyDraft.schedule = { timezone: 'UTC', days: [], windows: [], dayGroups: {} };
+      ctx.session.strategyDraft.schedule.dayGroups[day] = [];
+      const { handleStrategyDayGroupList } = await import('./commands/copyTrading');
+      await handleStrategyDayGroupList(ctx as any, day);
+      await ctx.answerCbQuery();
+  });
+
+  bot.action(/^strategy_day:(.*)$/, async (ctx) => {
+      const day = ctx.match[1];
+      if (!ctx.session) ctx.session = {} as any;
+      if (!ctx.session.strategyDraft) ctx.session.strategyDraft = {};
+      if (!ctx.session.strategyDraft.schedule) ctx.session.strategyDraft.schedule = { timezone: 'UTC', days: [], windows: [] };
+      const schedule = ctx.session.strategyDraft.schedule;
+      schedule.days = schedule.days || [];
+      if (schedule.days.includes(day)) {
+          schedule.days = schedule.days.filter((d: string) => d !== day);
+      } else {
+          schedule.days.push(day);
+      }
+      const { handleStrategyScheduleView } = await import('./commands/copyTrading');
+      await handleStrategyScheduleView(ctx as any);
+      await ctx.answerCbQuery();
+  });
+
+  bot.action('strategy_add_window', async (ctx) => {
+      if (!ctx.session) ctx.session = {} as any;
+      ctx.session.pendingInput = { type: 'strategy_time_window' };
+      await ctx.reply('Enter time window (HH:MM-HH:MM), timezone UTC.');
+      await ctx.answerCbQuery();
+  });
+
+  bot.action('strategy_clear_windows', async (ctx) => {
+      if (!ctx.session) ctx.session = {} as any;
+      if (!ctx.session.strategyDraft) ctx.session.strategyDraft = {};
+      if (!ctx.session.strategyDraft.schedule) ctx.session.strategyDraft.schedule = { timezone: 'UTC', days: [], windows: [] };
+      ctx.session.strategyDraft.schedule.windows = [];
+      const { handleStrategyScheduleView } = await import('./commands/copyTrading');
+      await handleStrategyScheduleView(ctx as any);
+      await ctx.answerCbQuery();
+  });
+
+  bot.action('strategy_conditions', async (ctx) => {
+      const { handleStrategyConditionsView } = await import('./commands/copyTrading');
+      await handleStrategyConditionsView(ctx as any);
+      await ctx.answerCbQuery();
+  });
+
+  bot.action(/^strategy_cond:(.*)$/, async (ctx) => {
+      const type = ctx.match[1];
+      if (!ctx.session) ctx.session = {} as any;
+      if (type === 'volume') ctx.session.pendingInput = { type: 'strategy_cond_volume' };
+      if (type === 'mentions') ctx.session.pendingInput = { type: 'strategy_cond_mentions' };
+      if (type === 'min_mc') ctx.session.pendingInput = { type: 'strategy_cond_min_mc' };
+      if (type === 'max_mc') ctx.session.pendingInput = { type: 'strategy_cond_max_mc' };
+      if (type === 'tp') ctx.session.pendingInput = { type: 'strategy_cond_tp' };
+      if (type === 'sl') ctx.session.pendingInput = { type: 'strategy_cond_sl' };
+      if (type === 'tp_rule') ctx.session.pendingInput = { type: 'strategy_cond_tp_rule' };
+      if (type === 'sl_rule') ctx.session.pendingInput = { type: 'strategy_cond_sl_rule' };
+      if (type === 'tp_rule_clear') {
+          if (!ctx.session.strategyDraft) ctx.session.strategyDraft = {};
+          if (!ctx.session.strategyDraft.conditions) ctx.session.strategyDraft.conditions = {};
+          ctx.session.strategyDraft.conditions.takeProfitRules = [];
+          const { handleStrategyConditionsView } = await import('./commands/copyTrading');
+          await handleStrategyConditionsView(ctx as any);
+          await ctx.answerCbQuery();
+          return;
+      }
+      if (type === 'sl_rule_clear') {
+          if (!ctx.session.strategyDraft) ctx.session.strategyDraft = {};
+          if (!ctx.session.strategyDraft.conditions) ctx.session.strategyDraft.conditions = {};
+          ctx.session.strategyDraft.conditions.stopLossRules = [];
+          const { handleStrategyConditionsView } = await import('./commands/copyTrading');
+          await handleStrategyConditionsView(ctx as any);
+          await ctx.answerCbQuery();
+          return;
+      }
+      if (type === 'clear') {
+          if (!ctx.session.strategyDraft) ctx.session.strategyDraft = {};
+          ctx.session.strategyDraft.conditions = {};
+          const { handleStrategyConditionsView } = await import('./commands/copyTrading');
+          await handleStrategyConditionsView(ctx as any);
+          await ctx.answerCbQuery();
+          return;
+      }
+      if (type === 'tp') {
+          await ctx.reply('Enter take profit multiple (e.g., 2.5).');
+      } else if (type === 'sl') {
+          await ctx.reply('Enter stop loss multiple between 0 and 1 (e.g., 0.7).');
+      } else if (type === 'tp_rule') {
+          await ctx.reply('Enter TP rule like "4x 50% 1m" or "3x 100%".');
+      } else if (type === 'sl_rule') {
+          await ctx.reply('Enter SL rule like "0.7x 50% 5m" or "0.6x 100%".');
+      } else {
+          await ctx.reply('Enter value (e.g., 25K, 1.2M) or integer for mentions:');
+      }
+      await ctx.answerCbQuery();
+  });
+
+  bot.action('strategy_save', async (ctx) => {
+      const { handleStrategySavePreset } = await import('./commands/copyTrading');
+      await handleStrategySavePreset(ctx as any);
+      await ctx.answerCbQuery();
+  });
+
+  bot.action('strategy_backtest', async (ctx) => {
+      const { handleStrategyBacktest } = await import('./commands/copyTrading');
+      await handleStrategyBacktest(ctx as any);
+      await ctx.answerCbQuery();
+  });
   
   bot.action('analytics_recent', handleRecentCalls);
+
+  bot.action(/^recent_window:(.*)$/, async (ctx) => {
+      const tf = ctx.match[1];
+      if (!ctx.session) ctx.session = {} as any;
+      if (!ctx.session.recent) ctx.session.recent = {};
+      if (tf === 'custom') {
+          ctx.session.pendingInput = { type: 'recent_timeframe' };
+          await ctx.reply('Enter custom timeframe (e.g., 6H, 3D, 2W, 1M):');
+          await ctx.answerCbQuery();
+          return;
+      }
+      ctx.session.recent.timeframe = tf;
+      const { handleRecentCalls } = await import('./commands/analytics');
+      await handleRecentCalls(ctx as any, tf);
+      await ctx.answerCbQuery();
+  });
   
   bot.action('analytics_groups', async (ctx) => {
       const ownerTelegramId = ctx.from?.id ? BigInt(ctx.from.id) : null;
@@ -536,7 +1081,7 @@ Source: ${priceSource}
   });
 
   // Handle switching window for group stats
-  bot.action(/^group_stats_window:(\d+):(7D|30D|ALL)$/, async (ctx) => {
+  bot.action(/^group_stats_window:(\d+):(1D|3D|7D|30D|ALL)$/, async (ctx) => {
       const groupId = ctx.match[1];
       // We can reuse handleGroupStatsCommand but we need to pass window?
       // Actually handleGroupStatsCommand currently defaults to ALL.
@@ -551,6 +1096,14 @@ Source: ${priceSource}
       await ctx.answerCbQuery();
   });
 
+  bot.action(/^group_stats_custom:(\d+)$/, async (ctx) => {
+      const groupId = parseInt(ctx.match[1]);
+      if (!ctx.session) ctx.session = {} as any;
+      ctx.session.pendingInput = { type: 'group_stats_timeframe', groupId };
+      await ctx.reply('Enter custom timeframe (e.g., 6H, 3D, 2W, 1M):');
+      await ctx.answerCbQuery();
+  });
+
   bot.action(/^user_stats_view:(\d+)$/, async (ctx) => {
       const userId = ctx.match[1];
       const { handleUserStatsCommand } = await import('./commands/analytics');
@@ -558,11 +1111,19 @@ Source: ${priceSource}
       await ctx.answerCbQuery();
   });
 
-  bot.action(/^user_stats_window:(\d+):(7D|30D|ALL)$/, async (ctx) => {
+  bot.action(/^user_stats_window:(\d+):(1D|3D|7D|30D|ALL)$/, async (ctx) => {
       const userId = ctx.match[1];
       const { handleUserStatsCommand } = await import('./commands/analytics');
       // @ts-ignore
       await handleUserStatsCommand(ctx as any, userId, ctx.match[2]);
+      await ctx.answerCbQuery();
+  });
+
+  bot.action(/^user_stats_custom:(\d+)$/, async (ctx) => {
+      const userId = parseInt(ctx.match[1]);
+      if (!ctx.session) ctx.session = {} as any;
+      ctx.session.pendingInput = { type: 'user_stats_timeframe', userId };
+      await ctx.reply('Enter custom timeframe (e.g., 6H, 3D, 2W, 1M):');
       await ctx.answerCbQuery();
   });
 
@@ -609,21 +1170,31 @@ Source: ${priceSource}
   });
 
   bot.action(/^leaderboard_groups:(.*)$/, async (ctx) => {
-      const window = ctx.match[1] as '1D' | '7D' | '30D' | 'ALL';
+      const window = ctx.match[1] as '1D' | '3D' | '7D' | '30D' | 'ALL' | string;
       const { handleGroupLeaderboardCommand } = await import('./commands/analytics');
       await handleGroupLeaderboardCommand(ctx as any, window);
   });
 
   bot.action(/^leaderboard_users:(.*)$/, async (ctx) => {
-      const window = ctx.match[1] as '1D' | '7D' | '30D' | 'ALL';
+      const window = ctx.match[1] as '1D' | '3D' | '7D' | '30D' | 'ALL' | string;
       const { handleUserLeaderboardCommand } = await import('./commands/analytics');
       await handleUserLeaderboardCommand(ctx as any, window);
   });
 
   bot.action(/^leaderboard_signals:(.*)$/, async (ctx) => {
-      const window = ctx.match[1] as '1D' | '7D' | '30D' | 'ALL';
+      const window = ctx.match[1] as '1D' | '3D' | '7D' | '30D' | 'ALL' | string;
       const { handleSignalLeaderboardCommand } = await import('./commands/analytics');
       await handleSignalLeaderboardCommand(ctx as any, window);
+  });
+
+  bot.action(/^leaderboard_custom:(GROUP|USER|SIGNAL)$/, async (ctx) => {
+      const target = ctx.match[1];
+      if (!ctx.session) ctx.session = {} as any;
+      if (target === 'GROUP') ctx.session.pendingInput = { type: 'leaderboard_groups' };
+      if (target === 'USER') ctx.session.pendingInput = { type: 'leaderboard_users' };
+      if (target === 'SIGNAL') ctx.session.pendingInput = { type: 'leaderboard_signals' };
+      await ctx.reply('Enter custom timeframe (e.g., 6H, 3D, 2W, 1M):');
+      await ctx.answerCbQuery();
   });
 
   // Group Stats

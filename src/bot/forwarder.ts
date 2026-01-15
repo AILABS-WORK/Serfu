@@ -14,7 +14,7 @@ export const forwardSignalToDestination = async (signal: Signal) => {
     // 1. Fetch signal details to get caller info
     const signalDetails = await prisma.signal.findUnique({
       where: { id: signal.id },
-      include: { user: true }
+      include: { user: true, group: true, priceSamples: { orderBy: { sampledAt: 'asc' }, take: 1 } }
     });
     const userName = signalDetails?.user?.username || signalDetails?.user?.firstName || 'Unknown User';
 
@@ -53,9 +53,79 @@ export const forwardSignalToDestination = async (signal: Signal) => {
         const ownerId = subscription.ownerId;
         const groupName = subscription.name || 'Unknown Group';
 
+        const strategyPresets = await prisma.strategyPreset.findMany({
+          where: { ownerId: ownerId || undefined, isActive: true },
+          orderBy: { createdAt: 'desc' }
+        });
+
         // Get destinations for THIS user
         const destinationGroups = await getDestinationGroups(ownerTelegramId);
         if (destinationGroups.length === 0) continue;
+
+        const withinSchedule = (date: Date, schedule: any, groupId?: number | null): boolean => {
+          const days = schedule?.days || [];
+          const windows = schedule?.windows || [];
+          const dayNames = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+          const day = dayNames[date.getUTCDay()];
+          if (days.length > 0 && !days.includes(day)) return false;
+          if (schedule?.dayGroups && Object.keys(schedule.dayGroups).length > 0) {
+            const allowed = schedule.dayGroups[day] || [];
+            if (allowed.length > 0 && groupId && !allowed.includes(groupId)) return false;
+          }
+          if (!windows || windows.length === 0) return true;
+          const minutes = date.getUTCHours() * 60 + date.getUTCMinutes();
+          return windows.some((w: any) => {
+            const [sh, sm] = w.start.split(':').map((x: string) => parseInt(x, 10));
+            const [eh, em] = w.end.split(':').map((x: string) => parseInt(x, 10));
+            const start = sh * 60 + sm;
+            const end = eh * 60 + em;
+            if (start <= end) return minutes >= start && minutes <= end;
+            return minutes >= start || minutes <= end;
+          });
+        };
+
+        const passesStrategy = async (): Promise<boolean> => {
+          if (!strategyPresets || strategyPresets.length === 0) return true;
+          if (!signalDetails) return false;
+
+          for (const preset of strategyPresets) {
+            const targetType = preset.targetType;
+            const targetId = preset.targetId;
+            if (targetType === 'GROUP' && targetId && signalDetails.groupId !== targetId) continue;
+            if (targetType === 'USER' && targetId && signalDetails.userId !== targetId) continue;
+            if (targetType !== 'OVERALL' && !targetId) continue;
+
+            if (!withinSchedule(signalDetails.detectedAt, preset.schedule, signalDetails.groupId)) continue;
+
+            const conditions: any = preset.conditions || {};
+            if (conditions.minMarketCap && (!signalDetails.entryMarketCap || signalDetails.entryMarketCap < conditions.minMarketCap)) continue;
+            if (conditions.maxMarketCap && (!signalDetails.entryMarketCap || signalDetails.entryMarketCap > conditions.maxMarketCap)) continue;
+
+            if (conditions.minVolume) {
+              const vol = signalDetails.priceSamples?.[0]?.volume || 0;
+              if (vol < conditions.minVolume) continue;
+            }
+
+            if (conditions.minMentions) {
+              const mentionCount = await prisma.signal.count({
+                where: {
+                  mint: signalDetails.mint,
+                  group: { ownerId: ownerId || undefined }
+                }
+              });
+              if (mentionCount < conditions.minMentions) continue;
+            }
+
+            return true;
+          }
+          return false;
+        };
+
+        const allowedByStrategy = await passesStrategy();
+        if (!allowedByStrategy) {
+          logger.debug(`Signal ${signal.id} skipped by strategy presets for owner ${ownerTelegramId}`);
+          continue;
+        }
 
         // Check Duplicate CA for THIS user's ecosystem
         // Pass the ownerId to checkDuplicateCA to see if THEY have seen this mint before

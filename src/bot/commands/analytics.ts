@@ -52,9 +52,15 @@ const formatEntityStats = (stats: EntityStats, type: 'GROUP' | 'USER'): string =
   msg += UIHelper.subHeader('PERFORMANCE MATRIX', '🔹');
   msg += `   🏆 *Score:* \`${stats.score.toFixed(0)}/100\`\n`;
   msg += `   📡 *Signals:* ${stats.totalSignals}\n`;
+  if (stats.totalSignals < 10) {
+    msg += `   ⚠️ *Low sample size — results may be noisy*\n`;
+  }
   msg += `   ✅ *Win Rate:* ${UIHelper.formatPercent(stats.winRate * 100)} ${UIHelper.progressBar(stats.winRate * 100, 100, 6)}\n`;
   msg += `   💎 *Moon Rate:* ${UIHelper.formatPercent(stats.winRate5x * 100)} (>5x)\n`;
   msg += `   📈 *Avg ROI:* ${UIHelper.formatMultiple(stats.avgMultiple)}\n`;
+  msg += `   ⏱️ *Time to ATH:* ${UIHelper.formatDurationMinutes(stats.avgTimeToAth)}\n`;
+  msg += `   ⚡ *Time to 2x/5x/10x:* ${UIHelper.formatDurationMinutes(stats.avgTimeTo2x)} / ${UIHelper.formatDurationMinutes(stats.avgTimeTo5x)} / ${UIHelper.formatDurationMinutes(stats.avgTimeTo10x)}\n`;
+  msg += `   🎯 *Hits:* ${stats.hit2Count} >2x | ${stats.hit5Count} >5x | ${stats.hit10Count} >10x\n`;
 
   msg += UIHelper.subHeader('RISK PROFILE', '🔹');
   msg += `   🎲 *Consistency:* ${stats.consistency.toFixed(2)} (StdDev)\n`;
@@ -62,12 +68,13 @@ const formatEntityStats = (stats: EntityStats, type: 'GROUP' | 'USER'): string =
   msg += `   💀 *Rug Rate:* ${UIHelper.formatPercent(stats.rugRate * 100)}\n`;
 
   msg += UIHelper.subHeader('BEHAVIORAL ANALYSIS', '🔹');
-  msg += `   💰 *Avg MCap:* $${(stats.mcapAvg / 1000).toFixed(1)}k\n`;
+  msg += `   💰 *Avg Entry MC:* ${UIHelper.formatMarketCap(stats.avgEntryMarketCap)}\n`;
+  msg += `   🏔️ *Avg ATH MC:* ${UIHelper.formatMarketCap(stats.avgAthMarketCap)}\n`;
   msg += `   ⚡ *Sniper Score:* ${stats.sniperScore.toFixed(0)}%\n`;
   msg += `   🚀 *Speed Score:* ${stats.speedScore.toFixed(0)}/100\n`;
   msg += `   💎 *Diamond Hands:* ${(stats.diamondHands * 100).toFixed(0)}%\n`;
   msg += `   📄 *Paper Hands:* ${(stats.paperHands * 100).toFixed(0)}%\n`;
-  msg += `   ⏳ *Avg Lifespan:* ${stats.avgLifespan.toFixed(1)}h\n`;
+  msg += `   ⏳ *Avg Lifespan:* ${UIHelper.formatDurationMinutes(stats.avgLifespan)}\n`;
   msg += `   🔥 *Streak:* ${stats.consecutiveWins} wins\n`;
   msg += `   📊 *Volatility Index:* ${stats.volatilityIndex.toFixed(2)}\n`;
   msg += `   🏆 *Reliability Tier:* ${stats.reliabilityTier}\n`;
@@ -84,7 +91,7 @@ const formatEntityStats = (stats: EntityStats, type: 'GROUP' | 'USER'): string =
 
 // ... existing handler code ...
 
-export const handleGroupStatsCommand = async (ctx: Context, groupIdStr?: string, window: '1D' | '7D' | '30D' | 'ALL' = 'ALL') => {
+export const handleGroupStatsCommand = async (ctx: Context, groupIdStr?: string, window: '1D' | '3D' | '7D' | '30D' | 'ALL' | string = 'ALL') => {
   try {
     const userId = ctx.from?.id ? BigInt(ctx.from.id) : null;
     if (!userId) return ctx.reply('❌ Unable to identify user.');
@@ -101,7 +108,14 @@ export const handleGroupStatsCommand = async (ctx: Context, groupIdStr?: string,
       return ctx.reply('Please use this command in a group or select one from the menu.');
     }
 
-    const stats = await getGroupStats(targetGroupId, window);
+    if (!(ctx as any).session) (ctx as any).session = {};
+    if (!(ctx as any).session.stats) (ctx as any).session.stats = {};
+    if (!(ctx as any).session.stats.group) (ctx as any).session.stats.group = {};
+    const storedWindow = (ctx as any).session.stats.group[targetGroupId];
+    const effectiveWindow = window || storedWindow || 'ALL';
+    (ctx as any).session.stats.group[targetGroupId] = effectiveWindow;
+
+    const stats = await getGroupStats(targetGroupId, effectiveWindow as any);
     if (!stats) {
       // If callback, answer it
       if (ctx.callbackQuery) await ctx.answerCbQuery('Group not found or no data available.');
@@ -109,15 +123,18 @@ export const handleGroupStatsCommand = async (ctx: Context, groupIdStr?: string,
       return;
     }
 
-    const message = formatEntityStats(stats, 'GROUP') + `\n📅 Timeframe: *${window}*`;
+    const windowLabel = ['1D','3D','7D','30D','ALL'].includes(String(effectiveWindow)) ? String(effectiveWindow) : `Custom (${effectiveWindow})`;
+    const message = formatEntityStats(stats, 'GROUP') + `\n📅 Timeframe: *${windowLabel}*`;
     
     const keyboard = {
         inline_keyboard: [
           [
-            { text: window === '1D' ? '✅ 1D' : '1D', callback_data: `group_stats_window:${targetGroupId}:1D` },
-            { text: window === '7D' ? '✅ 7D' : '7D', callback_data: `group_stats_window:${targetGroupId}:7D` },
-            { text: window === '30D' ? '✅ 30D' : '30D', callback_data: `group_stats_window:${targetGroupId}:30D` },
-            { text: window === 'ALL' ? '✅ ALL' : 'ALL', callback_data: `group_stats_window:${targetGroupId}:ALL` },
+            { text: effectiveWindow === '1D' ? '✅ 1D' : '1D', callback_data: `group_stats_window:${targetGroupId}:1D` },
+            { text: effectiveWindow === '3D' ? '✅ 3D' : '3D', callback_data: `group_stats_window:${targetGroupId}:3D` },
+            { text: effectiveWindow === '7D' ? '✅ 7D' : '7D', callback_data: `group_stats_window:${targetGroupId}:7D` },
+            { text: effectiveWindow === '30D' ? '✅ 30D' : '30D', callback_data: `group_stats_window:${targetGroupId}:30D` },
+            { text: effectiveWindow === 'ALL' ? '✅ ALL' : 'ALL', callback_data: `group_stats_window:${targetGroupId}:ALL` },
+            { text: 'Custom', callback_data: `group_stats_custom:${targetGroupId}` },
           ],
           [
              { text: '🪄 Strategy', callback_data: `strategy_view:GROUP:${targetGroupId}` },
@@ -138,7 +155,7 @@ export const handleGroupStatsCommand = async (ctx: Context, groupIdStr?: string,
   }
 };
 
-export const handleUserStatsCommand = async (ctx: Context, userIdStr?: string, window: '1D' | '7D' | '30D' | 'ALL' = 'ALL') => {
+export const handleUserStatsCommand = async (ctx: Context, userIdStr?: string, window: '1D' | '3D' | '7D' | '30D' | 'ALL' | string = 'ALL') => {
   try {
     if (!userIdStr) {
         const user = await prisma.user.findUnique({ where: { userId: BigInt(ctx.from!.id) }});
@@ -147,7 +164,14 @@ export const handleUserStatsCommand = async (ctx: Context, userIdStr?: string, w
     }
     
     const targetUserId = parseInt(userIdStr || '0');
-    const stats = await getUserStats(targetUserId, window);
+    if (!(ctx as any).session) (ctx as any).session = {};
+    if (!(ctx as any).session.stats) (ctx as any).session.stats = {};
+    if (!(ctx as any).session.stats.user) (ctx as any).session.stats.user = {};
+    const storedWindow = (ctx as any).session.stats.user[targetUserId];
+    const effectiveWindow = window || storedWindow || 'ALL';
+    (ctx as any).session.stats.user[targetUserId] = effectiveWindow;
+
+    const stats = await getUserStats(targetUserId, effectiveWindow as any);
 
     if (!stats) {
       if (ctx.callbackQuery) await ctx.answerCbQuery('User not found or no data available.');
@@ -155,14 +179,18 @@ export const handleUserStatsCommand = async (ctx: Context, userIdStr?: string, w
       return;
     }
 
-    const message = formatEntityStats(stats, 'USER') + `\n📅 Timeframe: *${window}*`;
+    const windowLabel = ['1D','3D','7D','30D','ALL'].includes(String(effectiveWindow)) ? String(effectiveWindow) : `Custom (${effectiveWindow})`;
+    const message = formatEntityStats(stats, 'USER') + `\n📅 Timeframe: *${windowLabel}*`;
 
     const keyboard = {
         inline_keyboard: [
            [
-            { text: window === '7D' ? '✅ 7D' : '7D', callback_data: `user_stats_window:${targetUserId}:7D` },
-            { text: window === '30D' ? '✅ 30D' : '30D', callback_data: `user_stats_window:${targetUserId}:30D` },
-            { text: window === 'ALL' ? '✅ ALL' : 'ALL', callback_data: `user_stats_window:${targetUserId}:ALL` },
+            { text: effectiveWindow === '1D' ? '✅ 1D' : '1D', callback_data: `user_stats_window:${targetUserId}:1D` },
+            { text: effectiveWindow === '3D' ? '✅ 3D' : '3D', callback_data: `user_stats_window:${targetUserId}:3D` },
+            { text: effectiveWindow === '7D' ? '✅ 7D' : '7D', callback_data: `user_stats_window:${targetUserId}:7D` },
+            { text: effectiveWindow === '30D' ? '✅ 30D' : '30D', callback_data: `user_stats_window:${targetUserId}:30D` },
+            { text: effectiveWindow === 'ALL' ? '✅ ALL' : 'ALL', callback_data: `user_stats_window:${targetUserId}:ALL` },
+            { text: 'Custom', callback_data: `user_stats_custom:${targetUserId}` },
           ],
           [
             { text: '🪄 Strategy', callback_data: `strategy_view:USER:${targetUserId}` },
@@ -182,7 +210,7 @@ export const handleUserStatsCommand = async (ctx: Context, userIdStr?: string, w
   }
 };
 
-export const handleGroupLeaderboardCommand = async (ctx: Context, window: '1D' | '7D' | '30D' | 'ALL' = '30D') => {
+export const handleGroupLeaderboardCommand = async (ctx: Context, window: '1D' | '3D' | '7D' | '30D' | 'ALL' | string = '30D') => {
   try {
     const statsList = await getLeaderboard('GROUP', window, 'SCORE', 10);
     
@@ -190,7 +218,8 @@ export const handleGroupLeaderboardCommand = async (ctx: Context, window: '1D' |
         return ctx.reply(`No group data available for ${window}.`);
     }
 
-    let message = `🏆 *Top Groups (${window})*\n_Sorted by Reliability Score_\n\n`;
+    const windowLabel = ['1D','3D','7D','30D','ALL'].includes(String(window)) ? String(window) : `Custom ${window}`;
+    let message = `🏆 *Top Groups (${windowLabel})*\n_Sorted by Reliability Score_\n\n`;
     
     // Generate Buttons
     const entityButtons: any[] = [];
@@ -211,9 +240,11 @@ export const handleGroupLeaderboardCommand = async (ctx: Context, window: '1D' |
             ...entityButtons,
             [
                 { text: '1D', callback_data: 'leaderboard_groups:1D' },
+                { text: '3D', callback_data: 'leaderboard_groups:3D' },
                 { text: '7D', callback_data: 'leaderboard_groups:7D' },
                 { text: '30D', callback_data: 'leaderboard_groups:30D' },
                 { text: 'ALL', callback_data: 'leaderboard_groups:ALL' },
+                { text: 'Custom', callback_data: 'leaderboard_custom:GROUP' },
             ],
             [{ text: '👤 User Leaderboard', callback_data: 'leaderboard_users:30D' }],
             [{ text: '🔙 Analytics', callback_data: 'analytics' }],
@@ -232,7 +263,7 @@ export const handleGroupLeaderboardCommand = async (ctx: Context, window: '1D' |
   }
 };
 
-export const handleUserLeaderboardCommand = async (ctx: Context, window: '1D' | '7D' | '30D' | 'ALL' = '30D') => {
+export const handleUserLeaderboardCommand = async (ctx: Context, window: '1D' | '3D' | '7D' | '30D' | 'ALL' | string = '30D') => {
   try {
     const statsList = await getLeaderboard('USER', window, 'SCORE', 10);
     
@@ -240,7 +271,8 @@ export const handleUserLeaderboardCommand = async (ctx: Context, window: '1D' | 
         return ctx.reply(`No user data available for ${window}.`);
     }
 
-    let message = `🏆 *Top Callers (${window})*\n_Sorted by Reliability Score_\n\n`;
+    const windowLabel = ['1D','3D','7D','30D','ALL'].includes(String(window)) ? String(window) : `Custom ${window}`;
+    let message = `🏆 *Top Callers (${windowLabel})*\n_Sorted by Reliability Score_\n\n`;
     const entityButtons: any[] = [];
 
     statsList.forEach((s, i) => {
@@ -258,9 +290,11 @@ export const handleUserLeaderboardCommand = async (ctx: Context, window: '1D' | 
             ...entityButtons,
             [
                 { text: '1D', callback_data: 'leaderboard_users:1D' },
+                { text: '3D', callback_data: 'leaderboard_users:3D' },
                 { text: '7D', callback_data: 'leaderboard_users:7D' },
                 { text: '30D', callback_data: 'leaderboard_users:30D' },
                 { text: 'ALL', callback_data: 'leaderboard_users:ALL' },
+                { text: 'Custom', callback_data: 'leaderboard_custom:USER' },
             ],
             [{ text: '👥 Group Leaderboard', callback_data: 'leaderboard_groups:30D' }],
             [{ text: '💎 Top Signals', callback_data: 'leaderboard_signals:30D' }],
@@ -279,7 +313,7 @@ export const handleUserLeaderboardCommand = async (ctx: Context, window: '1D' | 
   }
 };
 
-export const handleSignalLeaderboardCommand = async (ctx: Context, window: '1D' | '7D' | '30D' | 'ALL' = '30D') => {
+export const handleSignalLeaderboardCommand = async (ctx: Context, window: '1D' | '3D' | '7D' | '30D' | 'ALL' | string = '30D') => {
   try {
     const { getSignalLeaderboard } = await import('../../analytics/aggregator');
     const signals = await getSignalLeaderboard(window, 10);
@@ -288,7 +322,8 @@ export const handleSignalLeaderboardCommand = async (ctx: Context, window: '1D' 
         return ctx.reply(`No signal data available for ${window}.`);
     }
 
-    let message = `💎 *Top Signals (${window})*\n_Sorted by ATH Multiple_\n\n`;
+    const windowLabel = ['1D','3D','7D','30D','ALL'].includes(String(window)) ? String(window) : `Custom ${window}`;
+    let message = `💎 *Top Signals (${windowLabel})*\n_Sorted by ATH Multiple_\n\n`;
     const signalButtons: any[] = [];
 
     signals.forEach((s, i) => {
@@ -316,9 +351,11 @@ export const handleSignalLeaderboardCommand = async (ctx: Context, window: '1D' 
             ...signalButtons,
             [
                 { text: '1D', callback_data: 'leaderboard_signals:1D' },
+                { text: '3D', callback_data: 'leaderboard_signals:3D' },
                 { text: '7D', callback_data: 'leaderboard_signals:7D' },
                 { text: '30D', callback_data: 'leaderboard_signals:30D' },
                 { text: 'ALL', callback_data: 'leaderboard_signals:ALL' },
+                { text: 'Custom', callback_data: 'leaderboard_custom:SIGNAL' },
             ],
             [{ text: '🔙 Leaderboards', callback_data: 'leaderboards_menu' }],
         ]
@@ -632,6 +669,15 @@ export const handleCrossGroupConfirms = async (ctx: Context, view: string = 'lag
     }
 
     // 5. Format Output based on view
+    let targetLabel = 'Overall';
+    if (targetType === 'GROUP' && targetId) {
+      const group = await prisma.group.findUnique({ where: { id: targetId } });
+      if (group) targetLabel = `Group: ${group.name || group.chatId}`;
+    } else if (targetType === 'USER' && targetId) {
+      const user = await prisma.user.findUnique({ where: { id: targetId } });
+      if (user) targetLabel = `User: ${user.username ? `@${user.username}` : (user.firstName || `User ${user.id}`)}`;
+    }
+
     let message = '';
     let keyboard: any[] = [];
 
@@ -781,10 +827,25 @@ export const handleCrossGroupConfirms = async (ctx: Context, view: string = 'lag
         keyboard = [[{ text: '🔙 Lag Matrix', callback_data: 'confirms_view:lag' }]];
     }
 
-    await ctx.reply(message, { 
-        parse_mode: 'Markdown',
-        reply_markup: { inline_keyboard: keyboard }
-    });
+    if (ctx.callbackQuery && ctx.callbackQuery.message) {
+        await ctx.editMessageText(message, { 
+            parse_mode: 'Markdown',
+            reply_markup: { inline_keyboard: keyboard }
+        });
+    } else if (session.distributions?.lastChatId && session.distributions?.lastMessageId) {
+        await ctx.telegram.editMessageText(
+            session.distributions.lastChatId,
+            session.distributions.lastMessageId,
+            undefined,
+            message,
+            { parse_mode: 'Markdown', reply_markup: { inline_keyboard: keyboard } }
+        );
+    } else {
+        await ctx.reply(message, { 
+            parse_mode: 'Markdown',
+            reply_markup: { inline_keyboard: keyboard }
+        });
+    }
 
   } catch (error) {
     logger.error('Error in cross-group confirmations:', error);
@@ -1095,7 +1156,23 @@ export const handleDistributions = async (ctx: Context, view: string = 'mcap') =
     if (!ownerTelegramId) return ctx.reply('❌ Unable to identify user.');
 
     const { getDistributionStats } = await import('../../analytics/aggregator');
-    const stats = await getDistributionStats(ownerTelegramId, '30D');
+    if (!(ctx as any).session) (ctx as any).session = {};
+    const session = (ctx as any).session;
+    if (!session.distributions) {
+      session.distributions = { timeframe: '30D', targetType: 'OVERALL' };
+    }
+    const timeframe = session.distributions.timeframe || '30D';
+    const targetType = session.distributions.targetType || 'OVERALL';
+    const targetId = session.distributions.targetId;
+
+    if (ctx.chat?.id) {
+      session.distributions.lastChatId = Number(ctx.chat.id);
+    }
+    if (ctx.callbackQuery && ctx.callbackQuery.message) {
+      session.distributions.lastMessageId = (ctx.callbackQuery.message as any).message_id;
+    }
+
+    const stats = await getDistributionStats(ownerTelegramId, timeframe, { type: targetType, id: targetId });
 
     if (stats.totalSignals === 0) {
         return ctx.reply('No data available for distributions yet.', {
@@ -1110,11 +1187,15 @@ export const handleDistributions = async (ctx: Context, view: string = 'mcap') =
 
     // MCap Buckets View (Default)
     if (view === 'mcap') {
-        message = UIHelper.header('MARKET CAP STRATEGY (30D)', '📈');
-        message += `Target: *Your Workspace*\n`;
+        message = UIHelper.header(`DISTRIBUTIONS (${timeframe})`, '📈');
+        message += `Target: *${targetLabel}*\n`;
+        message += `Based on *${stats.totalSignals}* calls\n`;
+        if (stats.totalSignals < 10) {
+            message += `⚠️ *Low sample size — results may be noisy*\n`;
+        }
         message += UIHelper.separator('HEAVY');
-        message += `\`MCap Range   | Win Rate | Avg X \`\n`;
-        message += `\`─────────────┼──────────┼───────\`\n`;
+        message += `\`MCap Range   | Win Rate | Avg X | Count\`\n`;
+        message += `\`─────────────┼──────────┼───────┼──────\`\n`;
 
         for (const b of stats.mcBuckets) {
             const label = b.label.padEnd(13, ' ');
@@ -1122,7 +1203,8 @@ export const handleDistributions = async (ctx: Context, view: string = 'mcap') =
             const icon = winRate >= 50 ? '🟢' : winRate >= 30 ? '🟡' : b.count === 0 ? '⚪' : '🔴';
             const winStr = `${icon} ${winRate.toFixed(0)}%`.padEnd(8, ' ');
             const avgStr = `${b.avgMult.toFixed(1)}x`.padEnd(5, ' ');
-            message += `\`${label}| ${winStr} | ${avgStr}\`\n`;
+            const countStr = `${b.count}`.padEnd(4, ' ');
+            message += `\`${label}| ${winStr} | ${avgStr} | ${countStr}\`\n`;
         }
         
         const bestBucket = stats.mcBuckets.reduce((prev, curr) => {
@@ -1133,10 +1215,18 @@ export const handleDistributions = async (ctx: Context, view: string = 'mcap') =
         if (bestBucket.count > 0) {
             const wr = (bestBucket.wins / bestBucket.count) * 100;
             message += UIHelper.separator('HEAVY');
-            message += `💡 *BEST RANGE:* ${bestBucket.label.trim()} (${wr.toFixed(0)}% WR)\n`;
+            message += `💡 *BEST RANGE (Win Rate):* ${bestBucket.label.trim()} (${wr.toFixed(0)}% WR)\n`;
         }
 
         keyboard = [
+            [{ text: `🎯 Target: ${targetType === 'OVERALL' ? 'Overall' : targetType === 'GROUP' ? 'Group' : 'User'}`, callback_data: 'dist_target' }],
+            [
+              { text: timeframe === '1D' ? '✅ 1D' : '1D', callback_data: 'dist_time:1D' },
+              { text: timeframe === '7D' ? '✅ 7D' : '7D', callback_data: 'dist_time:7D' },
+              { text: timeframe === '30D' ? '✅ 30D' : '30D', callback_data: 'dist_time:30D' },
+              { text: timeframe === 'ALL' ? '✅ ALL' : 'ALL', callback_data: 'dist_time:ALL' },
+              { text: 'Custom', callback_data: 'dist_time:custom' }
+            ],
             [{ text: '🕐 Time of Day', callback_data: 'dist_view:time' }, { text: '📅 Day of Week', callback_data: 'dist_view:day' }],
             [{ text: '👥 Group Compare', callback_data: 'dist_view:groups' }, { text: '📊 Volume', callback_data: 'dist_view:volume' }],
             [{ text: '💀 Rug Ratio', callback_data: 'dist_view:rug' }, { text: '🚀 Moonshot', callback_data: 'dist_view:moonshot' }],
@@ -1146,17 +1236,28 @@ export const handleDistributions = async (ctx: Context, view: string = 'mcap') =
     }
     // Time of Day Heatmap
     else if (view === 'time') {
-        message = UIHelper.header('TIME OF DAY HEATMAP (UTC)', '🕐');
+        message = UIHelper.header('TIME OF DAY (UTC)', '🕐');
         const bestHours = stats.timeOfDay
             .map((h, i) => ({ hourNum: i, count: h.count, winRate: h.winRate, avgMult: h.avgMult }))
             .filter(h => h.count > 0)
             .sort((a, b) => b.winRate - a.winRate)
             .slice(0, 5);
         
-        message += `*Best Hours to Trade:*\n`;
+        message += `*Top Hours:*\n`;
         for (const h of bestHours) {
-            message += `${h.hourNum.toString().padStart(2, '0')}:00 UTC: ${(h.winRate * 100).toFixed(0)}% WR (${h.count} calls)\n`;
+            message += `${h.hourNum.toString().padStart(2, '0')}:00 — ${(h.winRate * 100).toFixed(0)}% WR | ${h.avgMult.toFixed(1)}x | ${h.count} calls\n`;
         }
+        message += UIHelper.separator('HEAVY');
+        message += `\`Hour | WR  | Avg | Calls | Heat\`\n`;
+        message += `\`─────┼─────┼─────┼──────┼────\`\n`;
+        stats.timeOfDay.forEach((h, i) => {
+            const hour = i.toString().padStart(2, '0');
+            const wr = h.count > 0 ? (h.winRate * 100).toFixed(0).padStart(3, ' ') : '  -';
+            const avg = h.count > 0 ? h.avgMult.toFixed(1).padStart(3, ' ') : ' - ';
+            const calls = `${h.count}`.padStart(4, ' ');
+            const heat = h.count === 0 ? '░' : h.winRate >= 0.6 ? '▮▮' : h.winRate >= 0.4 ? '▮' : '░';
+            message += `\`${hour}  | ${wr}% | ${avg} | ${calls} | ${heat}\`\n`;
+        });
         keyboard = [[{ text: '🔙 MCap View', callback_data: 'dist_view:mcap' }]];
     }
     // Day of Week Analysis
@@ -1168,7 +1269,45 @@ export const handleDistributions = async (ctx: Context, view: string = 'mcap') =
                 message += `${icon} *${d.day}:* ${(d.winRate * 100).toFixed(0)}% WR | ${d.avgMult.toFixed(1)}x avg | ${d.count} calls\n`;
             }
         }
-        keyboard = [[{ text: '🔙 MCap View', callback_data: 'dist_view:mcap' }]];
+        keyboard = [
+          [
+            { text: 'Mon', callback_data: 'dist_view:day_hour:Mon' },
+            { text: 'Tue', callback_data: 'dist_view:day_hour:Tue' },
+            { text: 'Wed', callback_data: 'dist_view:day_hour:Wed' },
+            { text: 'Thu', callback_data: 'dist_view:day_hour:Thu' },
+          ],
+          [
+            { text: 'Fri', callback_data: 'dist_view:day_hour:Fri' },
+            { text: 'Sat', callback_data: 'dist_view:day_hour:Sat' },
+            { text: 'Sun', callback_data: 'dist_view:day_hour:Sun' },
+          ],
+          [{ text: '🔙 MCap View', callback_data: 'dist_view:mcap' }],
+        ];
+    }
+    else if (view.startsWith('day_hour:')) {
+        const day = view.split(':')[1];
+        const entry = stats.timeOfDayByDay.find(d => d.day === day);
+        message = UIHelper.header(`HOURLY BY ${day}`, '🕒');
+        if (!entry) {
+          message += `No data for ${day}.\n`;
+        } else {
+          const best = [...entry.hours].filter(h => h.count > 0).sort((a, b) => b.winRate - a.winRate)[0];
+          if (best) {
+            message += `Best Hour: ${best.hour.toString().padStart(2, '0')}:00 — ${(best.winRate * 100).toFixed(0)}% WR (${best.count} calls)\n`;
+            message += UIHelper.separator('HEAVY');
+          }
+          message += `\`Hour | WR  | Avg | Calls | Heat\`\n`;
+          message += `\`─────┼─────┼─────┼──────┼────\`\n`;
+          entry.hours.forEach(h => {
+            const hour = h.hour.toString().padStart(2, '0');
+            const wr = h.count > 0 ? (h.winRate * 100).toFixed(0).padStart(3, ' ') : '  -';
+            const avg = h.count > 0 ? h.avgMult.toFixed(1).padStart(3, ' ') : ' - ';
+            const calls = `${h.count}`.padStart(4, ' ');
+            const heat = h.count === 0 ? '░' : h.winRate >= 0.6 ? '▮▮' : h.winRate >= 0.4 ? '▮' : '░';
+            message += `\`${hour}  | ${wr}% | ${avg} | ${calls} | ${heat}\`\n`;
+          });
+        }
+        keyboard = [[{ text: '🔙 Day of Week', callback_data: 'dist_view:day' }]];
     }
     // Group vs Group Win Rate
     else if (view === 'groups') {
@@ -1176,16 +1315,26 @@ export const handleDistributions = async (ctx: Context, view: string = 'mcap') =
         const topGroups = stats.groupWinRates.slice(0, 10);
         for (const g of topGroups) {
             message += `*${g.groupName}:* ${(g.winRate * 100).toFixed(0)}% WR | ${g.avgMult.toFixed(1)}x | ${g.count} calls\n`;
+            message += `   Avg Entry MC: ${UIHelper.formatMarketCap(g.avgEntryMc)} | Avg ATH: ${g.avgAthMult.toFixed(1)}x\n`;
+            message += `   Avg Time to ATH: ${UIHelper.formatDurationMinutes(g.avgTimeToAth)} | Moon Rate: ${(g.moonRate * 100).toFixed(0)}%\n`;
         }
         keyboard = [[{ text: '🔙 MCap View', callback_data: 'dist_view:mcap' }]];
     }
     // Volume Correlation
     else if (view === 'volume') {
         message = UIHelper.header('VOLUME CORRELATION', '📊');
-        message += `*High Volume (>10k):*\n`;
-        message += `  WR: ${(stats.volumeCorrelation.highVolume.winRate * 100).toFixed(0)}% | Avg: ${stats.volumeCorrelation.highVolume.avgMult.toFixed(1)}x | ${stats.volumeCorrelation.highVolume.count} calls\n\n`;
-        message += `*Low Volume (<1k):*\n`;
-        message += `  WR: ${(stats.volumeCorrelation.lowVolume.winRate * 100).toFixed(0)}% | Avg: ${stats.volumeCorrelation.lowVolume.avgMult.toFixed(1)}x | ${stats.volumeCorrelation.lowVolume.count} calls\n`;
+        message += `\`Volume     | Win Rate | Avg X | Count\`\n`;
+        message += `\`───────────┼──────────┼───────┼──────\`\n`;
+        for (const b of stats.volumeBuckets) {
+          const winRate = b.count > 0 ? (b.wins / b.count) * 100 : 0;
+          const icon = winRate >= 50 ? '🟢' : winRate >= 30 ? '🟡' : b.count === 0 ? '⚪' : '🔴';
+          const label = b.label.padEnd(9, ' ');
+          const winStr = `${icon} ${winRate.toFixed(0)}%`.padEnd(8, ' ');
+          const avgStr = `${b.avgMult.toFixed(1)}x`.padEnd(5, ' ');
+          const countStr = `${b.count}`.padEnd(4, ' ');
+          message += `\`${label} | ${winStr} | ${avgStr} | ${countStr}\`\n`;
+        }
+        message += `\n_Note: Volume data depends on provider coverage._\n`;
         keyboard = [[{ text: '🔙 MCap View', callback_data: 'dist_view:mcap' }]];
     }
     // Rug Pull Ratio
@@ -1194,41 +1343,62 @@ export const handleDistributions = async (ctx: Context, view: string = 'mcap') =
         message += `*Rug Pull Ratio:* ${(stats.rugPullRatio * 100).toFixed(1)}%\n`;
         message += `(${Math.round(stats.rugPullRatio * stats.totalSignals)} of ${stats.totalSignals} signals)\n\n`;
         message += `*Definition:* ATH < 0.5x OR Drawdown > 90%\n`;
+        message += `_Time constraint not applied (no time-to-rug data yet)._`;
         keyboard = [[{ text: '🔙 MCap View', callback_data: 'dist_view:mcap' }]];
     }
     // Moonshot Probability
     else if (view === 'moonshot') {
         message = UIHelper.header('MOONSHOT PROBABILITY', '🚀');
-        message += `*>10x Hit Rate:* ${(stats.moonshotProbability * 100).toFixed(2)}%\n`;
-        message += `(${Math.round(stats.moonshotProbability * stats.totalSignals)} of ${stats.totalSignals} signals)\n\n`;
-        message += `*Typical Range:* 1-2% for most callers\n`;
+        message += `>2x: ${(stats.totalSignals ? (stats.moonshotCounts.gt2x / stats.totalSignals) * 100 : 0).toFixed(1)}% (${stats.moonshotCounts.gt2x})\n`;
+        message += `>5x: ${(stats.totalSignals ? (stats.moonshotCounts.gt5x / stats.totalSignals) * 100 : 0).toFixed(1)}% (${stats.moonshotCounts.gt5x})\n`;
+        message += `>10x: ${(stats.totalSignals ? (stats.moonshotCounts.gt10x / stats.totalSignals) * 100 : 0).toFixed(1)}% (${stats.moonshotCounts.gt10x})\n\n`;
+        message += `⏱️ Avg Time to 2x/5x/10x: ${UIHelper.formatDurationMinutes(stats.moonshotTimes.timeTo2x)} / ${UIHelper.formatDurationMinutes(stats.moonshotTimes.timeTo5x)} / ${UIHelper.formatDurationMinutes(stats.moonshotTimes.timeTo10x)}\n`;
         keyboard = [[{ text: '🔙 MCap View', callback_data: 'dist_view:mcap' }]];
     }
     // Streak Analysis
     else if (view === 'streak') {
         message = UIHelper.header('STREAK ANALYSIS', '🔥');
-        message += `*After 3 Losses:*\n`;
-        message += `  Next Win Rate: ${(stats.streakAnalysis.after3Losses.winRate * 100).toFixed(0)}% (${stats.streakAnalysis.after3Losses.count} instances)\n\n`;
-        message += `*After 3 Wins:*\n`;
-        message += `  Next Win Rate: ${(stats.streakAnalysis.after3Wins.winRate * 100).toFixed(0)}% (${stats.streakAnalysis.after3Wins.count} instances)\n`;
+        message += `*After Losses:* 1L ${(stats.streakAnalysis.after1Loss.winRate * 100).toFixed(0)}% (${stats.streakAnalysis.after1Loss.count}) | 2L ${(stats.streakAnalysis.after2Losses.winRate * 100).toFixed(0)}% (${stats.streakAnalysis.after2Losses.count}) | 3L ${(stats.streakAnalysis.after3Losses.winRate * 100).toFixed(0)}% (${stats.streakAnalysis.after3Losses.count})\n`;
+        message += `*After Wins:* 1W ${(stats.streakAnalysis.after1Win.winRate * 100).toFixed(0)}% (${stats.streakAnalysis.after1Win.count}) | 2W ${(stats.streakAnalysis.after2Wins.winRate * 100).toFixed(0)}% (${stats.streakAnalysis.after2Wins.count}) | 3W ${(stats.streakAnalysis.after3Wins.winRate * 100).toFixed(0)}% (${stats.streakAnalysis.after3Wins.count})\n\n`;
+        message += `*Current Streak:* ${stats.currentStreak.count} ${stats.currentStreak.type === 'win' ? 'wins' : 'losses'}\n`;
         keyboard = [[{ text: '🔙 MCap View', callback_data: 'dist_view:mcap' }]];
     }
     // Token Age Preference
     else if (view === 'age') {
         message = UIHelper.header('TOKEN AGE PREFERENCE', '⏰');
-        message += `*New Pairs (0-5m old):*\n`;
-        message += `  WR: ${(stats.tokenAgePreference.newPairs.winRate * 100).toFixed(0)}% | Avg: ${stats.tokenAgePreference.newPairs.avgMult.toFixed(1)}x | ${stats.tokenAgePreference.newPairs.count} calls\n\n`;
-        message += `*Established (1h+ old):*\n`;
-        message += `  WR: ${(stats.tokenAgePreference.established.winRate * 100).toFixed(0)}% | Avg: ${stats.tokenAgePreference.established.avgMult.toFixed(1)}x | ${stats.tokenAgePreference.established.count} calls\n`;
+        if (!stats.tokenAgeHasData) {
+          message += `Token age data is not available for this dataset.\n`;
+          message += `_Note: token age requires creation timestamps; once available, buckets will populate._\n`;
+        } else {
+          message += `\`Age        | Win Rate | Avg X | Count\`\n`;
+          message += `\`───────────┼──────────┼───────┼──────\`\n`;
+          for (const b of stats.tokenAgeBuckets) {
+            const winRate = b.count > 0 ? (b.wins / b.count) * 100 : 0;
+            const icon = winRate >= 50 ? '🟢' : winRate >= 30 ? '🟡' : b.count === 0 ? '⚪' : '🔴';
+            const label = b.label.padEnd(9, ' ');
+            const winStr = `${icon} ${winRate.toFixed(0)}%`.padEnd(8, ' ');
+            const avgStr = `${b.avgMult.toFixed(1)}x`.padEnd(5, ' ');
+            const countStr = `${b.count}`.padEnd(4, ' ');
+            message += `\`${label} | ${winStr} | ${avgStr} | ${countStr}\`\n`;
+          }
+          message += `\n_Note: token age inferred from creation timestamps when available._\n`;
+        }
         keyboard = [[{ text: '🔙 MCap View', callback_data: 'dist_view:mcap' }]];
     }
     // Liquidity vs Return
     else if (view === 'liquidity') {
         message = UIHelper.header('LIQUIDITY VS RETURN', '💧');
-        message += `*High Liquidity (>50k):*\n`;
-        message += `  WR: ${(stats.liquidityVsReturn.highLiquidity.winRate * 100).toFixed(0)}% | Avg: ${stats.liquidityVsReturn.highLiquidity.avgMult.toFixed(1)}x | ${stats.liquidityVsReturn.highLiquidity.count} calls\n\n`;
-        message += `*Low Liquidity (<10k):*\n`;
-        message += `  WR: ${(stats.liquidityVsReturn.lowLiquidity.winRate * 100).toFixed(0)}% | Avg: ${stats.liquidityVsReturn.lowLiquidity.avgMult.toFixed(1)}x | ${stats.liquidityVsReturn.lowLiquidity.count} calls\n`;
+        message += `\`Liquidity  | Win Rate | Avg X | Count\`\n`;
+        message += `\`───────────┼──────────┼───────┼──────\`\n`;
+        for (const b of stats.liquidityBuckets) {
+          const winRate = b.count > 0 ? (b.wins / b.count) * 100 : 0;
+          const icon = winRate >= 50 ? '🟢' : winRate >= 30 ? '🟡' : b.count === 0 ? '⚪' : '🔴';
+          const label = b.label.padEnd(9, ' ');
+          const winStr = `${icon} ${winRate.toFixed(0)}%`.padEnd(8, ' ');
+          const avgStr = `${b.avgMult.toFixed(1)}x`.padEnd(5, ' ');
+          const countStr = `${b.count}`.padEnd(4, ' ');
+          message += `\`${label} | ${winStr} | ${avgStr} | ${countStr}\`\n`;
+        }
         keyboard = [[{ text: '🔙 MCap View', callback_data: 'dist_view:mcap' }]];
     }
 
@@ -1247,7 +1417,19 @@ export const handleDistributions = async (ctx: Context, view: string = 'mcap') =
 // RECENT CALLS HANDLER (Timeline + Deduplication + V2 Design)
 // ----------------------------------------------------------------------
 
-export const handleRecentCalls = async (ctx: Context) => {
+const resolveSince = (window: string): Date | null => {
+  const normalized = window.toUpperCase();
+  if (normalized === 'ALL') return null;
+  if (normalized === '1D') return subDays(new Date(), 1);
+  if (normalized === '3D') return subDays(new Date(), 3);
+  if (normalized === '7D') return subDays(new Date(), 7);
+  if (normalized === '30D') return subDays(new Date(), 30);
+  const parsed = UIHelper.parseTimeframeInput(normalized);
+  if (parsed) return new Date(Date.now() - parsed.ms);
+  return subDays(new Date(), 7);
+};
+
+export const handleRecentCalls = async (ctx: Context, window: string = '7D') => {
   try {
     const ownerTelegramId = ctx.from?.id ? BigInt(ctx.from.id) : null;
     if (!ownerTelegramId) return ctx.reply('❌ Unable to identify user.');
@@ -1273,6 +1455,13 @@ export const handleRecentCalls = async (ctx: Context) => {
         return ctx.reply('You are not monitoring any groups/channels yet.');
     }
 
+    if (!(ctx as any).session) (ctx as any).session = {};
+    if (!(ctx as any).session.recent) (ctx as any).session.recent = {};
+    const storedWindow = (ctx as any).session.recent.timeframe;
+    const effectiveWindow = window || storedWindow || '7D';
+    (ctx as any).session.recent.timeframe = effectiveWindow;
+    const since = resolveSince(effectiveWindow);
+
     // 2. Fetch Signals (Fetch more to allow for deduplication)
     const rawSignals = await prisma.signal.findMany({
       where: {
@@ -1280,6 +1469,7 @@ export const handleRecentCalls = async (ctx: Context) => {
             { chatId: { in: ownedChatIds } },
             { id: { in: forwardedSignalIds } }
         ]
+        ...(since ? { detectedAt: { gte: since } } : {}),
       },
       orderBy: { detectedAt: 'desc' },
       take: 40, // Fetch 40, display top 10 unique
@@ -1313,7 +1503,7 @@ export const handleRecentCalls = async (ctx: Context) => {
     }
 
     // 4. Trigger Metric Updates for displayed signals
-    const loadingMsg = await ctx.reply('⏳ Syncing latest price data...');
+    const loadingMsg = await ctx.reply('⏳ Syncing latest market data...');
     try {
         await updateHistoricalMetrics(uniqueSignals.map(s => s.id));
     } catch (err) {
@@ -1330,47 +1520,40 @@ export const handleRecentCalls = async (ctx: Context) => {
         include: { group: true, user: true, metrics: true }
     });
 
-    let message = UIHelper.header('RECENT ACTIVITY LOG', '📜');
+    const windowLabel = ['1D','3D','7D','30D','ALL'].includes(String(effectiveWindow)) ? String(effectiveWindow) : `Custom ${effectiveWindow}`;
+    let message = UIHelper.header(`RECENT ACTIVITY LOG (${windowLabel})`, '📜');
+
+    const { getMultipleTokenPrices } = await import('../../providers/jupiter');
+    const prices = await getMultipleTokenPrices(signals.map(s => s.mint));
 
     for (const sig of signals) {
-        // Price Logic
-        let currentPrice = 0;
-        try {
-            const quote = await provider.getQuote(sig.mint);
-            currentPrice = quote.price;
-        } catch {}
-
-        const entry = sig.entryPrice || 0;
-        const entryStr = UIHelper.formatCurrency(entry);
-        const currStr = UIHelper.formatCurrency(currentPrice);
+        const currentPrice = prices[sig.mint] || 0;
+        const entryMc = sig.entryMarketCap || 0;
+        const currentMc = sig.entrySupply && currentPrice ? currentPrice * sig.entrySupply : (sig.metrics?.currentMarketCap || 0);
+        const entryStr = entryMc ? UIHelper.formatMarketCap(entryMc) : 'N/A';
+        const currStr = currentMc ? UIHelper.formatMarketCap(currentMc) : 'N/A';
         
-        // PnL & Multiple
-        let multiple = 1.0;
-        if (entry > 0 && currentPrice > 0) multiple = currentPrice / entry;
-        
-        const pnl = (multiple - 1) * 100;
+        const pnl = entryMc > 0 && currentMc > 0 ? ((currentMc - entryMc) / entryMc) * 100 : 0;
         const pnlStr = UIHelper.formatPercent(pnl);
         const icon = UIHelper.getStatusIcon(pnl);
         
-        const ath = sig.metrics?.athMultiple || multiple;
-        const athStr = ath > multiple ? ath : multiple; // Show max
+        const ath = sig.metrics?.athMultiple || 0;
+        const drawdown = sig.metrics?.maxDrawdown ? sig.metrics.maxDrawdown * 100 : 0;
+        const timeTo2x = UIHelper.formatDurationMinutes(sig.metrics?.timeTo2x ? sig.metrics.timeTo2x / (1000 * 60) : null);
+        const timeTo5x = UIHelper.formatDurationMinutes(sig.metrics?.timeTo5x ? sig.metrics.timeTo5x / (1000 * 60) : null);
+        const timeTo10x = UIHelper.formatDurationMinutes(sig.metrics?.timeTo10x ? sig.metrics.timeTo10x / (1000 * 60) : null);
 
         // Attribution
         const time = sig.detectedAt.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
         const source = sig.user?.username 
             ? `👤 @${sig.user.username}` 
             : `📢 ${sig.group?.name || 'Unknown Channel'}`;
-
-        // Format:
-        // 🕒 14:05 | 🟢 ACORN
-        //    via 📢 Alpha Caller
-        //    Entry: $0.0012 ➔ Now: $0.0035
-        //    📈 +191% (3.5x Peak)
         
         message += `🕒 *${time}* | ${icon} *${sig.symbol || 'UNKNOWN'}*\n`;
         message += `   via ${source}\n`;
-        message += `   💵 Entry: ${entryStr} ➔ Now: ${currStr}\n`;
-        message += `   ${pnl >= 0 ? '📈' : '📉'} ${pnlStr} (\`${athStr.toFixed(2)}x\` Peak)\n`;
+        message += `   💰 Entry MC: ${entryStr} ➔ Now MC: ${currStr} (${pnlStr})\n`;
+        message += `   🏔️ ATH: ${ath > 0 ? `${ath.toFixed(2)}x` : 'N/A'} | 📉 Drawdown: ${drawdown ? `${drawdown.toFixed(0)}%` : 'N/A'}\n`;
+        message += `   ⏱️ Time to 2x/5x/10x: ${timeTo2x} / ${timeTo5x} / ${timeTo10x}\n`;
         message += UIHelper.separator('LIGHT');
     }
 
@@ -1378,6 +1561,14 @@ export const handleRecentCalls = async (ctx: Context) => {
         parse_mode: 'Markdown',
         reply_markup: {
             inline_keyboard: [
+                [
+                  { text: '1D', callback_data: 'recent_window:1D' },
+                  { text: '3D', callback_data: 'recent_window:3D' },
+                  { text: '7D', callback_data: 'recent_window:7D' },
+                  { text: '30D', callback_data: 'recent_window:30D' },
+                  { text: 'ALL', callback_data: 'recent_window:ALL' },
+                  { text: 'Custom', callback_data: 'recent_window:custom' },
+                ],
                 [{ text: '🔄 Refresh', callback_data: 'analytics_recent' }],
                 [{ text: '🔙 Back', callback_data: 'analytics' }, { text: '❌ Close', callback_data: 'delete_msg' }]
             ]

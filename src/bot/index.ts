@@ -49,6 +49,7 @@ export const setupBot = () => {
           [{ text: '🏆 Leaderboards', callback_data: 'leaderboards_menu' }], // Changed data to match actions.ts
           [{ text: '📊 Distributions', callback_data: 'distributions' }],
           [{ text: '📈 Analytics', callback_data: 'analytics' }],
+          [{ text: '🧠 Strategy', callback_data: 'strategy_menu' }],
           [{ text: '👥 Groups', callback_data: 'groups_menu' }],
           [{ text: '⚙️ Settings', callback_data: 'settings_menu' }],
           [{ text: '⭐ Watchlist', callback_data: 'watchlist' }],
@@ -65,22 +66,44 @@ export const setupBot = () => {
       `*Quick Setup:*\n` +
       `1. Add bot to your destination group\n` +
       `2. Run /setdestination in that group\n` +
-      `3. Add bot to source groups to monitor\n` +
-      `4. Bot will auto-track and forward signals\n\n` +
+      `3. Add bot to source groups/channels to monitor\n` +
+      `4. Bot tracks signals and routes alerts automatically\n\n` +
       `*Main Commands:*\n` +
       `/menu - Open main menu\n` +
-      `/groups - Manage monitored groups\n` +
+      `/groups - Manage monitored groups/channels\n` +
       `/analytics - View analytics dashboard\n` +
       `/groupstats - View group performance\n` +
       `/userstats <id> - View user performance\n` +
       `/groupleaderboard - Group rankings\n` +
       `/userleaderboard - User rankings\n` +
+      `/strategy - Strategy builder menu\n` +
       `/copytrade - Strategy recommendations\n` +
       `/simulate - Simulate following a strategy\n\n` +
+      `*Strategy Builder Capabilities:*\n` +
+      `• Target: Overall workspace, a specific group, or a specific user\n` +
+      `• Timeframe: 1D/3D/7D/30D/ALL or custom (e.g., 6H, 2W)\n` +
+      `• Schedule: Pick days + time windows (UTC)\n` +
+      `• Day‑Group Mapping: Assign different groups to different days\n` +
+      `• Filters: Min/Max entry MC, Min volume, Min mentions\n` +
+      `• Risk Rules: TP/SL multiples, multi‑rule TP/SL with time windows and partial exits\n` +
+      `• Rule Priority: TP‑first, SL‑first, or interleaved; stop‑on‑first‑hit optional\n` +
+      `• Backtest: Simulate with starting SOL balance + per‑side fees\n` +
+      `• Metrics: Win rate, avg multiple, avg ROI, max drawdown, avg hold time\n` +
+      `• Presets: Save, enable/disable, edit days, add/remove TP/SL rules\n\n` +
+      `*Analytics Capabilities:*\n` +
+      `• Distributions: Entry MC buckets, volume buckets, liquidity buckets\n` +
+      `• Time‑of‑day: 24h heatmap + day‑specific hourly breakdown\n` +
+      `• Recent Calls: Entry MC, current MC, ATH multiple, drawdown, time‑to‑x\n` +
+      `• Leaderboards: 1D/3D/7D/30D/ALL + custom windows\n\n` +
+      `*Routing & Alerts:*\n` +
+      `• Per‑user destination groups and home routing\n` +
+      `• Strategy‑based routing (schedule + conditions + day‑group mapping)\n` +
+      `• First call vs repost handling with de‑duplication\n\n` +
       `*Group Management:*\n` +
       `/setdestination - Set destination group\n` +
       `/removegroup - Remove a group\n` +
-      `/togglegroup - Enable/disable group\n\n` +
+      `/togglegroup - Enable/disable group\n` +
+      `/addchannel <id|@username> - Claim a channel\n\n` +
       `*Need More Help?*\n` +
       `See README.md for complete documentation\n` +
       `Or check /groups to verify your setup`,
@@ -132,7 +155,6 @@ export const setupBot = () => {
         `Mint: \`${mint}\``,
         `Name: ${info.name || 'N/A'}`,
         `Symbol: ${info.symbol || 'N/A'}`,
-        `Price: ${info.usdPrice !== undefined && info.usdPrice !== null ? `$${info.usdPrice}` : 'N/A'}`,
         `MC: ${info.mcap !== undefined && info.mcap !== null ? `$${info.mcap}` : 'N/A'}`,
         `Liquidity: ${info.liquidity !== undefined && info.liquidity !== null ? `$${info.liquidity}` : 'N/A'}`,
         `Circ Supply: ${info.circSupply ?? 'N/A'}`,
@@ -150,7 +172,7 @@ export const setupBot = () => {
       await ctx.reply(lines.join('\n'), { parse_mode: 'Markdown' });
     } catch (err) {
       logger.error('Error in /testjup:', err);
-      ctx.reply('Error testing Jupiter price.');
+      ctx.reply('Error testing Jupiter data.');
     }
   });
 
@@ -179,6 +201,11 @@ export const setupBot = () => {
     const { handleCopyTradingCommand } = await import('./commands/copyTrading');
     const window = (args?.[0] as '7D' | '30D' | 'ALL') || '30D';
     await handleCopyTradingCommand(ctx, window);
+  });
+
+  bot.command('strategy', async (ctx) => {
+    const { handleStrategyMenu } = await import('./commands/copyTrading');
+    await handleStrategyMenu(ctx);
   });
 
   bot.command('simulate', async (ctx) => {

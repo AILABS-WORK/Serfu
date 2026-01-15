@@ -6,6 +6,7 @@ import { TokenMeta } from '../providers/types';
 import { generateFirstSignalCard, generateDuplicateSignalCard } from './signalCard';
 import { scheduleAutoDelete } from '../utils/messageCleanup';
 import { provider } from '../providers';
+import { UIHelper } from '../utils/ui';
 
 interface DuplicateCheck {
   isDuplicate: boolean;
@@ -135,7 +136,7 @@ export const notifySignal = async (
 
 *Token:* ${signal.name} (${signal.symbol})
 *Mint:* \`${signal.mint}\`
-*Entry:* $${signal.entryPrice?.toFixed(6) || 'Pending'}
+*Entry MC:* ${signal.entryMarketCap ? UIHelper.formatMarketCap(signal.entryMarketCap) : 'N/A'}
 *Group:* ${groupName}
 *From:* @${userName}
 

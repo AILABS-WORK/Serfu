@@ -2,14 +2,12 @@ import { Signal, Prisma } from '../generated/client';
 import { TokenMeta } from '../providers/types';
 import { prisma } from '../db';
 import { analyzeHolders, WhaleAlert } from '../analytics/holders';
+import { UIHelper } from '../utils/ui';
 
 // Formatting helpers
 const formatNumber = (num: number | undefined | null): string => {
   if (!num) return '—';
-  if (num >= 1e9) return `$${(num / 1e9).toFixed(2)}B`;
-  if (num >= 1e6) return `$${(num / 1e6).toFixed(2)}M`;
-  if (num >= 1e3) return `$${(num / 1e3).toFixed(2)}K`;
-  return `$${num.toFixed(2)}`;
+  return UIHelper.formatMarketCap(num);
 };
 
 const formatPercent = (num: number | undefined | null): string => {
@@ -18,11 +16,6 @@ const formatPercent = (num: number | undefined | null): string => {
   return `${sign}${num.toFixed(2)}%`;
 };
 
-const formatPrice = (value: number | undefined | null): string => {
-  if (value === undefined || value === null) return 'Pending';
-  if (value >= 1) return `$${value.toFixed(4)}`;
-  return `$${value.toFixed(8)}`; // More decimals for low cap
-};
 
 const calcPercentDelta = (current?: number | null, entry?: number | null): string => {
   if (!current || !entry) return '—';
@@ -83,10 +76,8 @@ export const generateFirstSignalCard = async (
   // Data prep
   const currentPrice = meta.livePrice ?? (meta.marketCap && meta.supply ? meta.marketCap / meta.supply : signal.entryPrice ?? null);
   const currentMc = meta.liveMarketCap ?? meta.marketCap ?? (currentPrice && meta.supply ? currentPrice * meta.supply : undefined);
-  const entryPriceVal = signal.entryPrice ?? null;
   const entryMcVal = signal.entryMarketCap ?? (signal.entryPrice && signal.entrySupply ? signal.entryPrice * signal.entrySupply : null);
   
-  const priceDelta = calcPercentDelta(currentPrice, entryPriceVal);
   const mcDelta = calcPercentDelta(currentMc ?? null, entryMcVal);
   
   const vol24 = meta.volume24h ??
@@ -97,9 +88,10 @@ export const generateFirstSignalCard = async (
   // Stats block
   const statsBlock = `
 📊 *MARKET STATS*
-💰 Price: \`${formatPrice(currentPrice)}\` (${priceDelta})
 🧢 MC: \`${formatNumber(currentMc)}\` (${mcDelta})
 💧 Liq: \`${formatNumber(meta.liquidity)}\` • Vol: \`${formatNumber(vol24)}\`
+🏷️ FDV: \`${formatNumber(meta.fdv)}\` • Holders: \`${meta.holderCount ?? '—'}\`
+🌿 Organic: \`${meta.organicScoreLabel || (meta.organicScore !== undefined ? `${meta.organicScore.toFixed(0)}%` : '—')}\`
 📈 5m: \`${formatPercent(meta.priceChange5m ?? meta.stats5m?.priceChange)}\` • 1h: \`${formatPercent(meta.priceChange1h ?? meta.stats1h?.priceChange)}\` • 24h: \`${formatPercent(meta.priceChange24h ?? meta.stats24h?.priceChange)}\`
   `.trim();
 
@@ -144,7 +136,9 @@ export const generateFirstSignalCard = async (
   const securityBlock = `
 🛡️ *SECURITY*
 🔒 Auth: Mint ${isMintDisabled} • Freeze ${isFreezeDisabled}
-✅ Verified: ${meta.isVerified ? 'Yes' : 'No'}
+✅ Verified: ${meta.isVerified ? 'Yes' : 'No'} • Risk: ${audit.isSus ? '⚠️ Sus' : 'Low'}
+👑 Top Holders: ${audit.topHoldersPercentage !== undefined ? `${audit.topHoldersPercentage.toFixed(1)}%` : '—'}
+👨‍💻 Dev Balance: ${audit.devBalancePercentage !== undefined ? `${audit.devBalancePercentage.toFixed(1)}%` : '—'} • Migrations: ${audit.devMigrations ?? '—'}
   `.trim();
 
   // Flow block (if available)
@@ -155,10 +149,13 @@ export const generateFirstSignalCard = async (
     const sells = flow.numSells ?? 0;
     const volBuy = flow.buyVolume ?? 0;
     const volSell = flow.sellVolume ?? 0;
+    const organicBuys = flow.numOrganicBuyers ?? 0;
+    const organicVol = (flow.buyOrganicVolume ?? 0) + (flow.sellOrganicVolume ?? 0);
     flowBlock = `
 🌊 *FLOW (1h)*
-Buys: \`${buys}\` ($${formatNumber(volBuy)})
-Sells: \`${sells}\` ($${formatNumber(volSell)})
+Buys: \`${buys}\` (${formatNumber(volBuy)})
+Sells: \`${sells}\` (${formatNumber(volSell)})
+Organic: \`${organicBuys}\` (${formatNumber(organicVol)})
     `.trim();
   }
 
@@ -218,14 +215,13 @@ export const generateDuplicateSignalCard = (
 ): string => {
   const currentPrice = meta.livePrice ?? (meta.marketCap && meta.supply ? meta.marketCap / meta.supply : signal.entryPrice ?? null);
   const currentMc = meta.liveMarketCap ?? meta.marketCap ?? (currentPrice && meta.supply ? currentPrice * meta.supply : undefined);
-  const firstPrice = firstSignal.entryPrice || null;
-  const priceChange = calcPercentDelta(currentPrice, firstPrice);
+  const firstMc = firstSignal.entryMarketCap || null;
+  const mcChange = calcPercentDelta(currentMc ?? null, firstMc);
   const displayUser = (currentUserName === 'Unknown User' || !signal.userId) ? currentGroupName : `@${currentUserName}`;
   
   const statsBlock = `
 📊 *LIVE STATS*
-💰 Price: \`${formatPrice(currentPrice)}\` (vs First: ${priceChange})
-🧢 MC: \`${formatNumber(currentMc)}\`
+🧢 MC: \`${formatNumber(currentMc)}\` (vs First: ${mcChange})
 📈 1h: \`${formatPercent(meta.priceChange1h ?? meta.stats1h?.priceChange)}\` • 24h: \`${formatPercent(meta.priceChange24h ?? meta.stats24h?.priceChange)}\`
   `.trim();
 

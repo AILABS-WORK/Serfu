@@ -61,6 +61,44 @@ export class UIHelper {
     return `$${val.toFixed(0)}`;
   }
 
+  static formatCompactNumber(val: number | null | undefined): string {
+    if (val === null || val === undefined) return 'N/A';
+    if (val >= 1e9) return `${(val / 1e9).toFixed(2)}B`;
+    if (val >= 1e6) return `${(val / 1e6).toFixed(2)}M`;
+    if (val >= 1e3) return `${(val / 1e3).toFixed(1)}K`;
+    return `${val.toFixed(0)}`;
+  }
+
+  static formatDurationMinutes(minutes?: number | null): string {
+    if (!minutes || minutes <= 0) return 'N/A';
+    if (minutes < 60) return `${Math.round(minutes)}m`;
+    if (minutes < 1440) return `${(minutes / 60).toFixed(1)}h`;
+    return `${(minutes / 1440).toFixed(1)}d`;
+  }
+
+  static parseTimeframeInput(input: string): { label: string; ms: number } | null {
+    const trimmed = input.trim().toUpperCase();
+    const match = trimmed.match(/^(\d+)(H|D|W|M)$/);
+    if (!match) return null;
+    const value = parseInt(match[1], 10);
+    if (!value || value <= 0) return null;
+    const unit = match[2];
+    const hours = unit === 'H' ? value : unit === 'D' ? value * 24 : unit === 'W' ? value * 24 * 7 : value * 24 * 30;
+    const ms = hours * 60 * 60 * 1000;
+    return { label: `${value}${unit}`, ms };
+  }
+
+  static parseCompactNumber(input: string): number | null {
+    const trimmed = input.trim().toUpperCase();
+    const match = trimmed.match(/^(\d+(\.\d+)?)(K|M|B)?$/);
+    if (!match) return null;
+    const base = parseFloat(match[1]);
+    if (Number.isNaN(base)) return null;
+    const suffix = match[3];
+    const mult = suffix === 'K' ? 1e3 : suffix === 'M' ? 1e6 : suffix === 'B' ? 1e9 : 1;
+    return base * mult;
+  }
+
   static formatTimeAgo(date: Date): string {
     const diffMs = Date.now() - date.getTime();
     const diffMins = Math.floor(diffMs / 60000);

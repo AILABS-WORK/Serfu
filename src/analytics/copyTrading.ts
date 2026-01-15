@@ -223,7 +223,7 @@ export const simulateCopyTrading = async (
       where: {
         ...(strategyType === 'user' ? { userId: targetId } : { groupId: targetId }),
         detectedAt: { gte: cutoff },
-        entryPrice: { not: null },
+        entryMarketCap: { not: null },
       },
       include: {
         metrics: true,

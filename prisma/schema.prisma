@@ -210,9 +210,28 @@ model User {
   ownedGroups          Group[]                    @relation("OwnedGroups") // Groups this user owns/manages
   notificationSettings UserNotificationSettings?  @relation("NotificationSettings")
   watchlist            Watchlist[]
+  strategyPresets      StrategyPreset[]
 
   @@index([userId])
   @@map("users")
+}
+
+model StrategyPreset {
+  id         Int      @id @default(autoincrement())
+  ownerId    Int      @map("owner_id")
+  owner      User     @relation(fields: [ownerId], references: [id])
+  targetType String   @map("target_type") // OVERALL, GROUP, USER
+  targetId   Int?     @map("target_id")
+  timeframe  String
+  schedule   Json?    // { days: ['Mon'..], windows: [{start,end}], timezone: 'UTC' }
+  conditions Json?    // { minVolume, minMentions, minMarketCap, maxMarketCap }
+  isActive   Boolean  @default(true) @map("is_active")
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  @@index([ownerId])
+  @@index([targetType, targetId])
+  @@map("strategy_presets")
 }
 
 model GroupMetric {

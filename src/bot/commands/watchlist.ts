@@ -19,7 +19,7 @@ export const handleWatchlistCommand = async (ctx: Context) => {
         return ctx.reply('⭐ *Watchlist*\nYour watchlist is empty.\nAdd tokens from signal cards.', { parse_mode: 'Markdown' });
     }
 
-    const loading = await ctx.reply('⏳ Loading watchlist prices...');
+    const loading = await ctx.reply('⏳ Loading watchlist data...');
 
     // Batch fetch prices
     const mints = items.map(i => i.signal.mint);
@@ -30,23 +30,24 @@ export const handleWatchlistCommand = async (ctx: Context) => {
     for (const item of items) {
         const s = item.signal;
         const current = prices[s.mint] || 0;
-        const entry = s.entryPrice || 0;
+        const entryMc = s.entryMarketCap || 0;
+        const currentMc = s.entrySupply && current ? current * s.entrySupply : 0;
         
         let pnlStr = '--';
         let icon = '⚪';
         
-        if (current > 0 && entry > 0) {
-            const pnl = ((current - entry) / entry) * 100;
+        if (currentMc > 0 && entryMc > 0) {
+            const pnl = ((currentMc - entryMc) / entryMc) * 100;
             pnlStr = UIHelper.formatPercent(pnl);
             icon = pnl >= 0 ? '🟢' : '🔴';
         }
 
         const symbol = s.symbol || 'UNKNOWN';
-        const priceStr = UIHelper.formatCurrency(current);
-        const mcapStr = 'N/A'; // We could fetch this too if needed
+        const entryStr = entryMc ? UIHelper.formatMarketCap(entryMc) : 'N/A';
+        const currStr = currentMc ? UIHelper.formatMarketCap(currentMc) : 'N/A';
 
-        message += `${icon} *${symbol}* | ${priceStr}\n`;
-        message += `   Entry: $${entry.toFixed(6)} | PnL: \`${pnlStr}\`\n`;
+        message += `${icon} *${symbol}*\n`;
+        message += `   Entry MC: ${entryStr} ➔ Now MC: ${currStr} | PnL: \`${pnlStr}\`\n`;
         message += `   \`${s.mint}\`\n`;
         message += `   [🗑 Remove](callback:remove_watchlist:${item.id})\n`; // This is pseudocode for button, but we can't put buttons inline easily in text list.
         message += UIHelper.separator('LIGHT');

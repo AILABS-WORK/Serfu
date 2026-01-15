@@ -8,9 +8,11 @@ import {
   createOrUpdateGroup,
   getBotInviteLink,
 } from '../../db/groups';
+import { prisma } from '../../db';
 import { getBotInstance } from '../instance';
 import { logger } from '../../utils/logger';
 import { createOrUpdateUser } from '../../db/users';
+import { UIHelper } from '../../utils/ui';
 
 // Helper to get current user's Telegram ID
 const getCurrentUserId = (ctx: Context): bigint | null => {
@@ -70,6 +72,20 @@ export const handleGroupsCommand = async (ctx: Context) => {
 
     const channels = groups.filter((g: any) => g.chatType === 'channel');
     const normalGroups = groups.filter((g: any) => g.chatType !== 'channel');
+    const chatIds = groups.map((g: any) => g.chatId);
+    const grouped = await prisma.signal.groupBy({
+      by: ['chatId'],
+      where: { chatId: { in: chatIds } },
+      _count: { _all: true },
+      _max: { detectedAt: true },
+    });
+    const statsByChatId = new Map<string, { count: number; lastAt: Date | null }>();
+    grouped.forEach(row => {
+      statsByChatId.set(row.chatId.toString(), {
+        count: row._count?._all || 0,
+        lastAt: row._max?.detectedAt || null,
+      });
+    });
 
     let message = '📋 *Your Monitored Groups*\n\n';
     
@@ -79,7 +95,11 @@ export const handleGroupsCommand = async (ctx: Context) => {
       message += `${status} *${group.name || `Group ${group.chatId}`}*\n`;
       message += `   Type: ${type}\n`;
       message += `   ID: \`${group.chatId}\`\n`;
-      message += `   Signals: ${group.signals?.length || 0}\n\n`;
+      const stat = statsByChatId.get(group.chatId.toString());
+      const count = stat?.count || 0;
+      const lastAt = stat?.lastAt ? UIHelper.formatTimeAgo(stat.lastAt) : 'N/A';
+      message += `   Signals: ${count}\n`;
+      message += `   Last Signal: ${lastAt}\n\n`;
     }
 
     if (channels.length > 0) {
@@ -90,7 +110,11 @@ export const handleGroupsCommand = async (ctx: Context) => {
         message += `${status} *${ch.name || `Channel ${ch.chatId}`}*\n`;
         message += `   Type: ${type}\n`;
         message += `   ID: \`${ch.chatId}\`\n`;
-        message += `   Signals: ${ch.signals?.length || 0}\n\n`;
+        const stat = statsByChatId.get(ch.chatId.toString());
+        const count = stat?.count || 0;
+        const lastAt = stat?.lastAt ? UIHelper.formatTimeAgo(stat.lastAt) : 'N/A';
+        message += `   Signals: ${count}\n`;
+        message += `   Last Signal: ${lastAt}\n\n`;
       }
     }
 

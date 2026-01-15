@@ -19,7 +19,6 @@ export const handleSettingsCommand = async (ctx: Context) => {
 
   // 1. Fetch User Settings (Global)
   const settings = await getOrCreateNotificationSettings(ctx.from.id);
-  const priceEnabled = allEnabled(settings, PRICE_FIELDS);
   const mcEnabled = allEnabled(settings, MC_FIELDS);
   const homeChat = settings.homeChatId ? `Chat ${settings.homeChatId}` : 'Not set';
 
@@ -30,7 +29,6 @@ export const handleSettingsCommand = async (ctx: Context) => {
       // --- GLOBAL USER SETTINGS ---
       message = UIHelper.header('Global Settings', '⚙️');
       message += UIHelper.subHeader('NOTIFICATIONS', '🔔');
-      message += `• Price Alerts: ${priceEnabled ? '✅ ON' : '❌ OFF'}\n`;
       message += `• MC Alerts: ${mcEnabled ? '✅ ON' : '❌ OFF'}\n`;
       message += `• Home Alerts (First): ${settings.notifyHomeOnFirstCa ? '✅ ON' : '❌ OFF'}\n`;
       message += `• Home Alerts (Repost): ${settings.notifyHomeOnRepost ? '✅ ON' : '❌ OFF'}\n`;
@@ -39,7 +37,6 @@ export const handleSettingsCommand = async (ctx: Context) => {
       message += `_To configure a specific group, run /settings inside that group._`;
 
       keyboard = [
-        [{ text: priceEnabled ? '🔕 Disable Price Alerts' : '🔔 Enable Price Alerts', callback_data: 'toggle_price_alerts' }],
         [{ text: mcEnabled ? '🔕 Disable MC Alerts' : '🔔 Enable MC Alerts', callback_data: 'toggle_mc_alerts' }],
         [{ text: settings.notifyHomeOnFirstCa ? '🏠 First→Home ON' : '🏠 First→Home OFF', callback_data: 'toggle_home_first' }],
         [{ text: settings.notifyHomeOnRepost ? '🆕 Reposts→Home ON' : '🆕 Reposts→Home OFF', callback_data: 'toggle_home_repost' }],
