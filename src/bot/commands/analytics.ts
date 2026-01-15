@@ -1276,15 +1276,21 @@ export const handleDistributions = async (ctx: Context, view: string = 'mcap') =
     // Time of Day Heatmap
     else if (view === 'time') {
         message = UIHelper.header('TIME OF DAY (UTC)', '🕐');
+        message += `Timezone: *UTC*\n`;
         const bestHours = stats.timeOfDay
             .map((h, i) => ({ hourNum: i, count: h.count, winRate: h.winRate, avgMult: h.avgMult }))
             .filter(h => h.count > 0)
             .sort((a, b) => b.winRate - a.winRate)
             .slice(0, 5);
-        
-        message += `*Top Hours:*\n`;
-        for (const h of bestHours) {
-            message += `${h.hourNum.toString().padStart(2, '0')}:00 — ${(h.winRate * 100).toFixed(0)}% WR | ${h.avgMult.toFixed(1)}x | ${h.count} calls\n`;
+
+        message += UIHelper.separator('LIGHT');
+        if (bestHours.length === 0) {
+          message += `No hourly distribution data yet.\n`;
+        } else {
+          message += `*Top Hours:*\n`;
+          for (const h of bestHours) {
+              message += `• ${h.hourNum.toString().padStart(2, '0')}:00 — ${(h.winRate * 100).toFixed(0)}% WR | ${h.avgMult.toFixed(1)}x | ${h.count} calls\n`;
+          }
         }
         message += UIHelper.separator('HEAVY');
         message += `\`Hour | WR  | Avg | Calls | Heat\`\n`;
@@ -1294,7 +1300,7 @@ export const handleDistributions = async (ctx: Context, view: string = 'mcap') =
             const wr = h.count > 0 ? (h.winRate * 100).toFixed(0).padStart(3, ' ') : '  -';
             const avg = h.count > 0 ? h.avgMult.toFixed(1).padStart(3, ' ') : ' - ';
             const calls = `${h.count}`.padStart(4, ' ');
-            const heat = h.count === 0 ? '░' : h.winRate >= 0.6 ? '▮▮' : h.winRate >= 0.4 ? '▮' : '░';
+            const heat = h.count === 0 ? '░' : h.winRate >= 0.65 ? '▮▮▮' : h.winRate >= 0.5 ? '▮▮' : h.winRate >= 0.35 ? '▮' : '░';
             message += `\`${hour}  | ${wr}% | ${avg} | ${calls} | ${heat}\`\n`;
         });
         keyboard = [[{ text: '🔙 MCap View', callback_data: 'dist_view:mcap' }, { text: '❌ Close', callback_data: 'delete_msg' }]];
@@ -1332,8 +1338,8 @@ export const handleDistributions = async (ctx: Context, view: string = 'mcap') =
         } else {
           const best = [...entry.hours].filter(h => h.count > 0).sort((a, b) => b.winRate - a.winRate)[0];
           if (best) {
-            message += `Best Hour: ${best.hour.toString().padStart(2, '0')}:00 — ${(best.winRate * 100).toFixed(0)}% WR (${best.count} calls)\n`;
-            message += UIHelper.separator('HEAVY');
+            message += `Best Hour: *${best.hour.toString().padStart(2, '0')}:00* — ${(best.winRate * 100).toFixed(0)}% WR (${best.count} calls)\n`;
+            message += UIHelper.separator('LIGHT');
           }
           message += `\`Hour | WR  | Avg | Calls | Heat\`\n`;
           message += `\`─────┼─────┼─────┼──────┼────\`\n`;
@@ -1342,7 +1348,7 @@ export const handleDistributions = async (ctx: Context, view: string = 'mcap') =
             const wr = h.count > 0 ? (h.winRate * 100).toFixed(0).padStart(3, ' ') : '  -';
             const avg = h.count > 0 ? h.avgMult.toFixed(1).padStart(3, ' ') : ' - ';
             const calls = `${h.count}`.padStart(4, ' ');
-            const heat = h.count === 0 ? '░' : h.winRate >= 0.6 ? '▮▮' : h.winRate >= 0.4 ? '▮' : '░';
+            const heat = h.count === 0 ? '░' : h.winRate >= 0.65 ? '▮▮▮' : h.winRate >= 0.5 ? '▮▮' : h.winRate >= 0.35 ? '▮' : '░';
             message += `\`${hour}  | ${wr}% | ${avg} | ${calls} | ${heat}\`\n`;
           });
         }

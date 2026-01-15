@@ -63,31 +63,91 @@ export const handleStrategyAutoGenerate = async (ctx: Context, profile: 'winrate
   const valid = statsList.filter(s => s.stats && s.stats.totalSignals > 0) as Array<{ group: any; stats: any }>;
   if (valid.length === 0) return ctx.reply('No analytics data available to auto-generate a strategy.');
 
-  const pick = profile === 'winrate'
-    ? valid.sort((a, b) => b.stats.winRate - a.stats.winRate)[0]
-    : profile === 'return'
-      ? valid.sort((a, b) => b.stats.avgMultiple - a.stats.avgMultiple)[0]
-      : valid.sort((a, b) => b.stats.score - a.stats.score)[0];
+  const ranked = [...valid].sort((a, b) => {
+    if (profile === 'winrate') return (b.stats.winRate - a.stats.winRate) || (b.stats.avgMultiple - a.stats.avgMultiple);
+    if (profile === 'return') return (b.stats.avgMultiple - a.stats.avgMultiple) || (b.stats.winRate - a.stats.winRate);
+    return (b.stats.score - a.stats.score) || (b.stats.winRate - a.stats.winRate);
+  });
+  const picks = ranked.slice(0, Math.min(3, ranked.length));
 
-  const recTp = Math.min(6, Math.max(1.5, pick.stats.avgMultiple * 0.7));
-  const recSl = Math.min(0.9, Math.max(0.5, 1 + pick.stats.avgDrawdown));
+  const primary = picks[0];
+  const avgMultiple = Math.max(1.2, primary.stats.avgMultiple || 1.2);
+  const avgDrawdown = Math.max(0.1, primary.stats.avgDrawdown || 0.3);
+  const recTp = profile === 'return'
+    ? Math.min(10, Math.max(3, avgMultiple * 1.4))
+    : profile === 'balanced'
+      ? Math.min(8, Math.max(2.2, avgMultiple * 1.1))
+      : Math.min(6, Math.max(1.8, avgMultiple * 0.9));
+  const recSl = Math.max(0.55, Math.min(0.9, 1 - Math.min(0.5, avgDrawdown)));
+
+  const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  const dayGroups: Record<string, number[]> = {};
+  dayNames.forEach((day, idx) => {
+    const pick = picks[idx % picks.length];
+    dayGroups[day] = pick ? [pick.group.id] : [];
+  });
+
+  const tpRules = profile === 'return'
+    ? [
+        { multiple: 3, sellPct: 40 },
+        { multiple: 5, sellPct: 40 },
+        { multiple: 8, sellPct: 20 },
+      ]
+    : profile === 'balanced'
+      ? [
+          { multiple: 2.5, sellPct: 50 },
+          { multiple: 4, sellPct: 50 },
+        ]
+      : [
+          { multiple: 2, sellPct: 50 },
+          { multiple: 3, sellPct: 50 },
+        ];
+
+  const slRules = profile === 'return'
+    ? [{ multiple: 0.6, sellPct: 100 }]
+    : profile === 'balanced'
+      ? [{ multiple: 0.65, sellPct: 100 }]
+      : [{ multiple: 0.7, sellPct: 100 }];
+
+  const avgEntry = primary.stats.avgEntryMarketCap || 0;
+  const minMarketCap = avgEntry > 0
+    ? (profile === 'return' ? Math.max(5000, avgEntry * 0.4) : Math.max(10000, avgEntry * 0.6))
+    : undefined;
+  const maxMarketCap = avgEntry > 0
+    ? (profile === 'return' ? avgEntry * 1.3 : avgEntry * 2.2)
+    : undefined;
+  const minMentions = profile === 'winrate' ? 3 : profile === 'balanced' ? 2 : 1;
+  const rulePriority = profile === 'winrate' ? 'SL_FIRST' : profile === 'return' ? 'TP_FIRST' : 'INTERLEAVED';
 
   if (!(ctx as any).session) (ctx as any).session = {};
   (ctx as any).session.strategyDraft = {
-    targetType: 'GROUP',
-    targetId: pick.group.id,
-    targetName: pick.group.name || `Group ${pick.group.chatId}`,
+    targetType: 'OVERALL',
+    targetId: undefined,
+    targetName: `Auto Strategy (${profile})`,
     timeframe: '30D',
-    schedule: { timezone: 'UTC', days: [], windows: [], dayGroups: {} },
+    schedule: { timezone: 'UTC', days: dayNames, windows: [], dayGroups },
     conditions: {
+      minMentions,
+      minMarketCap,
+      maxMarketCap,
       takeProfitMultiple: recTp,
       stopLossMultiple: recSl,
+      takeProfitRules: tpRules,
+      stopLossRules: slRules,
+      rulePriority,
+      stopOnFirstRuleHit: false,
     },
     startBalanceSol: 1,
     feePerSideSol: 0.0001,
   };
 
-  await ctx.reply(`✅ Auto strategy created for *${pick.group.name || pick.group.chatId}* (${profile}).`, { parse_mode: 'Markdown' });
+  const groupSummary = picks
+    .map((p, idx) => `${idx + 1}. ${p.group.name || p.group.chatId} (${(p.stats.winRate * 100).toFixed(0)}% WR, ${p.stats.avgMultiple.toFixed(1)}x)`)
+    .join('\n');
+  await ctx.reply(
+    `✅ Auto strategy created (*${profile}*).\n\n*Day/Group Rotation:*\n${groupSummary}`,
+    { parse_mode: 'Markdown' }
+  );
   await handleStrategyDraftSummary(ctx);
 };
 
