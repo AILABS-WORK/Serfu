@@ -40,7 +40,8 @@ export const updateHistoricalMetrics = async (targetSignalIds?: number[]) => {
         const batch = signals.slice(i, i + BATCH_SIZE);
         await Promise.all(batch.map(async (signal) => {
             try {
-                if (!signal.entryPrice || !signal.detectedAt) return;
+                const entryPrice = signal.entryPrice || (signal.entryMarketCap && signal.entrySupply ? signal.entryMarketCap / signal.entrySupply : null);
+                if (!entryPrice || !signal.detectedAt) return;
 
                 const now = Date.now();
                 const ageHours = (now - signal.detectedAt.getTime()) / (1000 * 60 * 60);
@@ -83,9 +84,9 @@ export const updateHistoricalMetrics = async (targetSignalIds?: number[]) => {
 
                 if (validCandles.length === 0) return;
 
-                let athPrice = signal.entryPrice;
+                let athPrice = entryPrice;
                 let athAt = signal.detectedAt;
-                let minPrice = signal.entryPrice;
+                let minPrice = entryPrice;
                 let timeTo2x: number | null = null;
                 let timeTo5x: number | null = null;
                 let timeTo10x: number | null = null;
@@ -98,24 +99,24 @@ export const updateHistoricalMetrics = async (targetSignalIds?: number[]) => {
                     if (candle.low < minPrice) {
                         minPrice = candle.low;
                     }
-                    if (!timeTo2x && candle.high >= signal.entryPrice * 2) {
+                    if (!timeTo2x && candle.high >= entryPrice * 2) {
                         timeTo2x = candle.timestamp - signalTime;
                     }
-                    if (!timeTo5x && candle.high >= signal.entryPrice * 5) {
+                    if (!timeTo5x && candle.high >= entryPrice * 5) {
                         timeTo5x = candle.timestamp - signalTime;
                     }
-                    if (!timeTo10x && candle.high >= signal.entryPrice * 10) {
+                    if (!timeTo10x && candle.high >= entryPrice * 10) {
                         timeTo10x = candle.timestamp - signalTime;
                     }
                 }
 
                 // Force ATH >= Entry
-                if (athPrice < signal.entryPrice) athPrice = signal.entryPrice;
+                if (athPrice < entryPrice) athPrice = entryPrice;
 
-                const athMultiple = athPrice / signal.entryPrice;
-                const maxDrawdown = (minPrice - signal.entryPrice) / signal.entryPrice;
+                const athMultiple = athPrice / entryPrice;
+                const maxDrawdown = (minPrice - entryPrice) / entryPrice;
                 const currentPrice = validCandles[validCandles.length - 1].close;
-                const currentMultiple = currentPrice / signal.entryPrice;
+                const currentMultiple = currentPrice / entryPrice;
 
                 await prisma.signalMetric.upsert({
                     where: { signalId: signal.id },

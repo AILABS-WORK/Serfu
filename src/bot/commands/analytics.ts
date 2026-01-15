@@ -60,11 +60,13 @@ const formatEntityStats = (stats: EntityStats, type: 'GROUP' | 'USER'): string =
   msg += `   📈 *Avg ROI:* ${UIHelper.formatMultiple(stats.avgMultiple)}\n`;
   msg += `   ⏱️ *Time to ATH:* ${UIHelper.formatDurationMinutes(stats.avgTimeToAth)}\n`;
   msg += `   ⚡ *Time to 2x/5x/10x:* ${UIHelper.formatDurationMinutes(stats.avgTimeTo2x)} / ${UIHelper.formatDurationMinutes(stats.avgTimeTo5x)} / ${UIHelper.formatDurationMinutes(stats.avgTimeTo10x)}\n`;
+  msg += `   💤 *Stagnation Time:* ${UIHelper.formatDurationMinutes(stats.avgStagnationTime)}\n`;
   msg += `   🎯 *Hits:* ${stats.hit2Count} >2x | ${stats.hit5Count} >5x | ${stats.hit10Count} >10x\n`;
 
   msg += UIHelper.subHeader('RISK PROFILE', '🔹');
   msg += `   🎲 *Consistency:* ${stats.consistency.toFixed(2)} (StdDev)\n`;
   msg += `   📉 *Avg Drawdown:* ${UIHelper.formatPercent(stats.avgDrawdown * 100)}\n`;
+  msg += `   ⏳ *Avg Drawdown Duration:* ${UIHelper.formatDurationMinutes(stats.avgDrawdownDuration)}\n`;
   msg += `   💀 *Rug Rate:* ${UIHelper.formatPercent(stats.rugRate * 100)}\n`;
 
   msg += UIHelper.subHeader('BEHAVIORAL ANALYSIS', '🔹');
@@ -139,6 +141,7 @@ export const handleGroupStatsCommand = async (ctx: Context, groupIdStr?: string,
           [
              { text: '🪄 Strategy', callback_data: `strategy_view:GROUP:${targetGroupId}` },
              { text: '🔙 Back', callback_data: 'analytics_groups' },
+             { text: '❌ Close', callback_data: 'delete_msg' },
           ],
         ],
     };
@@ -184,7 +187,7 @@ export const handleUserStatsCommand = async (ctx: Context, userIdStr?: string, w
 
     const keyboard = {
         inline_keyboard: [
-           [
+          [
             { text: effectiveWindow === '1D' ? '✅ 1D' : '1D', callback_data: `user_stats_window:${targetUserId}:1D` },
             { text: effectiveWindow === '3D' ? '✅ 3D' : '3D', callback_data: `user_stats_window:${targetUserId}:3D` },
             { text: effectiveWindow === '7D' ? '✅ 7D' : '7D', callback_data: `user_stats_window:${targetUserId}:7D` },
@@ -195,6 +198,7 @@ export const handleUserStatsCommand = async (ctx: Context, userIdStr?: string, w
           [
             { text: '🪄 Strategy', callback_data: `strategy_view:USER:${targetUserId}` },
             { text: '🔙 Back', callback_data: 'analytics_users_input' }, // Go back to user list
+            { text: '❌ Close', callback_data: 'delete_msg' },
           ],
         ],
     };
@@ -705,7 +709,7 @@ export const handleCrossGroupConfirms = async (ctx: Context, view: string = 'lag
         keyboard = [
             [{ text: '🤝 Confluence', callback_data: 'confirms_view:confluence' }, { text: '🎯 Unique Ratio', callback_data: 'confirms_view:unique' }],
             [{ text: '🕸️ Cluster Graph', callback_data: 'confirms_view:cluster' }, { text: '👑 Copy-Trade Lead', callback_data: 'confirms_view:lead' }],
-            [{ text: '🔙 Back', callback_data: 'analytics' }]
+            [{ text: '🔙 Back', callback_data: 'analytics' }, { text: '❌ Close', callback_data: 'delete_msg' }]
         ];
     }
     else if (view === 'confluence') {
@@ -726,7 +730,7 @@ export const handleCrossGroupConfirms = async (ctx: Context, view: string = 'lag
             message += UIHelper.separator('LIGHT');
         }
 
-        keyboard = [[{ text: '🔙 Lag Matrix', callback_data: 'confirms_view:lag' }]];
+        keyboard = [[{ text: '🔙 Lag Matrix', callback_data: 'confirms_view:lag' }, { text: '❌ Close', callback_data: 'delete_msg' }]];
     }
     else if (view === 'unique') {
         // Unique Signal Ratio
@@ -749,7 +753,7 @@ export const handleCrossGroupConfirms = async (ctx: Context, view: string = 'lag
             message += UIHelper.separator('LIGHT');
         }
 
-        keyboard = [[{ text: '🔙 Lag Matrix', callback_data: 'confirms_view:lag' }]];
+        keyboard = [[{ text: '🔙 Lag Matrix', callback_data: 'confirms_view:lag' }, { text: '❌ Close', callback_data: 'delete_msg' }]];
     }
     else if (view === 'cluster') {
         // Cluster Graph
@@ -776,7 +780,7 @@ export const handleCrossGroupConfirms = async (ctx: Context, view: string = 'lag
             }
         }
 
-        keyboard = [[{ text: '🔙 Lag Matrix', callback_data: 'confirms_view:lag' }]];
+        keyboard = [[{ text: '🔙 Lag Matrix', callback_data: 'confirms_view:lag' }, { text: '❌ Close', callback_data: 'delete_msg' }]];
     }
     else if (view === 'lead') {
         // Copy-Trade Lead Identification
@@ -815,7 +819,7 @@ export const handleCrossGroupConfirms = async (ctx: Context, view: string = 'lag
             message += UIHelper.separator('LIGHT');
         }
 
-        keyboard = [[{ text: '🔙 Lag Matrix', callback_data: 'confirms_view:lag' }]];
+        keyboard = [[{ text: '🔙 Lag Matrix', callback_data: 'confirms_view:lag' }, { text: '❌ Close', callback_data: 'delete_msg' }]];
     }
 
     if (ctx.callbackQuery && ctx.callbackQuery.message) {
@@ -824,10 +828,10 @@ export const handleCrossGroupConfirms = async (ctx: Context, view: string = 'lag
             reply_markup: { inline_keyboard: keyboard }
         });
     } else {
-        await ctx.reply(message, { 
-            parse_mode: 'Markdown',
-            reply_markup: { inline_keyboard: keyboard }
-        });
+    await ctx.reply(message, { 
+        parse_mode: 'Markdown',
+        reply_markup: { inline_keyboard: keyboard }
+    });
     }
 
   } catch (error) {
@@ -1079,6 +1083,16 @@ export const handleLiveSignals = async (ctx: BotContext) => {
     for (const row of top10) {
         const meta = metaMap.get(row.mint);
         const sig = signals.find(s => s.mint === row.mint);
+        if (sig && meta) {
+          const updates: any = {};
+          const tokenCreatedAt = meta.createdAt || meta.firstPoolCreatedAt || null;
+          if (!sig.tokenCreatedAt && tokenCreatedAt) updates.tokenCreatedAt = tokenCreatedAt;
+          if (!sig.socials && meta.socialLinks) updates.socials = meta.socialLinks;
+          if (!sig.entrySupply && meta.supply) updates.entrySupply = meta.supply;
+          if (Object.keys(updates).length > 0) {
+            prisma.signal.update({ where: { id: sig.id }, data: updates }).catch(() => {});
+          }
+        }
         
         // PnL & formatting
         const pnlStr = UIHelper.formatPercent(row.pnl);
@@ -1100,11 +1114,37 @@ export const handleLiveSignals = async (ctx: BotContext) => {
         const multStr = entryMc && currentMc ? `${(currentMc / entryMc).toFixed(2)}x` : 'N/A';
         message += `💰 Entry MC: ${entryStr} ➔ Now MC: ${currentStr} (*${pnlStr}*) | ${multStr}\n`;
         
-        // Dex/Migrated/Team flags
-        const dexPaid = sig?.dexPaid ? '✅' : '❌';
-        const migrated = sig?.migrated ? '✅' : '❌';
-        const hasTeam = meta?.audit?.devBalancePercentage && meta.audit.devBalancePercentage < 5 ? '✅' : '❌';
-        message += `🍬 Dex: ${dexPaid} | 📦 Migrated: ${migrated} | 👥 Team: ${hasTeam}\n`;
+        if (!sig?.entryMarketCap && sig?.priceSamples?.[0]?.marketCap) {
+          prisma.signal.update({
+            where: { id: sig.id },
+            data: { entryMarketCap: sig.priceSamples[0].marketCap, trackingStatus: 'ACTIVE' },
+          }).catch(() => {});
+        }
+
+        // Dex/Migrated/Team/X flags
+        const dexPaid = sig?.dexPaid
+          ? '✅'
+          : (meta?.tags || []).some((t: string) => t.toLowerCase().includes('dex'))
+            ? '✅'
+            : '❔';
+        const migrated = sig?.migrated
+          ? '✅'
+          : (meta?.audit?.devMigrations || 0) > 0
+            ? '✅'
+            : '❔';
+        const hasTeam = meta?.audit?.devBalancePercentage !== undefined
+          ? (meta.audit.devBalancePercentage < 5 ? '✅' : '❌')
+          : '❔';
+        const hasX = meta?.socialLinks ? (meta.socialLinks.twitter ? '✅' : '❌') : '❔';
+        message += `🍬 Dex: ${dexPaid} | 📦 Migrated: ${migrated} | 👥 Team: ${hasTeam} | 𝕏: ${hasX}\n`;
+
+        // ATH line (market cap preferred)
+        const athMult = sig?.metrics?.athMultiple;
+        const athMc = sig?.metrics?.athMarketCap;
+        if (athMult) {
+          const athMcStr = athMc ? ` (${UIHelper.formatMarketCap(athMc)})` : '';
+          message += `🏔️ ATH: ${athMult.toFixed(2)}x${athMcStr}\n`;
+        }
         
         // Age and Caller
         message += `⏱️ Age: ${timeAgo} | 👤 ${row.earliestCaller}\n`;
@@ -1230,7 +1270,7 @@ export const handleDistributions = async (ctx: Context, view: string = 'mcap') =
             [{ text: '👥 Group Compare', callback_data: 'dist_view:groups' }, { text: '📊 Volume', callback_data: 'dist_view:volume' }],
             [{ text: '💀 Rug Ratio', callback_data: 'dist_view:rug' }, { text: '🚀 Moonshot', callback_data: 'dist_view:moonshot' }],
             [{ text: '🔥 Streaks', callback_data: 'dist_view:streak' }, { text: '⏰ Token Age', callback_data: 'dist_view:age' }],
-            [{ text: '💧 Liquidity', callback_data: 'dist_view:liquidity' }, { text: '🔙 Back', callback_data: 'analytics' }]
+            [{ text: '💧 Liquidity', callback_data: 'dist_view:liquidity' }, { text: '🔙 Back', callback_data: 'analytics' }, { text: '❌ Close', callback_data: 'delete_msg' }]
         ];
     }
     // Time of Day Heatmap
@@ -1257,7 +1297,7 @@ export const handleDistributions = async (ctx: Context, view: string = 'mcap') =
             const heat = h.count === 0 ? '░' : h.winRate >= 0.6 ? '▮▮' : h.winRate >= 0.4 ? '▮' : '░';
             message += `\`${hour}  | ${wr}% | ${avg} | ${calls} | ${heat}\`\n`;
         });
-        keyboard = [[{ text: '🔙 MCap View', callback_data: 'dist_view:mcap' }]];
+        keyboard = [[{ text: '🔙 MCap View', callback_data: 'dist_view:mcap' }, { text: '❌ Close', callback_data: 'delete_msg' }]];
     }
     // Day of Week Analysis
     else if (view === 'day') {
@@ -1280,7 +1320,7 @@ export const handleDistributions = async (ctx: Context, view: string = 'mcap') =
             { text: 'Sat', callback_data: 'dist_view:day_hour:Sat' },
             { text: 'Sun', callback_data: 'dist_view:day_hour:Sun' },
           ],
-          [{ text: '🔙 MCap View', callback_data: 'dist_view:mcap' }],
+          [{ text: '🔙 MCap View', callback_data: 'dist_view:mcap' }, { text: '❌ Close', callback_data: 'delete_msg' }],
         ];
     }
     else if (view.startsWith('day_hour:')) {
@@ -1306,7 +1346,7 @@ export const handleDistributions = async (ctx: Context, view: string = 'mcap') =
             message += `\`${hour}  | ${wr}% | ${avg} | ${calls} | ${heat}\`\n`;
           });
         }
-        keyboard = [[{ text: '🔙 Day of Week', callback_data: 'dist_view:day' }]];
+        keyboard = [[{ text: '🔙 Day of Week', callback_data: 'dist_view:day' }, { text: '❌ Close', callback_data: 'delete_msg' }]];
     }
     // Group vs Group Win Rate
     else if (view === 'groups') {
@@ -1317,7 +1357,7 @@ export const handleDistributions = async (ctx: Context, view: string = 'mcap') =
             message += `   Avg Entry MC: ${UIHelper.formatMarketCap(g.avgEntryMc)} | Avg ATH: ${g.avgAthMult.toFixed(1)}x\n`;
             message += `   Avg Time to ATH: ${UIHelper.formatDurationMinutes(g.avgTimeToAth)} | Moon Rate: ${(g.moonRate * 100).toFixed(0)}%\n`;
         }
-        keyboard = [[{ text: '🔙 MCap View', callback_data: 'dist_view:mcap' }]];
+        keyboard = [[{ text: '🔙 MCap View', callback_data: 'dist_view:mcap' }, { text: '❌ Close', callback_data: 'delete_msg' }]];
     }
     // Volume Correlation
     else if (view === 'volume') {
@@ -1334,7 +1374,7 @@ export const handleDistributions = async (ctx: Context, view: string = 'mcap') =
           message += `\`${label} | ${winStr} | ${avgStr} | ${countStr}\`\n`;
         }
         message += `\n_Note: Volume data depends on provider coverage._\n`;
-        keyboard = [[{ text: '🔙 MCap View', callback_data: 'dist_view:mcap' }]];
+        keyboard = [[{ text: '🔙 MCap View', callback_data: 'dist_view:mcap' }, { text: '❌ Close', callback_data: 'delete_msg' }]];
     }
     // Rug Pull Ratio
     else if (view === 'rug') {
@@ -1343,7 +1383,7 @@ export const handleDistributions = async (ctx: Context, view: string = 'mcap') =
         message += `(${Math.round(stats.rugPullRatio * stats.totalSignals)} of ${stats.totalSignals} signals)\n\n`;
         message += `*Definition:* ATH < 0.5x OR Drawdown > 90%\n`;
         message += `_Time constraint not applied (no time-to-rug data yet)._`;
-        keyboard = [[{ text: '🔙 MCap View', callback_data: 'dist_view:mcap' }]];
+        keyboard = [[{ text: '🔙 MCap View', callback_data: 'dist_view:mcap' }, { text: '❌ Close', callback_data: 'delete_msg' }]];
     }
     // Moonshot Probability
     else if (view === 'moonshot') {
@@ -1352,7 +1392,7 @@ export const handleDistributions = async (ctx: Context, view: string = 'mcap') =
         message += `>5x: ${(stats.totalSignals ? (stats.moonshotCounts.gt5x / stats.totalSignals) * 100 : 0).toFixed(1)}% (${stats.moonshotCounts.gt5x})\n`;
         message += `>10x: ${(stats.totalSignals ? (stats.moonshotCounts.gt10x / stats.totalSignals) * 100 : 0).toFixed(1)}% (${stats.moonshotCounts.gt10x})\n\n`;
         message += `⏱️ Avg Time to 2x/5x/10x: ${UIHelper.formatDurationMinutes(stats.moonshotTimes.timeTo2x)} / ${UIHelper.formatDurationMinutes(stats.moonshotTimes.timeTo5x)} / ${UIHelper.formatDurationMinutes(stats.moonshotTimes.timeTo10x)}\n`;
-        keyboard = [[{ text: '🔙 MCap View', callback_data: 'dist_view:mcap' }]];
+        keyboard = [[{ text: '🔙 MCap View', callback_data: 'dist_view:mcap' }, { text: '❌ Close', callback_data: 'delete_msg' }]];
     }
     // Streak Analysis
     else if (view === 'streak') {
@@ -1360,7 +1400,7 @@ export const handleDistributions = async (ctx: Context, view: string = 'mcap') =
         message += `*After Losses:* 1L ${(stats.streakAnalysis.after1Loss.winRate * 100).toFixed(0)}% (${stats.streakAnalysis.after1Loss.count}) | 2L ${(stats.streakAnalysis.after2Losses.winRate * 100).toFixed(0)}% (${stats.streakAnalysis.after2Losses.count}) | 3L ${(stats.streakAnalysis.after3Losses.winRate * 100).toFixed(0)}% (${stats.streakAnalysis.after3Losses.count})\n`;
         message += `*After Wins:* 1W ${(stats.streakAnalysis.after1Win.winRate * 100).toFixed(0)}% (${stats.streakAnalysis.after1Win.count}) | 2W ${(stats.streakAnalysis.after2Wins.winRate * 100).toFixed(0)}% (${stats.streakAnalysis.after2Wins.count}) | 3W ${(stats.streakAnalysis.after3Wins.winRate * 100).toFixed(0)}% (${stats.streakAnalysis.after3Wins.count})\n\n`;
         message += `*Current Streak:* ${stats.currentStreak.count} ${stats.currentStreak.type === 'win' ? 'wins' : 'losses'}\n`;
-        keyboard = [[{ text: '🔙 MCap View', callback_data: 'dist_view:mcap' }]];
+        keyboard = [[{ text: '🔙 MCap View', callback_data: 'dist_view:mcap' }, { text: '❌ Close', callback_data: 'delete_msg' }]];
     }
     // Token Age Preference
     else if (view === 'age') {
@@ -1382,7 +1422,7 @@ export const handleDistributions = async (ctx: Context, view: string = 'mcap') =
           }
           message += `\n_Note: token age inferred from creation timestamps when available._\n`;
         }
-        keyboard = [[{ text: '🔙 MCap View', callback_data: 'dist_view:mcap' }]];
+        keyboard = [[{ text: '🔙 MCap View', callback_data: 'dist_view:mcap' }, { text: '❌ Close', callback_data: 'delete_msg' }]];
     }
     // Liquidity vs Return
     else if (view === 'liquidity') {
@@ -1398,7 +1438,7 @@ export const handleDistributions = async (ctx: Context, view: string = 'mcap') =
           const countStr = `${b.count}`.padEnd(4, ' ');
           message += `\`${label} | ${winStr} | ${avgStr} | ${countStr}\`\n`;
         }
-        keyboard = [[{ text: '🔙 MCap View', callback_data: 'dist_view:mcap' }]];
+        keyboard = [[{ text: '🔙 MCap View', callback_data: 'dist_view:mcap' }, { text: '❌ Close', callback_data: 'delete_msg' }]];
     }
 
     await ctx.reply(message, { 
@@ -1527,10 +1567,10 @@ export const handleRecentCalls = async (ctx: Context, window: string = '7D') => 
     const prices = await getMultipleTokenPrices(signals.map(s => s.mint));
     const metaMap = new Map<string, any>();
     await Promise.all(signals.map(async (s) => {
-      try {
+        try {
         const meta = await provider.getTokenMeta(s.mint);
         metaMap.set(s.mint, meta);
-      } catch {}
+        } catch {}
     }));
 
     for (const sig of signals) {
@@ -1548,6 +1588,8 @@ export const handleRecentCalls = async (ctx: Context, window: string = '7D') => 
         
         const ath = sig.metrics?.athMultiple || 0;
         const drawdown = sig.metrics?.maxDrawdown ? sig.metrics.maxDrawdown * 100 : 0;
+        const athSupply = sig.entrySupply || (sig.entryMarketCap && sig.entryPrice ? sig.entryMarketCap / sig.entryPrice : null);
+        const athMc = sig.metrics?.athMarketCap || (sig.metrics?.athPrice && athSupply ? sig.metrics.athPrice * athSupply : 0);
         const timeTo2x = UIHelper.formatDurationMinutes(sig.metrics?.timeTo2x ? sig.metrics.timeTo2x / (1000 * 60) : null);
         const timeTo5x = UIHelper.formatDurationMinutes(sig.metrics?.timeTo5x ? sig.metrics.timeTo5x / (1000 * 60) : null);
         const timeTo10x = UIHelper.formatDurationMinutes(sig.metrics?.timeTo10x ? sig.metrics.timeTo10x / (1000 * 60) : null);
@@ -1561,7 +1603,7 @@ export const handleRecentCalls = async (ctx: Context, window: string = '7D') => 
         message += `🕒 *${time}* | ${icon} *${sig.symbol || 'UNKNOWN'}*\n`;
         message += `   via ${source}\n`;
         message += `   💰 Entry MC: ${entryStr} ➔ Now MC: ${currStr} (${pnlStr})\n`;
-        message += `   🏔️ ATH: ${ath > 0 ? `${ath.toFixed(2)}x` : 'N/A'} | 📉 Drawdown: ${drawdown ? `${drawdown.toFixed(0)}%` : 'N/A'}\n`;
+        message += `   🏔️ ATH: ${ath > 0 ? `${ath.toFixed(2)}x` : 'N/A'} | ATH MC: ${athMc ? UIHelper.formatMarketCap(athMc) : 'N/A'} | 📉 Drawdown: ${drawdown ? `${drawdown.toFixed(0)}%` : 'N/A'}\n`;
         message += `   ⏱️ Time to 2x/5x/10x: ${timeTo2x} / ${timeTo5x} / ${timeTo10x}\n`;
         message += UIHelper.separator('LIGHT');
     }

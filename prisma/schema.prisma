@@ -54,6 +54,7 @@ model Signal {
   entryPriceProvider String?   @default("helius") @map("entry_price_provider")
   entryMarketCap     Float?    @map("entry_market_cap")
   entrySupply        Float?    @map("entry_supply")
+  tokenCreatedAt     DateTime? @map("token_created_at")
 
   trackingStatus TrackingStatus @default(ACTIVE) @map("tracking_status")
   trackingEndAt  DateTime?      @map("tracking_end_at")

@@ -256,8 +256,14 @@ const calculateStats = (signals: SignalWithMetrics[]): EntityStats => {
         totalMcap += entryMc;
         mcapCount++;
     }
-    if (s.metrics?.athMarketCap) {
-        totalAthMcap += s.metrics.athMarketCap;
+    const supply =
+      s.entrySupply ||
+      (s.entryMarketCap && s.entryPrice ? s.entryMarketCap / s.entryPrice : null);
+    const athMcap =
+      s.metrics?.athMarketCap ||
+      (s.metrics?.athPrice && supply ? s.metrics.athPrice * supply : null);
+    if (athMcap) {
+        totalAthMcap += athMcap;
         athMcapCount++;
     }
     
@@ -688,10 +694,10 @@ export const getDistributionStats = async (
   const allowedGroupIds = new Set(userGroups.map(g => g.id));
 
   let scopeFilter: any = {
-    OR: [
-      { chatId: { in: ownedChatIds } },
-      { id: { in: forwardedSignalIds } }
-    ]
+      OR: [
+          { chatId: { in: ownedChatIds } },
+          { id: { in: forwardedSignalIds } }
+      ]
   };
 
   if (targetType === 'GROUP' && target?.id && allowedGroupIds.has(target.id)) {
@@ -941,10 +947,10 @@ export const getDistributionStats = async (
           if (isWin) stats.streakAnalysis.after2Losses.winRate++;
         }
         if (currentStreak >= 3) {
-          stats.streakAnalysis.after3Losses.count++;
+        stats.streakAnalysis.after3Losses.count++;
           if (isWin) stats.streakAnalysis.after3Losses.winRate++;
-        }
-      } else {
+      }
+    } else {
         if (currentStreak >= 1) {
           stats.streakAnalysis.after1Win.count++;
           if (isWin) stats.streakAnalysis.after1Win.winRate++;
@@ -954,7 +960,7 @@ export const getDistributionStats = async (
           if (isWin) stats.streakAnalysis.after2Wins.winRate++;
         }
         if (currentStreak >= 3) {
-          stats.streakAnalysis.after3Wins.count++;
+        stats.streakAnalysis.after3Wins.count++;
           if (isWin) stats.streakAnalysis.after3Wins.winRate++;
         }
       }
@@ -1086,14 +1092,14 @@ export const getDistributionStats = async (
   stats.tokenAgeBuckets.forEach(b => {
     if (b.count > 0) {
       b.avgMult /= b.count;
-    }
+  }
   });
 
   // Liquidity vs Return
   stats.liquidityBuckets.forEach(b => {
     if (b.count > 0) {
       b.avgMult /= b.count;
-    }
+  }
   });
 
   stats.currentStreak = { type: streakType, count: currentStreak };

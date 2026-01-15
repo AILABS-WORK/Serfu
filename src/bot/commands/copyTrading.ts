@@ -11,7 +11,8 @@ export const handleStrategyMenu = async (ctx: Context) => {
     `• Create a new strategy\n` +
     `• View top strategy recommendations\n` +
     `• Manage saved presets\n` +
-    `• Simulate a strategy\n`;
+    `• Simulate a strategy\n` +
+    `• Auto-generate a strategy\n`;
 
   await ctx.reply(message, {
     parse_mode: 'Markdown',
@@ -21,10 +22,73 @@ export const handleStrategyMenu = async (ctx: Context) => {
         [{ text: '📈 View Top Strategies', callback_data: 'strategy_view_existing' }],
         [{ text: '🗂️ Manage Presets', callback_data: 'strategy_presets' }],
         [{ text: '🎮 Simulate Strategy', callback_data: 'strategy_simulate_help' }],
+        [{ text: '🤖 Auto Strategy', callback_data: 'strategy_auto' }],
         [{ text: '🔙 Back', callback_data: 'analytics' }],
       ],
     },
   });
+};
+
+export const handleStrategyAutoMenu = async (ctx: Context) => {
+  await ctx.reply('🤖 *Auto Strategy Builder*\nChoose a profile:', {
+    parse_mode: 'Markdown',
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: '🛡️ Max Win Rate', callback_data: 'strategy_auto:winrate' }],
+        [{ text: '⚖️ Balanced', callback_data: 'strategy_auto:balanced' }],
+        [{ text: '🚀 High Return', callback_data: 'strategy_auto:return' }],
+        [{ text: '🔙 Strategy Menu', callback_data: 'strategy_menu' }],
+      ],
+    },
+  });
+};
+
+export const handleStrategyAutoGenerate = async (ctx: Context, profile: 'winrate' | 'balanced' | 'return') => {
+  const ownerTelegramId = ctx.from?.id ? BigInt(ctx.from.id) : null;
+  if (!ownerTelegramId) return ctx.reply('❌ Unable to identify user.');
+  const owner = await prisma.user.findUnique({ where: { userId: ownerTelegramId } });
+  if (!owner) return ctx.reply('❌ User not found.');
+
+  const groups = await prisma.group.findMany({
+    where: { ownerId: owner.id, isActive: true },
+    select: { id: true, name: true, chatId: true },
+  });
+  if (groups.length === 0) return ctx.reply('No groups available to analyze.');
+
+  const { getGroupStats } = await import('../../analytics/aggregator');
+  const statsList = await Promise.all(groups.map(async (g) => ({
+    group: g,
+    stats: await getGroupStats(g.id, '30D'),
+  })));
+  const valid = statsList.filter(s => s.stats && s.stats.totalSignals > 0) as Array<{ group: any; stats: any }>;
+  if (valid.length === 0) return ctx.reply('No analytics data available to auto-generate a strategy.');
+
+  const pick = profile === 'winrate'
+    ? valid.sort((a, b) => b.stats.winRate - a.stats.winRate)[0]
+    : profile === 'return'
+      ? valid.sort((a, b) => b.stats.avgMultiple - a.stats.avgMultiple)[0]
+      : valid.sort((a, b) => b.stats.score - a.stats.score)[0];
+
+  const recTp = Math.min(6, Math.max(1.5, pick.stats.avgMultiple * 0.7));
+  const recSl = Math.min(0.9, Math.max(0.5, 1 + pick.stats.avgDrawdown));
+
+  if (!(ctx as any).session) (ctx as any).session = {};
+  (ctx as any).session.strategyDraft = {
+    targetType: 'GROUP',
+    targetId: pick.group.id,
+    targetName: pick.group.name || `Group ${pick.group.chatId}`,
+    timeframe: '30D',
+    schedule: { timezone: 'UTC', days: [], windows: [], dayGroups: {} },
+    conditions: {
+      takeProfitMultiple: recTp,
+      stopLossMultiple: recSl,
+    },
+    startBalanceSol: 1,
+    feePerSideSol: 0.0001,
+  };
+
+  await ctx.reply(`✅ Auto strategy created for *${pick.group.name || pick.group.chatId}* (${profile}).`, { parse_mode: 'Markdown' });
+  await handleStrategyDraftSummary(ctx);
 };
 
 export const handleStrategyTargetSelect = async (ctx: Context) => {

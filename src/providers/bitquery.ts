@@ -30,12 +30,14 @@ export interface BitqueryOHLCV {
 
 export class BitqueryProvider {
   private apiKey: string;
+  private disabled: boolean = false;
 
   constructor(apiKey: string) {
     this.apiKey = apiKey;
   }
 
   async getWalletPnL(walletAddress: string): Promise<BitqueryTradeStats[]> {
+    if (!this.apiKey || this.disabled) return [];
     const query = `
       query AddressPnLHistory($wallet: String!) {
         Solana {
@@ -124,13 +126,19 @@ export class BitqueryProvider {
         };
       }).filter((s: BitqueryTradeStats) => s.totalVolumeUSD > 100); // Filter dust
 
-    } catch (error) {
+    } catch (error: any) {
+      if (error?.response?.status === 401) {
+        this.disabled = true;
+        logger.warn('Bitquery unauthorized (401). Disabling Bitquery for this runtime.');
+        return [];
+      }
       logger.error(`Error fetching Bitquery PnL for ${walletAddress}:`, error);
       return [];
     }
   }
 
   async getOHLCV(mint: string, timeframe: 'minute' | 'hour' | 'day', limit: number = 100): Promise<BitqueryOHLCV[]> {
+    if (!this.apiKey || this.disabled) return [];
     // Bitquery interval syntax: {count: 1, in: minutes} or {count: 1, in: hours}
     const interval = timeframe === 'minute' ? 'minutes' : timeframe === 'hour' ? 'hours' : 'days';
     
@@ -201,7 +209,12 @@ export class BitqueryProvider {
           volume: Number(item.volume)
       })).reverse();
 
-    } catch (error) {
+    } catch (error: any) {
+      if (error?.response?.status === 401) {
+        this.disabled = true;
+        logger.warn('Bitquery unauthorized (401). Disabling Bitquery for this runtime.');
+        return [];
+      }
       logger.error(`Error fetching Bitquery OHLCV for ${mint}:`, error);
       return [];
     }

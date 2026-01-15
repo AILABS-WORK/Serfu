@@ -531,10 +531,23 @@ Max Drawdown: ${(dd * 100).toFixed(2)}%
   // --- ANALYTICS ACTIONS (Existing) ---
   
   bot.action('analytics', handleAnalyticsCommand);
-
+  
   bot.action('strategy_menu', async (ctx) => {
       const { handleStrategyMenu } = await import('./commands/copyTrading');
       await handleStrategyMenu(ctx as any);
+  });
+
+  bot.action('strategy_auto', async (ctx) => {
+      const { handleStrategyAutoMenu } = await import('./commands/copyTrading');
+      await handleStrategyAutoMenu(ctx as any);
+      await ctx.answerCbQuery();
+  });
+
+  bot.action(/^strategy_auto:(.*)$/, async (ctx) => {
+      const profile = ctx.match[1] as 'winrate' | 'balanced' | 'return';
+      const { handleStrategyAutoGenerate } = await import('./commands/copyTrading');
+      await handleStrategyAutoGenerate(ctx as any, profile);
+      await ctx.answerCbQuery();
   });
 
   bot.action('strategy_create', async (ctx) => {
@@ -1152,6 +1165,9 @@ Max Drawdown: ${(dd * 100).toFixed(2)}%
   bot.action('analytics_refresh', async (ctx) => {
      try {
          await ctx.answerCbQuery('Recalculating metrics...');
+         const { backfillEntryMarketCap, backfillTokenMeta } = await import('../jobs/backfill');
+         backfillEntryMarketCap().catch(err => logger.error('Entry MC backfill failed', err));
+         backfillTokenMeta().catch(err => logger.error('Token meta backfill failed', err));
          updateHistoricalMetrics().catch(err => logger.error('Manual refresh failed', err));
          await ctx.reply('🔄 Metrics calculation started in background. Check back in a few minutes.');
      } catch(e) {

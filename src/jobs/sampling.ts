@@ -71,7 +71,15 @@ export const runSamplingCycle = async () => {
           marketCap = quote.price * meta.supply;
         }
         
-        await addPriceSample(signal.id, signal.mint, quote.price, quote.source, marketCap);
+        await addPriceSample(
+          signal.id,
+          signal.mint,
+          quote.price,
+          quote.source,
+          marketCap,
+          meta.volume24h || null,
+          meta.liquidity || null
+        );
 
         if (!signal.entryMarketCap && marketCap) {
           await prisma.signal.update({

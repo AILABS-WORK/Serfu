@@ -1,6 +1,14 @@
 import { prisma } from './index';
 
-export const addPriceSample = async (signalId: number, mint: string, price: number, provider: string, marketCap?: number | null) => {
+export const addPriceSample = async (
+  signalId: number,
+  mint: string,
+  price: number,
+  provider: string,
+  marketCap?: number | null,
+  volume?: number | null,
+  liquidity?: number | null
+) => {
   return prisma.priceSample.create({
     data: {
       signalId,
@@ -8,6 +16,8 @@ export const addPriceSample = async (signalId: number, mint: string, price: numb
       price,
       marketCap: marketCap ?? null,
       provider,
+      volume: volume ?? null,
+      liquidity: liquidity ?? null,
       sampledAt: new Date(),
     },
   });

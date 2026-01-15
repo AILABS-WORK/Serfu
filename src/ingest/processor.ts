@@ -96,6 +96,7 @@ export const processMessage = async (message: RawMessage) => {
     let trackingStatus: 'ACTIVE' | 'ENTRY_PENDING' = 'ACTIVE';
     const entrySupply = meta.supply || null;
     let entryMarketCap: number | null = null;
+    const tokenCreatedAt = meta.createdAt || meta.firstPoolCreatedAt || null;
 
     try {
       const quote = await provider.getQuote(mint); // Prefer Jupiter (inside provider)
@@ -187,10 +188,12 @@ export const processMessage = async (message: RawMessage) => {
       entryPriceProvider: entryProvider,
       entryMarketCap,
       entrySupply,
+      tokenCreatedAt,
       trackingStatus,
       detectedAt: new Date(),
       dexPaid,
-      migrated,
+      migrated: migrated || ((meta.audit?.devMigrations || 0) > 0),
+      socials: meta.socialLinks || undefined,
       ...(groupId ? { group: { connect: { id: groupId } } } : {}),
       ...(userId ? { user: { connect: { id: userId } } } : {}),
     });
