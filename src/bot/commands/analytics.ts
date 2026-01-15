@@ -1468,7 +1468,7 @@ export const handleRecentCalls = async (ctx: Context, window: string = '7D') => 
         OR: [
             { chatId: { in: ownedChatIds } },
             { id: { in: forwardedSignalIds } }
-        ]
+        ],
         ...(since ? { detectedAt: { gte: since } } : {}),
       },
       orderBy: { detectedAt: 'desc' },
