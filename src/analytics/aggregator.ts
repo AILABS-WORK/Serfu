@@ -251,8 +251,9 @@ const calculateStats = (signals: SignalWithMetrics[]): EntityStats => {
     lifespanSum += duration * 60; // minutes
 
     // Mcap
-    if (s.entryMarketCap) {
-        totalMcap += s.entryMarketCap;
+    const entryMc = s.entryMarketCap || s.priceSamples?.[0]?.marketCap;
+    if (entryMc) {
+        totalMcap += entryMc;
         mcapCount++;
     }
     if (s.metrics?.athMarketCap) {
@@ -428,7 +429,7 @@ export const getGroupStats = async (groupId: number, timeframe: TimeFrame): Prom
       detectedAt: { gte: since },
       metrics: { isNot: null }
     },
-    include: { metrics: true }
+    include: { metrics: true, priceSamples: { orderBy: { sampledAt: 'asc' }, take: 1 } }
   });
 
   const stats = calculateStats(signals);
@@ -449,7 +450,7 @@ export const getUserStats = async (userId: number, timeframe: TimeFrame): Promis
       detectedAt: { gte: since },
       metrics: { isNot: null }
     },
-    include: { metrics: true }
+    include: { metrics: true, priceSamples: { orderBy: { sampledAt: 'asc' }, take: 1 } }
   });
 
   const stats = calculateStats(signals);
@@ -473,7 +474,7 @@ export const getLeaderboard = async (
       detectedAt: { gte: since },
       metrics: { isNot: null }
     },
-    include: { metrics: true, group: true, user: true }
+    include: { metrics: true, group: true, user: true, priceSamples: { orderBy: { sampledAt: 'asc' }, take: 1 } }
   });
 
   // 2. Group by Entity (Deduplicating Groups by ChatId)

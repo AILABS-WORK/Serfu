@@ -45,16 +45,15 @@ export const updateSignalMetrics = async (signalId: number, currentMarketCap: nu
   const athValue = maxValue || 0;
   const athMultiple = entryValue > 0 ? athValue / entryValue : 0;
   
+  const samples = await prisma.priceSample.findMany({
+    where: { signalId },
+    orderBy: { sampledAt: 'asc' }
+  });
+
   // Find the actual timestamp of ATH from price samples (using market cap if available)
-  const athSample = useMarketCap 
-    ? await prisma.priceSample.findFirst({
-        where: { signalId, marketCap: { not: null } },
-        orderBy: { marketCap: 'desc' }
-      })
-    : await prisma.priceSample.findFirst({
-        where: { signalId },
-        orderBy: { price: 'desc' }
-      });
+  const athSample = useMarketCap
+    ? samples.filter(s => s.marketCap !== null).sort((a, b) => (b.marketCap || 0) - (a.marketCap || 0))[0]
+    : samples.sort((a, b) => b.price - a.price)[0];
   const athAt = athSample?.sampledAt || new Date();
   
   // Calculate timeToAth if we have detectedAt
@@ -69,11 +68,6 @@ export const updateSignalMetrics = async (signalId: number, currentMarketCap: nu
   
   if (signal.detectedAt) {
     // Stagnation: time spent < 1.1x before first pump (>1.1x)
-    const samples = await prisma.priceSample.findMany({
-      where: { signalId },
-      orderBy: { sampledAt: 'asc' }
-    });
-    
     let firstPumpTime: Date | null = null;
     for (const sample of samples) {
       const sampleValue = useMarketCap ? (sample.marketCap || 0) : sample.price;
@@ -180,16 +174,20 @@ export const updateSignalMetrics = async (signalId: number, currentMarketCap: nu
       });
 
       if (!existing) {
-        const now = new Date();
-        const hitAt = now;
+        const hitSample = samples.find(sample => {
+          const sampleValue = useMarketCap ? (sample.marketCap || 0) : sample.price;
+          const sampleMultiple = entryValue > 0 ? sampleValue / entryValue : 0;
+          return sampleMultiple >= k;
+        });
+        const hitAt = hitSample?.sampledAt || new Date();
         
         // Record Event (with market cap)
         await prisma.thresholdEvent.create({
           data: {
             signalId,
             multipleThreshold: k,
-            hitPrice: currentPrice,
-            hitMarketCap: currentMarketCap,
+            hitPrice: hitSample?.price || currentPrice,
+            hitMarketCap: hitSample?.marketCap || currentMarketCap,
             hitAt,
             provider: 'helius'
           }

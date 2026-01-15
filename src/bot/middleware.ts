@@ -57,16 +57,31 @@ export const ingestMiddleware: Middleware<Context> = async (ctx, next) => {
     const text = (ctx.message as any)?.text || '';
 
     if (pending?.type && text) {
-      const parsed = UIHelper.parseTimeframeInput(text);
-      (ctx as any).session.pendingInput = undefined;
-      if (!parsed) {
-        await ctx.reply('❌ Invalid timeframe. Use 6H, 3D, 2W, 1M.');
-        return next();
+      const isTimeframeType = [
+        'dist_timeframe',
+        'leaderboard_groups',
+        'leaderboard_users',
+        'leaderboard_signals',
+        'recent_timeframe',
+        'group_stats_timeframe',
+        'user_stats_timeframe',
+        'strategy_timeframe'
+      ].includes(pending.type);
+
+      let parsed: ReturnType<typeof UIHelper.parseTimeframeInput> | null = null;
+      if (isTimeframeType) {
+        parsed = UIHelper.parseTimeframeInput(text);
+        if (!parsed) {
+          await ctx.reply('❌ Invalid timeframe. Use 6H, 3D, 2W, 1M.');
+          return next();
+        }
+        (ctx as any).session.pendingInput = undefined;
       }
+      const parsedLabel = parsed?.label;
 
       if (pending.type === 'dist_timeframe') {
         if (!(ctx as any).session.distributions) (ctx as any).session.distributions = {};
-        (ctx as any).session.distributions.timeframe = parsed.label;
+        (ctx as any).session.distributions.timeframe = parsedLabel!;
 
         const lastChatId = (ctx as any).session.distributions.lastChatId;
         const lastMessageId = (ctx as any).session.distributions.lastMessageId;
@@ -79,63 +94,63 @@ export const ingestMiddleware: Middleware<Context> = async (ctx, next) => {
             logger.warn('Failed to refresh distributions after custom timeframe:', err);
           }
         }
-        await ctx.reply(`✅ Timeframe set to ${parsed.label}. Open Distributions to refresh.`);
+        await ctx.reply(`✅ Timeframe set to ${parsedLabel}. Open Distributions to refresh.`);
         return next();
       }
 
       if (pending.type === 'leaderboard_groups') {
         if (!(ctx as any).session.leaderboards) (ctx as any).session.leaderboards = {};
-        (ctx as any).session.leaderboards.group = parsed.label;
+        (ctx as any).session.leaderboards.group = parsedLabel!;
         const { handleGroupLeaderboardCommand } = await import('./commands/analytics');
-        await handleGroupLeaderboardCommand(ctx as any, parsed.label as any);
+        await handleGroupLeaderboardCommand(ctx as any, parsedLabel as any);
         return next();
       }
 
       if (pending.type === 'leaderboard_users') {
         if (!(ctx as any).session.leaderboards) (ctx as any).session.leaderboards = {};
-        (ctx as any).session.leaderboards.user = parsed.label;
+        (ctx as any).session.leaderboards.user = parsedLabel!;
         const { handleUserLeaderboardCommand } = await import('./commands/analytics');
-        await handleUserLeaderboardCommand(ctx as any, parsed.label as any);
+        await handleUserLeaderboardCommand(ctx as any, parsedLabel as any);
         return next();
       }
 
       if (pending.type === 'leaderboard_signals') {
         if (!(ctx as any).session.leaderboards) (ctx as any).session.leaderboards = {};
-        (ctx as any).session.leaderboards.signal = parsed.label;
+        (ctx as any).session.leaderboards.signal = parsedLabel!;
         const { handleSignalLeaderboardCommand } = await import('./commands/analytics');
-        await handleSignalLeaderboardCommand(ctx as any, parsed.label as any);
+        await handleSignalLeaderboardCommand(ctx as any, parsedLabel as any);
         return next();
       }
 
       if (pending.type === 'recent_timeframe') {
         if (!(ctx as any).session.recent) (ctx as any).session.recent = {};
-        (ctx as any).session.recent.timeframe = parsed.label;
+        (ctx as any).session.recent.timeframe = parsedLabel!;
         const { handleRecentCalls } = await import('./commands/analytics');
-        await handleRecentCalls(ctx as any, parsed.label as any);
+        await handleRecentCalls(ctx as any, parsedLabel as any);
         return next();
       }
 
       if (pending.type === 'group_stats_timeframe' && pending.groupId) {
         if (!(ctx as any).session.stats) (ctx as any).session.stats = {};
         if (!(ctx as any).session.stats.group) (ctx as any).session.stats.group = {};
-        (ctx as any).session.stats.group[pending.groupId] = parsed.label;
+        (ctx as any).session.stats.group[pending.groupId] = parsedLabel!;
         const { handleGroupStatsCommand } = await import('./commands/analytics');
-        await handleGroupStatsCommand(ctx as any, pending.groupId.toString(), parsed.label as any);
+        await handleGroupStatsCommand(ctx as any, pending.groupId.toString(), parsedLabel as any);
         return next();
       }
 
       if (pending.type === 'user_stats_timeframe' && pending.userId) {
         if (!(ctx as any).session.stats) (ctx as any).session.stats = {};
         if (!(ctx as any).session.stats.user) (ctx as any).session.stats.user = {};
-        (ctx as any).session.stats.user[pending.userId] = parsed.label;
+        (ctx as any).session.stats.user[pending.userId] = parsedLabel!;
         const { handleUserStatsCommand } = await import('./commands/analytics');
-        await handleUserStatsCommand(ctx as any, pending.userId.toString(), parsed.label as any);
+        await handleUserStatsCommand(ctx as any, pending.userId.toString(), parsedLabel as any);
         return next();
       }
 
       if (pending.type === 'strategy_timeframe') {
         if (!(ctx as any).session.strategyDraft) (ctx as any).session.strategyDraft = {};
-        (ctx as any).session.strategyDraft.timeframe = parsed.label;
+        (ctx as any).session.strategyDraft.timeframe = parsedLabel!;
         const { handleStrategyDraftSummary } = await import('./commands/copyTrading');
         await handleStrategyDraftSummary(ctx as any);
         return next();
@@ -147,6 +162,7 @@ export const ingestMiddleware: Middleware<Context> = async (ctx, next) => {
           await ctx.reply('❌ Invalid time window. Use HH:MM-HH:MM (e.g., 09:30-14:00).');
           return next();
         }
+        (ctx as any).session.pendingInput = undefined;
         if (!(ctx as any).session.strategyDraft) (ctx as any).session.strategyDraft = {};
         if (!(ctx as any).session.strategyDraft.schedule) (ctx as any).session.strategyDraft.schedule = { timezone: 'UTC', windows: [], days: [] };
         const schedule = (ctx as any).session.strategyDraft.schedule;
@@ -233,6 +249,7 @@ export const ingestMiddleware: Middleware<Context> = async (ctx, next) => {
           await ctx.reply('❌ Invalid stop loss multiple. Use a number between 0 and 1 (e.g., 0.7).');
           return next();
         }
+        (ctx as any).session.pendingInput = undefined;
         if (!(ctx as any).session.strategyDraft) (ctx as any).session.strategyDraft = {};
         if (!(ctx as any).session.strategyDraft.conditions) (ctx as any).session.strategyDraft.conditions = {};
         (ctx as any).session.strategyDraft.conditions.stopLossMultiple = val;
@@ -266,6 +283,7 @@ export const ingestMiddleware: Middleware<Context> = async (ctx, next) => {
           await ctx.reply('❌ Minutes must be > 0.');
           return next();
         }
+        (ctx as any).session.pendingInput = undefined;
         if (!(ctx as any).session.strategyDraft) (ctx as any).session.strategyDraft = {};
         if (!(ctx as any).session.strategyDraft.conditions) (ctx as any).session.strategyDraft.conditions = {};
         const key = pending.type === 'strategy_cond_tp_rule' ? 'takeProfitRules' : 'stopLossRules';
@@ -282,6 +300,7 @@ export const ingestMiddleware: Middleware<Context> = async (ctx, next) => {
           await ctx.reply('❌ Invalid balance. Use a number like 1 or 2.5 (SOL).');
           return next();
         }
+        (ctx as any).session.pendingInput = undefined;
         if (!(ctx as any).session.strategyDraft) (ctx as any).session.strategyDraft = {};
         (ctx as any).session.strategyDraft.startBalanceSol = val;
         const { handleStrategyDraftSummary } = await import('./commands/copyTrading');
@@ -316,6 +335,7 @@ export const ingestMiddleware: Middleware<Context> = async (ctx, next) => {
           await ctx.reply('❌ Minutes must be > 0.');
           return next();
         }
+        (ctx as any).session.pendingInput = undefined;
         const ownerTelegramId = ctx.from?.id ? BigInt(ctx.from.id) : null;
         if (!ownerTelegramId) return next();
         const owner = await prisma.user.findUnique({ where: { userId: ownerTelegramId } });
@@ -338,6 +358,7 @@ export const ingestMiddleware: Middleware<Context> = async (ctx, next) => {
           await ctx.reply('❌ Invalid fee. Use a number like 0.0001 (SOL).');
           return next();
         }
+        (ctx as any).session.pendingInput = undefined;
         if (!(ctx as any).session.strategyDraft) (ctx as any).session.strategyDraft = {};
         (ctx as any).session.strategyDraft.feePerSideSol = val;
         const { handleStrategyDraftSummary } = await import('./commands/copyTrading');

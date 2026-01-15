@@ -31,7 +31,7 @@ export const runSamplingCycle = async () => {
   
   try {
     const signals = await prisma.signal.findMany({
-      where: { trackingStatus: 'ACTIVE' },
+      where: { trackingStatus: { in: ['ACTIVE', 'ENTRY_PENDING'] } },
       include: {
         priceSamples: {
           orderBy: { sampledAt: 'desc' },
@@ -72,6 +72,20 @@ export const runSamplingCycle = async () => {
         }
         
         await addPriceSample(signal.id, signal.mint, quote.price, quote.source, marketCap);
+
+        if (!signal.entryMarketCap && marketCap) {
+          await prisma.signal.update({
+            where: { id: signal.id },
+            data: {
+              entryMarketCap: marketCap,
+              entryPrice: quote.price || signal.entryPrice,
+              entryPriceAt: signal.entryPriceAt || new Date(),
+              entryPriceProvider: quote.source || signal.entryPriceProvider,
+              entrySupply: signal.entrySupply || meta.supply || null,
+              trackingStatus: 'ACTIVE',
+            },
+          });
+        }
         
         // Update Metrics & Check Thresholds (using market cap)
         await updateSignalMetrics(signal.id, marketCap || quote.price, quote.price);

@@ -1010,6 +1010,10 @@ export const handleLiveSignals = async (ctx: BotContext) => {
                      row.pnl = ((currentPrice - entryPrice) / entryPrice) * 100;
                  }
              }
+
+             // Current multiple (market cap preferred)
+             const currentMultiple = entryMc > 0 && currentMc > 0 ? currentMc / entryMc : (sig?.metrics?.currentMultiple || 0);
+             (row as any).currentMultiple = currentMultiple;
              
              // Calculate trending velocity (10min % change in market cap)
              let velocity = 0;
@@ -1027,8 +1031,8 @@ export const handleLiveSignals = async (ctx: BotContext) => {
         .filter(row => {
             if (onlyGainers && row.pnl < 0) return false;
             // MinMult check
-            const mult = (row.pnl / 100) + 1;
-            if (minMult > 0 && mult < minMult) return false;
+            const mult = (row as any).currentMultiple || ((row.pnl / 100) + 1);
+            if (minMult > 0 && mult > 0 && mult < minMult) return false;
             return true;
         });
     
@@ -1093,7 +1097,8 @@ export const handleLiveSignals = async (ctx: BotContext) => {
         const currentMc = (row as any).currentMarketCap || sig?.metrics?.currentMarketCap || null;
         const entryStr = entryMc ? UIHelper.formatMarketCap(entryMc) : 'N/A';
         const currentStr = currentMc ? UIHelper.formatMarketCap(currentMc) : 'N/A';
-        message += `💰 Entry MC: ${entryStr} ➔ Now MC: ${currentStr} (*${pnlStr}*)\n`;
+        const multStr = entryMc && currentMc ? `${(currentMc / entryMc).toFixed(2)}x` : 'N/A';
+        message += `💰 Entry MC: ${entryStr} ➔ Now MC: ${currentStr} (*${pnlStr}*) | ${multStr}\n`;
         
         // Dex/Migrated/Team flags
         const dexPaid = sig?.dexPaid ? '✅' : '❌';
