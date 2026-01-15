@@ -869,7 +869,7 @@ export const handleLiveSignals = async (ctx: BotContext) => {
     // 2. Fetch Active Signals
     const signals = await prisma.signal.findMany({
       where: {
-        trackingStatus: 'ACTIVE',
+        trackingStatus: { in: ['ACTIVE', 'ENTRY_PENDING'] },
         OR: [
             { chatId: { in: ownedChatIds } },
             { id: { in: forwardedSignalIds } }
@@ -879,6 +879,8 @@ export const handleLiveSignals = async (ctx: BotContext) => {
       include: {
         group: true,
         user: true,
+        metrics: true,
+        priceSamples: { orderBy: { sampledAt: 'asc' }, take: 1 },
       }
     });
 
@@ -989,13 +991,14 @@ export const handleLiveSignals = async (ctx: BotContext) => {
     // Sort and Filter based on Market Cap (not price)
     const candidates = Array.from(aggregated.values())
         .map(row => {
-             const currentMc = marketCaps.get(row.mint) ?? 0;
+             // Find entry market cap from earliest signal
+             const sig = signals.find(s => s.mint === row.mint);
+             const currentMc = marketCaps.get(row.mint) ?? sig?.metrics?.currentMarketCap ?? 0;
              const currentPrice = prices[row.mint] ?? 0;
              row.currentPrice = currentPrice;
              
              // Find entry market cap from earliest signal
-             const sig = signals.find(s => s.mint === row.mint);
-             const entryMc = sig?.entryMarketCap || 0;
+             const entryMc = sig?.entryMarketCap || sig?.priceSamples?.[0]?.marketCap || 0;
              
              // Calculate PnL based on market cap (preferred)
              if (currentMc > 0 && entryMc > 0) {
@@ -1086,8 +1089,8 @@ export const handleLiveSignals = async (ctx: BotContext) => {
         message += `└ \`${row.mint.slice(0, 8)}...${row.mint.slice(-4)}\`\n`;
         
         // Entry -> Current Market Cap (preferred) or Price (fallback)
-        const entryMc = sig?.entryMarketCap || null;
-        const currentMc = (row as any).currentMarketCap || null;
+        const entryMc = sig?.entryMarketCap || sig?.priceSamples?.[0]?.marketCap || null;
+        const currentMc = (row as any).currentMarketCap || sig?.metrics?.currentMarketCap || null;
         const entryStr = entryMc ? UIHelper.formatMarketCap(entryMc) : 'N/A';
         const currentStr = currentMc ? UIHelper.formatMarketCap(currentMc) : 'N/A';
         message += `💰 Entry MC: ${entryStr} ➔ Now MC: ${currentStr} (*${pnlStr}*)\n`;
@@ -1468,6 +1471,7 @@ export const handleRecentCalls = async (ctx: Context, window: string = '7D') => 
         group: true,
         user: true, 
         metrics: true, 
+        priceSamples: { orderBy: { sampledAt: 'asc' }, take: 1 },
       },
     });
 
@@ -1508,7 +1512,7 @@ export const handleRecentCalls = async (ctx: Context, window: string = '7D') => 
     const signals = await prisma.signal.findMany({
         where: { id: { in: uniqueSignals.map(s => s.id) } },
         orderBy: { detectedAt: 'desc' },
-        include: { group: true, user: true, metrics: true }
+        include: { group: true, user: true, metrics: true, priceSamples: { orderBy: { sampledAt: 'asc' }, take: 1 } }
     });
 
     const windowLabel = ['1D','3D','7D','30D','ALL'].includes(String(effectiveWindow)) ? String(effectiveWindow) : `Custom ${effectiveWindow}`;
@@ -1516,11 +1520,20 @@ export const handleRecentCalls = async (ctx: Context, window: string = '7D') => 
 
     const { getMultipleTokenPrices } = await import('../../providers/jupiter');
     const prices = await getMultipleTokenPrices(signals.map(s => s.mint));
+    const metaMap = new Map<string, any>();
+    await Promise.all(signals.map(async (s) => {
+      try {
+        const meta = await provider.getTokenMeta(s.mint);
+        metaMap.set(s.mint, meta);
+      } catch {}
+    }));
 
     for (const sig of signals) {
         const currentPrice = prices[sig.mint] || 0;
-        const entryMc = sig.entryMarketCap || 0;
-        const currentMc = sig.entrySupply && currentPrice ? currentPrice * sig.entrySupply : (sig.metrics?.currentMarketCap || 0);
+        const entryMc = sig.entryMarketCap || sig.priceSamples?.[0]?.marketCap || 0;
+        const meta = metaMap.get(sig.mint);
+        const supply = sig.entrySupply || meta?.supply || null;
+        const currentMc = supply && currentPrice ? currentPrice * supply : (sig.metrics?.currentMarketCap || meta?.marketCap || 0);
         const entryStr = entryMc ? UIHelper.formatMarketCap(entryMc) : 'N/A';
         const currStr = currentMc ? UIHelper.formatMarketCap(currentMc) : 'N/A';
         
