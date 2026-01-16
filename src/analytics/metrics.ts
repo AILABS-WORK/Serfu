@@ -1,8 +1,56 @@
 import { prisma } from '../db';
 import { logger } from '../utils/logger';
 import { getBotInstance } from '../bot/instance';
+import { geckoTerminal } from '../providers/geckoTerminal';
 
 const THRESHOLDS = [2, 3, 4, 5, 10];
+
+const OHLCV_CHECK_MIN_MS = 15 * 60 * 1000;
+const lastOhlcvCheck = new Map<number, number>();
+
+const getOhlcvParams = (entryAt: Date) => {
+  const ageMs = Date.now() - entryAt.getTime();
+  const ageMinutes = Math.max(1, Math.ceil(ageMs / (60 * 1000)));
+  if (ageMinutes <= 1000) return { timeframe: 'minute' as const, limit: Math.min(1000, ageMinutes + 1), intervalMs: 60 * 1000 };
+  const ageHours = Math.ceil(ageMinutes / 60);
+  if (ageHours <= 1000) return { timeframe: 'hour' as const, limit: Math.min(1000, ageHours + 1), intervalMs: 60 * 60 * 1000 };
+  const ageDays = Math.ceil(ageHours / 24);
+  return { timeframe: 'day' as const, limit: Math.min(1000, ageDays + 1), intervalMs: 24 * 60 * 60 * 1000 };
+};
+
+const getAthFromOhlcv = async (
+  mint: string,
+  entryAt: Date,
+  entrySupply: number | null | undefined,
+  entryPrice?: number | null
+) => {
+  if (!entrySupply || entrySupply <= 0) return null;
+  const { timeframe, limit, intervalMs } = getOhlcvParams(entryAt);
+  const candles = await geckoTerminal.getOHLCV(mint, timeframe, limit);
+  if (!candles.length) return null;
+  let startIndex = candles.findIndex(
+    (c) => entryAt.getTime() >= c.timestamp && entryAt.getTime() < c.timestamp + intervalMs
+  );
+  if (startIndex === -1) {
+    startIndex = candles.findIndex((c) => c.timestamp >= entryAt.getTime());
+  }
+  if (startIndex === -1) startIndex = 0;
+  let maxHigh = 0;
+  let maxAt = candles[startIndex].timestamp;
+  for (let i = startIndex; i < candles.length; i++) {
+    if (candles[i].high > maxHigh) {
+      maxHigh = candles[i].high;
+      maxAt = candles[i].timestamp;
+    }
+  }
+  const derivedEntryPrice = entryPrice ?? candles[startIndex]?.open ?? null;
+  return {
+    athPrice: maxHigh || null,
+    athMarketCap: maxHigh ? maxHigh * entrySupply : null,
+    athAt: new Date(maxAt),
+    entryPrice: derivedEntryPrice,
+  };
+};
 
 export const updateSignalMetrics = async (signalId: number, currentMarketCap: number | null, currentPrice: number) => {
   const signal = await prisma.signal.findUnique({
@@ -38,23 +86,49 @@ export const updateSignalMetrics = async (signalId: number, currentMarketCap: nu
   // Use market cap if available, otherwise fallback to price
   const useMarketCap = entryMarketCap && currentMarketCap && agg._max.marketCap;
   const minValue = useMarketCap ? (agg._min.marketCap || currentMarketCap) : (agg._min.price || currentPrice);
-  const maxValue = useMarketCap ? (agg._max.marketCap || currentMarketCap) : (agg._max.price || currentPrice);
+  let maxValue = useMarketCap ? (agg._max.marketCap || currentMarketCap) : (agg._max.price || currentPrice);
   const entryValue = useMarketCap ? entryMarketCap : entryPrice!;
   
   const maxDrawdown = (minValue / entryValue) - 1; // negative %
-  const athValue = maxValue || 0;
-  const athMultiple = entryValue > 0 ? athValue / entryValue : 0;
-  
   const samples = await prisma.priceSample.findMany({
     where: { signalId },
     orderBy: { sampledAt: 'asc' }
   });
 
+  let athValue = maxValue || 0;
+  let athAt = samples.length ? samples[samples.length - 1].sampledAt : new Date();
+
+  const entryAt = signal.entryPriceAt || signal.detectedAt;
+  const shouldCheckOhlcv =
+    !!entryAt &&
+    (Date.now() - (lastOhlcvCheck.get(signalId) || 0) > OHLCV_CHECK_MIN_MS);
+  if (shouldCheckOhlcv) {
+    lastOhlcvCheck.set(signalId, Date.now());
+    try {
+      const ohlcvAth = await getAthFromOhlcv(signal.mint, entryAt!, signal.entrySupply, signal.entryPrice);
+      if (ohlcvAth) {
+        if (useMarketCap && ohlcvAth.athMarketCap && ohlcvAth.athMarketCap > athValue) {
+          athValue = ohlcvAth.athMarketCap;
+          athAt = ohlcvAth.athAt;
+        } else if (!useMarketCap && ohlcvAth.athPrice && ohlcvAth.athPrice > athValue) {
+          athValue = ohlcvAth.athPrice;
+          athAt = ohlcvAth.athAt;
+        }
+      }
+    } catch (err) {
+      logger.debug(`OHLCV ATH fetch failed for ${signal.mint}:`, err);
+    }
+  }
+
+  const athMultiple = entryValue > 0 ? athValue / entryValue : 0;
+  
   // Find the actual timestamp of ATH from price samples (using market cap if available)
   const athSample = useMarketCap
     ? samples.filter(s => s.marketCap !== null).sort((a, b) => (b.marketCap || 0) - (a.marketCap || 0))[0]
     : samples.sort((a, b) => b.price - a.price)[0];
-  const athAt = athSample?.sampledAt || new Date();
+  if (athSample?.sampledAt && athSample.sampledAt > athAt) {
+    athAt = athSample.sampledAt;
+  }
   
   // Calculate timeToAth if we have detectedAt
   let timeToAth = null;

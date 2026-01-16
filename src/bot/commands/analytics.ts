@@ -921,6 +921,8 @@ export const handleLiveSignals = async (ctx: BotContext) => {
         earliestDate: Date;
         latestDate: Date;
         earliestCaller: string;
+        earliestSignalId: number;
+        latestSignalId: number;
         mentions: number;
         pnl: number;
         currentPrice: number;
@@ -936,6 +938,8 @@ export const handleLiveSignals = async (ctx: BotContext) => {
                 earliestDate: sig.detectedAt,
                 latestDate: sig.detectedAt,
                 earliestCaller: caller,
+                earliestSignalId: sig.id,
+                latestSignalId: sig.id,
                 mentions: 0,
                 pnl: 0,
                 currentPrice: 0
@@ -945,6 +949,8 @@ export const handleLiveSignals = async (ctx: BotContext) => {
         row.mentions++;
         if (sig.detectedAt < row.earliestDate) row.earliestDate = sig.detectedAt;
         if (sig.detectedAt > row.latestDate) row.latestDate = sig.detectedAt;
+        if (sig.detectedAt <= row.earliestDate) row.earliestSignalId = sig.id;
+        if (sig.detectedAt >= row.latestDate) row.latestSignalId = sig.id;
     }
 
     // 4. Batch Market Cap Fetching (OPTIMIZATION - Using Market Cap instead of Price)
@@ -974,7 +980,13 @@ export const handleLiveSignals = async (ctx: BotContext) => {
     const minMult = liveFilters.minMult || 0;
     const onlyGainers = liveFilters.onlyGainers || false;
     const sortBy = (liveFilters as any).sortBy || 'pnl';
-    const lastDayCutoff = subDays(new Date(), 1);
+    const timeframeLabel = (liveFilters as any).timeframe || '24H';
+    const timeframeParsed = UIHelper.parseTimeframeInput(timeframeLabel);
+    const timeframeCutoff =
+      timeframeLabel === 'ALL'
+        ? new Date(0)
+        : (timeframeParsed ? new Date(Date.now() - timeframeParsed.ms) : subDays(new Date(), 1));
+    const minAth = (liveFilters as any).minAth || 0;
     
     // Get market cap samples for trending calculation (last 10 minutes)
     const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000);
@@ -1002,7 +1014,7 @@ export const handleLiveSignals = async (ctx: BotContext) => {
     const candidates = Array.from(aggregated.values())
         .map(row => {
              // Find entry market cap from earliest signal
-             const sig = signals.find(s => s.mint === row.mint);
+             const sig = signals.find(s => s.id === (row as any).earliestSignalId) || signals.find(s => s.mint === row.mint);
              const currentMc = marketCaps.get(row.mint) ?? sig?.metrics?.currentMarketCap ?? 0;
              const currentPrice = prices[row.mint] ?? 0;
              row.currentPrice = currentPrice;
@@ -1044,9 +1056,16 @@ export const handleLiveSignals = async (ctx: BotContext) => {
             const mult = (row as any).currentMultiple || ((row.pnl / 100) + 1);
             if (minMult > 0) {
               if (mult <= 0 || mult < minMult) return false;
-              // When filtering by 2x/5x, only include signals called within the last day
-              if (row.latestDate < lastDayCutoff) return false;
+              // When filtering by 2x/5x, only include signals called within selected timeframe
+              if (row.latestDate < timeframeCutoff) return false;
             }
+            // ATH threshold filter
+            if (minAth > 0) {
+              const ath = (row as any).athMultiple || 0;
+              if (ath < minAth) return false;
+            }
+            // Timeframe filter for general view
+            if (row.latestDate < timeframeCutoff) return false;
             return true;
         });
     
@@ -1092,8 +1111,9 @@ export const handleLiveSignals = async (ctx: BotContext) => {
 
     for (const row of top10) {
         const meta = metaMap.get(row.mint);
-        const sig = signals.find(s => s.mint === row.mint);
-        if (sig && meta) {
+        const sig = signals.find(s => s.id === (row as any).earliestSignalId) || signals.find(s => s.mint === row.mint);
+        if (!sig) continue;
+        if (meta) {
           const updates: any = {};
           const tokenCreatedAt = meta.createdAt || meta.firstPoolCreatedAt || null;
           if (!sig.tokenCreatedAt && tokenCreatedAt) updates.tokenCreatedAt = tokenCreatedAt;
@@ -1121,7 +1141,22 @@ export const handleLiveSignals = async (ctx: BotContext) => {
         const currentMc = (row as any).currentMarketCap || sig?.metrics?.currentMarketCap || null;
         const entryStr = entryMc ? UIHelper.formatMarketCap(entryMc) : 'N/A';
         const currentStr = currentMc ? UIHelper.formatMarketCap(currentMc) : 'N/A';
-        const athMult = sig?.metrics?.athMultiple || (entryMc && currentMc ? currentMc / entryMc : 0);
+        let athMult = sig?.metrics?.athMultiple || 0;
+        if (entryMc) {
+          try {
+            const maxSample = await prisma.priceSample.aggregate({
+              where: { signalId: sig.id, marketCap: { not: null } },
+              _max: { marketCap: true }
+            });
+            const maxMc = maxSample._max.marketCap || null;
+            if (maxMc) {
+              athMult = maxMc / entryMc;
+            } else if (currentMc) {
+              athMult = currentMc / entryMc;
+            }
+          } catch {}
+        }
+        (row as any).athMultiple = athMult;
         const athLabel = athMult > 0
           ? `${athMult.toFixed(1).replace(/\.0$/, '')}x ATH`
           : 'ATH N/A';
@@ -1167,6 +1202,18 @@ export const handleLiveSignals = async (ctx: BotContext) => {
             { text: '🚀 > 2x', callback_data: 'live_filter:2x' },
             { text: '🌕 > 5x', callback_data: 'live_filter:5x' },
             { text: '🟢 Gainers', callback_data: 'live_filter:gainers' }
+        ],
+        [
+            { text: timeframeLabel === '1H' ? '✅ 1H' : '1H', callback_data: 'live_time:1H' },
+            { text: timeframeLabel === '6H' ? '✅ 6H' : '6H', callback_data: 'live_time:6H' },
+            { text: timeframeLabel === '24H' ? '✅ 24H' : '24H', callback_data: 'live_time:24H' },
+            { text: timeframeLabel === '7D' ? '✅ 7D' : '7D', callback_data: 'live_time:7D' },
+            { text: timeframeLabel === 'ALL' ? '✅ ALL' : 'ALL', callback_data: 'live_time:ALL' },
+            { text: 'Custom', callback_data: 'live_time:custom' }
+        ],
+        [
+            { text: minAth ? `🏔️ ATH ≥ ${minAth}x` : '🏔️ ATH ≥ X', callback_data: 'live_ath:custom' },
+            { text: minAth ? '♻️ Reset ATH' : ' ', callback_data: minAth ? 'live_ath:reset' : 'live_signals' }
         ],
         [
             { text: '🔄 Refresh', callback_data: 'live_signals' },

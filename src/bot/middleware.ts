@@ -65,7 +65,8 @@ export const ingestMiddleware: Middleware<Context> = async (ctx, next) => {
         'recent_timeframe',
         'group_stats_timeframe',
         'user_stats_timeframe',
-        'strategy_timeframe'
+        'strategy_timeframe',
+        'live_timeframe'
       ].includes(pending.type);
 
       let parsed: ReturnType<typeof UIHelper.parseTimeframeInput> | null = null;
@@ -98,6 +99,14 @@ export const ingestMiddleware: Middleware<Context> = async (ctx, next) => {
         return next();
       }
 
+      if (pending.type === 'live_timeframe') {
+        if (!(ctx as any).session.liveFilters) (ctx as any).session.liveFilters = {};
+        (ctx as any).session.liveFilters.timeframe = parsedLabel!;
+        const { handleLiveSignals } = await import('./commands/analytics');
+        await handleLiveSignals(ctx as any);
+        return next();
+      }
+
       if (pending.type === 'leaderboard_groups') {
         if (!(ctx as any).session.leaderboards) (ctx as any).session.leaderboards = {};
         (ctx as any).session.leaderboards.group = parsedLabel!;
@@ -127,6 +136,20 @@ export const ingestMiddleware: Middleware<Context> = async (ctx, next) => {
         (ctx as any).session.recent.timeframe = parsedLabel!;
         const { handleRecentCalls } = await import('./commands/analytics');
         await handleRecentCalls(ctx as any, parsedLabel as any);
+        return next();
+      }
+
+      if (pending.type === 'live_ath_min') {
+        const val = parseFloat(text.trim());
+        if (!Number.isFinite(val) || val <= 0) {
+          await ctx.reply('❌ Invalid ATH multiple. Use a number like 2, 5, 10.5');
+          return next();
+        }
+        if (!(ctx as any).session.liveFilters) (ctx as any).session.liveFilters = {};
+        (ctx as any).session.liveFilters.minAth = val;
+        (ctx as any).session.pendingInput = undefined;
+        const { handleLiveSignals } = await import('./commands/analytics');
+        await handleLiveSignals(ctx as any);
         return next();
       }
 

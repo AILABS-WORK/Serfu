@@ -349,6 +349,50 @@ Max Drawdown: ${(dd * 100).toFixed(2)}%
       }
   });
 
+  bot.action(/^live_time:(.*)$/, async (ctx) => {
+      try {
+          const tf = ctx.match[1];
+          if (!ctx.session) ctx.session = {};
+          if (!ctx.session.liveFilters) ctx.session.liveFilters = {};
+          if (tf === 'custom') {
+              (ctx as any).session.pendingInput = { type: 'live_timeframe' };
+              await ctx.reply('Enter live signals timeframe (e.g., 1H, 6H, 24H, 7D):');
+              await ctx.answerCbQuery();
+              return;
+          }
+          (ctx.session.liveFilters as any).timeframe = tf;
+          const { handleLiveSignals } = await import('./commands/analytics');
+          await handleLiveSignals(ctx);
+          await ctx.answerCbQuery('Timeframe updated');
+      } catch (error) {
+          logger.error('Timeframe action error:', error);
+          ctx.answerCbQuery('Error updating timeframe');
+      }
+  });
+
+  bot.action(/^live_ath:(.*)$/, async (ctx) => {
+      try {
+          const val = ctx.match[1];
+          if (!ctx.session) ctx.session = {};
+          if (!ctx.session.liveFilters) ctx.session.liveFilters = {};
+          if (val === 'custom') {
+              (ctx as any).session.pendingInput = { type: 'live_ath_min' };
+              await ctx.reply('Enter minimum ATH multiple (e.g., 2, 5, 10.5):');
+              await ctx.answerCbQuery();
+              return;
+          }
+          if (val === 'reset') {
+              (ctx.session.liveFilters as any).minAth = undefined;
+          }
+          const { handleLiveSignals } = await import('./commands/analytics');
+          await handleLiveSignals(ctx);
+          await ctx.answerCbQuery('ATH filter updated');
+      } catch (error) {
+          logger.error('ATH filter action error:', error);
+          ctx.answerCbQuery('Error updating ATH filter');
+      }
+  });
+
   bot.action('distributions', async (ctx) => {
       const { handleDistributions } = await import('./commands/analytics');
       await handleDistributions(ctx as any, 'mcap');
