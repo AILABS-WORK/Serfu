@@ -1,6 +1,7 @@
 import { MarketDataProvider, PriceQuote, TokenMeta, OHLCV } from './types';
 import { logger } from '../utils/logger';
 import { getJupiterPrice, getJupiterTokenInfo } from './jupiter';
+import { getDexScreenerToken } from './dexscreener';
 
 // Lazy load helius-sdk (ESM module) - use require for type checking
 const getHeliusModule = async () => {
@@ -45,7 +46,12 @@ export class HeliusProvider implements MarketDataProvider {
       }
 
       // Use Helius SDK getAsset to fetch price data
-      const asset = await this.helius.getAsset({ id: mint });
+      let asset: any = null;
+      try {
+        asset = await this.helius.getAsset({ id: mint });
+      } catch (err) {
+        logger.warn(`Helius getAsset failed for ${mint}, falling back to Jupiter:`, err);
+      }
 
       if (asset?.token_info?.price_info) {
         const priceInfo = asset.token_info.price_info;
@@ -66,6 +72,17 @@ export class HeliusProvider implements MarketDataProvider {
           timestamp: Date.now(),
           source: jupPrice.source,
           confidence: 0.8,
+        };
+      }
+
+      // Final fallback: DexScreener price
+      const ds = await getDexScreenerToken(mint);
+      if (ds?.priceUsd !== null && ds?.priceUsd !== undefined) {
+        return {
+          price: ds.priceUsd,
+          timestamp: Date.now(),
+          source: 'dexscreener',
+          confidence: 0.6,
         };
       }
 
@@ -142,7 +159,12 @@ export class HeliusProvider implements MarketDataProvider {
       }
 
       // Use Helius SDK for Metadata (DAS)
-      const asset = await this.helius.getAsset({ id: mint });
+      let asset: any = null;
+      try {
+        asset = await this.helius.getAsset({ id: mint });
+      } catch (err) {
+        logger.warn(`Helius getAsset failed for ${mint}, trying DexScreener:`, err);
+      }
 
       if (asset) {
         const tokenInfo = asset.token_info || {};
@@ -196,6 +218,21 @@ export class HeliusProvider implements MarketDataProvider {
           socialLinks: Object.keys(socialLinks).length > 0 ? socialLinks : undefined,
           launchpad: asset.creators?.[0]?.address || undefined, // Could be enhanced with launchpad detection
           createdAt,
+          chain: 'Solana',
+        };
+      }
+
+      // Final fallback: DexScreener
+      const ds = await getDexScreenerToken(mint);
+      if (ds) {
+        return {
+          mint,
+          name: ds.name || 'Unknown',
+          symbol: ds.symbol || 'UNKNOWN',
+          marketCap: ds.marketCap ?? undefined,
+          fdv: ds.fdv ?? undefined,
+          liquidity: ds.liquidityUsd ?? undefined,
+          volume24h: ds.volume24h ?? undefined,
           chain: 'Solana',
         };
       }

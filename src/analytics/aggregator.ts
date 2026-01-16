@@ -570,13 +570,22 @@ export const getSignalLeaderboard = async (
   return signals.map(s => {
     const currentPrice = prices[s.mint] || null;
     const supply = s.entrySupply;
-    const currentMc = currentPrice && supply ? currentPrice * supply : null;
+    const currentMc =
+      s.metrics?.currentMarketCap ??
+      (s.entryMarketCap && s.metrics?.currentMultiple ? s.entryMarketCap * s.metrics.currentMultiple : null) ??
+      (currentPrice && supply ? currentPrice * supply : null);
     
     // Calculate time to ATH in minutes
     let timeToAth: number | null = null;
-    if (s.metrics?.athAt && s.detectedAt) {
+    if (s.metrics?.timeToAth !== null && s.metrics?.timeToAth !== undefined) {
+      timeToAth = s.metrics.timeToAth / (1000 * 60);
+    } else if (s.metrics?.athAt && s.detectedAt) {
       timeToAth = (s.metrics.athAt.getTime() - s.detectedAt.getTime()) / (1000 * 60);
     }
+    
+    const athMarketCap =
+      s.metrics?.athMarketCap ??
+      (s.entryMarketCap && s.metrics?.athMultiple ? s.entryMarketCap * s.metrics.athMultiple : null);
     
     return {
       id: s.id,
@@ -586,7 +595,7 @@ export const getSignalLeaderboard = async (
       sourceName: s.user?.username || s.group?.name || 'Unknown',
       detectedAt: s.detectedAt,
       entryMarketCap: s.entryMarketCap,
-      athMarketCap: s.metrics?.athMarketCap || null,
+      athMarketCap,
       currentMarketCap: currentMc,
       timeToAth
     };
@@ -709,7 +718,6 @@ export const getDistributionStats = async (
   const signals = await prisma.signal.findMany({
     where: {
       detectedAt: { gte: since },
-      metrics: { isNot: null },
       ...scopeFilter
     },
     include: { 
@@ -827,11 +835,11 @@ export const getDistributionStats = async (
   let timeTo10xCount = 0;
 
   for (const s of sortedSignals) {
-    if (!s.metrics) continue;
-    const mult = s.metrics.athMultiple || 0;
+    const mult = s.metrics?.athMultiple || s.metrics?.currentMultiple || 0;
     const entryMc = s.entryMarketCap || 0;
+    const maxDrawdown = s.metrics?.maxDrawdown || 0;
     const isWin = mult > 2;
-    const isRug = mult < 0.5 || (s.metrics.maxDrawdown || 0) < -0.9;
+    const isRug = mult < 0.5 || maxDrawdown < -0.9;
     const isMoonshot = mult > 10;
 
     // Win Rate Buckets

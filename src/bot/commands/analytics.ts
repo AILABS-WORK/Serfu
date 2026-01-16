@@ -919,6 +919,7 @@ export const handleLiveSignals = async (ctx: BotContext) => {
         symbol: string;
         mint: string;
         earliestDate: Date;
+        latestDate: Date;
         earliestCaller: string;
         mentions: number;
         pnl: number;
@@ -933,13 +934,17 @@ export const handleLiveSignals = async (ctx: BotContext) => {
                 symbol: sig.symbol || 'N/A',
                 mint: sig.mint,
                 earliestDate: sig.detectedAt,
+                latestDate: sig.detectedAt,
                 earliestCaller: caller,
                 mentions: 0,
                 pnl: 0,
                 currentPrice: 0
             });
         }
-        aggregated.get(sig.mint)!.mentions++;
+        const row = aggregated.get(sig.mint)!;
+        row.mentions++;
+        if (sig.detectedAt < row.earliestDate) row.earliestDate = sig.detectedAt;
+        if (sig.detectedAt > row.latestDate) row.latestDate = sig.detectedAt;
     }
 
     // 4. Batch Market Cap Fetching (OPTIMIZATION - Using Market Cap instead of Price)
@@ -969,6 +974,7 @@ export const handleLiveSignals = async (ctx: BotContext) => {
     const minMult = liveFilters.minMult || 0;
     const onlyGainers = liveFilters.onlyGainers || false;
     const sortBy = (liveFilters as any).sortBy || 'pnl';
+    const lastDayCutoff = subDays(new Date(), 1);
     
     // Get market cap samples for trending calculation (last 10 minutes)
     const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000);
@@ -1036,7 +1042,11 @@ export const handleLiveSignals = async (ctx: BotContext) => {
             if (onlyGainers && row.pnl < 0) return false;
             // MinMult check
             const mult = (row as any).currentMultiple || ((row.pnl / 100) + 1);
-            if (minMult > 0 && mult > 0 && mult < minMult) return false;
+            if (minMult > 0) {
+              if (mult <= 0 || mult < minMult) return false;
+              // When filtering by 2x/5x, only include signals called within the last day
+              if (row.latestDate < lastDayCutoff) return false;
+            }
             return true;
         });
     
@@ -1044,7 +1054,7 @@ export const handleLiveSignals = async (ctx: BotContext) => {
     if (sortBy === 'trending') {
         candidates.sort((a, b) => (b as any).velocity - (a as any).velocity);
     } else if (sortBy === 'newest') {
-        candidates.sort((a, b) => b.earliestDate.getTime() - a.earliestDate.getTime());
+        candidates.sort((a, b) => b.latestDate.getTime() - a.latestDate.getTime());
     } else {
         // Default: Highest PnL
         candidates.sort((a, b) => b.pnl - a.pnl);
@@ -1097,7 +1107,7 @@ export const handleLiveSignals = async (ctx: BotContext) => {
         // PnL & formatting
         const pnlStr = UIHelper.formatPercent(row.pnl);
         const icon = row.pnl >= 0 ? '🟢' : '🔴';
-        const timeAgo = UIHelper.formatTimeAgo(row.earliestDate);
+        const timeAgo = UIHelper.formatTimeAgo(row.latestDate);
         
         // Use symbol from meta if available
         const displaySymbol = meta?.symbol || row.symbol;
@@ -1111,8 +1121,11 @@ export const handleLiveSignals = async (ctx: BotContext) => {
         const currentMc = (row as any).currentMarketCap || sig?.metrics?.currentMarketCap || null;
         const entryStr = entryMc ? UIHelper.formatMarketCap(entryMc) : 'N/A';
         const currentStr = currentMc ? UIHelper.formatMarketCap(currentMc) : 'N/A';
-        const multStr = entryMc && currentMc ? `${(currentMc / entryMc).toFixed(2)}x` : 'N/A';
-        message += `💰 Entry MC: ${entryStr} ➔ Now MC: ${currentStr} (*${pnlStr}*) | ${multStr}\n`;
+        const athMult = sig?.metrics?.athMultiple || (entryMc && currentMc ? currentMc / entryMc : 0);
+        const athLabel = athMult > 0
+          ? `${athMult.toFixed(1).replace(/\.0$/, '')}x ATH`
+          : 'ATH N/A';
+        message += `💰 Entry MC: ${entryStr} ➔ Now MC: ${currentStr} (*${pnlStr}*) | ${athLabel}\n`;
         
         if (!sig?.entryMarketCap && sig?.priceSamples?.[0]?.marketCap) {
           prisma.signal.update({
@@ -1138,14 +1151,6 @@ export const handleLiveSignals = async (ctx: BotContext) => {
         const hasX = meta?.socialLinks ? (meta.socialLinks.twitter ? '✅' : '❌') : '❔';
         message += `🍬 Dex: ${dexPaid} | 📦 Migrated: ${migrated} | 👥 Team: ${hasTeam} | 𝕏: ${hasX}\n`;
 
-        // ATH line (market cap preferred)
-        const athMult = sig?.metrics?.athMultiple;
-        const athMc = sig?.metrics?.athMarketCap;
-        if (athMult) {
-          const athMcStr = athMc ? ` (${UIHelper.formatMarketCap(athMc)})` : '';
-          message += `🏔️ ATH: ${athMult.toFixed(2)}x${athMcStr}\n`;
-        }
-        
         // Age and Caller
         message += `⏱️ Age: ${timeAgo} | 👤 ${row.earliestCaller}\n`;
         message += UIHelper.separator('LIGHT'); 

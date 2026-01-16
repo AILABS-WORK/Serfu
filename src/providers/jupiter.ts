@@ -34,6 +34,10 @@ export const getMultipleTokenPrices = async (mints: string[]): Promise<Record<st
         const res = await fetch(url, { headers });
         if (!res.ok) {
           logger.debug(`Jupiter batch price failed status ${res.status}`);
+          // Mark chunk as missing so we can try fallback later
+          chunk.forEach(mint => {
+            if (!(mint in results)) results[mint] = null;
+          });
           continue;
         }
         const data: any = await res.json();
@@ -44,6 +48,21 @@ export const getMultipleTokenPrices = async (mints: string[]): Promise<Record<st
         });
     }
     
+    // Fallback: use Jupiter search (token info) when batch price returns null
+    const missing = Object.entries(results)
+      .filter(([, price]) => price === null)
+      .map(([mint]) => mint);
+    for (const mint of missing) {
+      try {
+        const info = await getJupiterTokenInfo(mint);
+        if (info?.usdPrice !== undefined && info.usdPrice !== null) {
+          results[mint] = Number(info.usdPrice);
+        }
+      } catch (err: any) {
+        logger.debug(`Jupiter search fallback failed for ${mint}:`, err);
+      }
+    }
+
     return results;
 
   } catch (err: any) {
