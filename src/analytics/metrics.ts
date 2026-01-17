@@ -5,7 +5,7 @@ import { geckoTerminal } from '../providers/geckoTerminal';
 
 const THRESHOLDS = [2, 3, 4, 5, 10];
 
-const OHLCV_CHECK_MIN_MS = 15 * 60 * 1000;
+const OHLCV_CHECK_MIN_MS = 5 * 60 * 1000;
 const lastOhlcvCheck = new Map<number, number>();
 
 const getOhlcvParams = (entryAt: Date) => {

@@ -1142,19 +1142,8 @@ export const handleLiveSignals = async (ctx: BotContext) => {
         const entryStr = entryMc ? UIHelper.formatMarketCap(entryMc) : 'N/A';
         const currentStr = currentMc ? UIHelper.formatMarketCap(currentMc) : 'N/A';
         let athMult = sig?.metrics?.athMultiple || 0;
-        if (entryMc) {
-          try {
-            const maxSample = await prisma.priceSample.aggregate({
-              where: { signalId: sig.id, marketCap: { not: null } },
-              _max: { marketCap: true }
-            });
-            const maxMc = maxSample._max.marketCap || null;
-            if (maxMc) {
-              athMult = maxMc / entryMc;
-            } else if (currentMc) {
-              athMult = currentMc / entryMc;
-            }
-          } catch {}
+        if (!athMult && entryMc && currentMc) {
+          athMult = currentMc / entryMc;
         }
         (row as any).athMultiple = athMult;
         const athLabel = athMult > 0
