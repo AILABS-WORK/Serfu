@@ -988,27 +988,9 @@ export const handleLiveSignals = async (ctx: BotContext) => {
         : (timeframeParsed ? new Date(Date.now() - timeframeParsed.ms) : subDays(new Date(), 1));
     const minAth = (liveFilters as any).minAth || 0;
     
-    // Get market cap samples for trending calculation (last 10 minutes)
-    const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000);
-    const recentSamples = await prisma.priceSample.findMany({
-      where: {
-        signalId: { in: signals.map(s => s.id) },
-        sampledAt: { gte: tenMinutesAgo },
-        marketCap: { not: null }
-      },
-      orderBy: { sampledAt: 'desc' }
-    });
-    
-    // Build market cap history map: signalId -> { current, tenMinAgo }
-    const mcapHistory = new Map<number, { current: number; tenMinAgo: number }>();
-    for (const sig of signals) {
-      const samples = recentSamples.filter(s => s.signalId === sig.id && s.marketCap);
-      if (samples.length > 0) {
-        const current = samples[0].marketCap || 0;
-        const tenMinAgo = samples[samples.length - 1]?.marketCap || current;
-        mcapHistory.set(sig.id, { current, tenMinAgo });
-      }
-    }
+    // OPTIMIZATION: Removed expensive priceSample query that was causing timeouts
+    // Velocity calculation removed - can be re-added later using cached metrics if needed
+    // For now, trending sort will use PnL instead of velocity
     
     // Sort and Filter based on Market Cap (not price)
     const candidates = Array.from(aggregated.values())
@@ -1037,15 +1019,9 @@ export const handleLiveSignals = async (ctx: BotContext) => {
              const currentMultiple = entryMc > 0 && currentMc > 0 ? currentMc / entryMc : (sig?.metrics?.currentMultiple || 0);
              (row as any).currentMultiple = currentMultiple;
              
-             // Calculate trending velocity (10min % change in market cap)
-             let velocity = 0;
-             if (sig) {
-               const history = mcapHistory.get(sig.id);
-               if (history && history.tenMinAgo && history.tenMinAgo > 0) {
-                 velocity = ((history.current - history.tenMinAgo) / history.tenMinAgo) * 100;
-               }
-             }
-             (row as any).velocity = velocity;
+             // Velocity calculation removed to prevent timeout
+             // Use PnL-based trending instead (high PnL = trending up)
+             (row as any).velocity = row.pnl; // Fallback: use PnL as velocity proxy
              (row as any).currentMarketCap = currentMc;
              
              return row;

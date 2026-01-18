@@ -6,7 +6,7 @@ export interface EntityStats {
   name: string;
   totalSignals: number;
   avgMultiple: number; // e.g. 3.5x
-  winRate: number; // % of signals > 2x
+  winRate: number; // % of signals >= WIN_MULTIPLE
   winRate5x: number; // % of signals > 5x
   hit2Count: number;
   hit5Count: number;
@@ -31,8 +31,8 @@ export interface EntityStats {
   avgAthMarketCap: number;
   timeToPeak: number; // Avg time to ATH (same as avgTimeToAth, keeping alias)
   sniperScore: number; // % of calls within 10m of token creation (mocked if no creation date)
-  consecutiveWins: number; // Current streak of > 2x calls
-  followThrough: number; // % of calls that are > 2x
+  consecutiveWins: number; // Current streak of >= WIN_MULTIPLE calls
+  followThrough: number; // % of calls that are >= WIN_MULTIPLE
   
   // V2 Metrics
   avgTimeTo2x: number; // minutes
@@ -74,6 +74,8 @@ const getDateFilter = (timeframe: TimeFrame) => {
   const hours = unit === 'H' ? value : unit === 'D' ? value * 24 : unit === 'W' ? value * 24 * 7 : value * 24 * 30;
   return new Date(Date.now() - hours * 60 * 60 * 1000);
 };
+
+const WIN_MULTIPLE = 1.4;
 
 const calculateStats = (signals: SignalWithMetrics[]): EntityStats => {
   if (!signals.length) {
@@ -160,7 +162,7 @@ const calculateStats = (signals: SignalWithMetrics[]): EntityStats => {
   let consecutiveWins = 0;
   for (const s of sortedSignals) {
       const m = s.metrics?.athMultiple || 0;
-      if (m > 2) consecutiveWins++;
+      if (m >= WIN_MULTIPLE) consecutiveWins++;
       else break;
   }
 
@@ -171,7 +173,7 @@ const calculateStats = (signals: SignalWithMetrics[]): EntityStats => {
     const mult = s.metrics.athMultiple || 0;
     multiples.push(mult);
     totalMult += mult;
-    if (mult > 2) wins++;
+    if (mult >= WIN_MULTIPLE) wins++;
     if (mult > 5) wins5x++;
     if (mult > 10) wins10x++;
     if (mult > maxMult) {
@@ -555,7 +557,12 @@ export const getSignalLeaderboard = async (
       detectedAt: { gte: since },
       metrics: { isNot: null }
     },
-    include: { metrics: true, group: true, user: true },
+    include: { 
+      metrics: true, 
+      group: true, 
+      user: true,
+      priceSamples: { orderBy: { sampledAt: 'asc' }, take: 1 } // Add for entryMarketCap fallback
+    },
     orderBy: {
         metrics: { athMultiple: 'desc' }
     },
@@ -575,17 +582,30 @@ export const getSignalLeaderboard = async (
       (s.entryMarketCap && s.metrics?.currentMultiple ? s.entryMarketCap * s.metrics.currentMultiple : null) ??
       (currentPrice && supply ? currentPrice * supply : null);
     
-    // Calculate time to ATH in minutes
+    // Calculate time to ATH in minutes (with validation to prevent negative values)
     let timeToAth: number | null = null;
     if (s.metrics?.timeToAth !== null && s.metrics?.timeToAth !== undefined) {
-      timeToAth = s.metrics.timeToAth / (1000 * 60);
+      // timeToAth is stored in milliseconds, convert to minutes
+      const timeMs = s.metrics.timeToAth;
+      if (timeMs > 0) {
+        timeToAth = timeMs / (1000 * 60);
+      }
     } else if (s.metrics?.athAt && s.detectedAt) {
-      timeToAth = (s.metrics.athAt.getTime() - s.detectedAt.getTime()) / (1000 * 60);
+      const diffMs = s.metrics.athAt.getTime() - s.detectedAt.getTime();
+      if (diffMs > 0) { // VALIDATION: Ensure athAt >= detectedAt
+        timeToAth = diffMs / (1000 * 60);
+      } else {
+        // Log warning for negative time (shouldn't happen, but handle gracefully)
+        logger.warn(`Negative timeToAth for signal ${s.id}: athAt=${s.metrics.athAt}, detectedAt=${s.detectedAt}`);
+      }
     }
     
     const athMarketCap =
       s.metrics?.athMarketCap ??
       (s.entryMarketCap && s.metrics?.athMultiple ? s.entryMarketCap * s.metrics.athMultiple : null);
+    
+    // Ensure entryMarketCap has fallback from first priceSample
+    const entryMc = s.entryMarketCap || s.priceSamples?.[0]?.marketCap || null;
     
     return {
       id: s.id,
@@ -594,7 +614,7 @@ export const getSignalLeaderboard = async (
       athMultiple: s.metrics?.athMultiple || 0,
       sourceName: s.user?.username || s.group?.name || 'Unknown',
       detectedAt: s.detectedAt,
-      entryMarketCap: s.entryMarketCap,
+      entryMarketCap: entryMc, // Use fallback from priceSamples if needed
       athMarketCap,
       currentMarketCap: currentMc,
       timeToAth
@@ -838,7 +858,7 @@ export const getDistributionStats = async (
     const mult = s.metrics?.athMultiple || s.metrics?.currentMultiple || 0;
     const entryMc = s.entryMarketCap || 0;
     const maxDrawdown = s.metrics?.maxDrawdown || 0;
-    const isWin = mult > 2;
+    const isWin = mult >= WIN_MULTIPLE;
     const isRug = mult < 0.5 || maxDrawdown < -0.9;
     const isMoonshot = mult > 10;
 

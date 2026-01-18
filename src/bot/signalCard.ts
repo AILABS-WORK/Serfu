@@ -34,11 +34,15 @@ export const checkDuplicateCA = async (
   firstSignal?: Signal;
   firstGroupName?: string;
 }> => {
+  // FIX: Workspace-wide duplicate detection - if ownerId provided, check ALL groups owned by that user
+  // This ensures "NEW SIGNAL" only appears if it's the FIRST time that CA appears anywhere in the workspace
   const whereClause: any = { mint };
-  if (groupId) {
-    whereClause.groupId = groupId; // group-scoped duplicate detection
-  } else if (ownerId) {
+  if (ownerId) {
+    // Workspace-wide check: look for this mint in ANY group owned by this user
     whereClause.group = { ownerId };
+  } else if (groupId) {
+    // Fallback: if no ownerId, check within specific group only
+    whereClause.groupId = groupId;
   } else {
     return { isDuplicate: false };
   }
