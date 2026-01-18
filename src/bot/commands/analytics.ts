@@ -1003,6 +1003,8 @@ export const handleLiveSignals = async (ctx: BotContext) => {
                  return row; // Return early if no signal found
              }
              
+             // Get current MC - prefer cached from metrics map, fallback to signal.metrics, then 0
+             // NOTE: This might be 0 for signals without metrics yet - we fetch fresh data for top 10 later
              const currentMc = marketCaps.get(row.mint) ?? sig?.metrics?.currentMarketCap ?? 0;
              const currentPrice = prices.get(row.mint) ?? 0;
              row.currentPrice = currentPrice;
@@ -1069,14 +1071,15 @@ export const handleLiveSignals = async (ctx: BotContext) => {
         // Use PnL as proxy for trending (high PnL = trending up)
         candidates.sort((a, b) => (b.pnl || (b as any)._calculatedPnl || 0) - (a.pnl || (a as any)._calculatedPnl || 0));
     } else if (sortBy === 'newest') {
-        // Sort by latest mention time (most recent first)
-        candidates.sort((a, b) => b.latestDate.getTime() - a.latestDate.getTime());
+        // FIX: Sort by earliest detection time (when CA was first mentioned) - newest first detections first
+        // This shows the newest CAs that appeared, not the most recently rementioned CAs
+        candidates.sort((a, b) => b.earliestDate.getTime() - a.earliestDate.getTime());
     } else if (sortBy === 'pnl') {
         // Highest PnL first
         candidates.sort((a, b) => (b.pnl || (b as any)._calculatedPnl || 0) - (a.pnl || (a as any)._calculatedPnl || 0));
     } else {
-        // Fallback to newest if sortBy is unknown
-        candidates.sort((a, b) => b.latestDate.getTime() - a.latestDate.getTime());
+        // Fallback to newest if sortBy is unknown (use earliestDate - first detection)
+        candidates.sort((a, b) => b.earliestDate.getTime() - a.earliestDate.getTime());
     }
     
     // FIX: Apply filters AFTER sorting and PnL calculation
@@ -1084,8 +1087,9 @@ export const handleLiveSignals = async (ctx: BotContext) => {
     // Signals with missing entry/current MC will have PnL=0 and might be incorrectly filtered
     // We'll recalculate PnL after metadata fetch, but filtering has already happened
     const filteredCandidates = candidates.filter(row => {
-            // Timeframe filter for general view (only apply if timeframe is not ALL)
-            if (timeframeLabel !== 'ALL' && row.latestDate < timeframeCutoff) return false;
+            // FIX: Timeframe filter should use earliestDate (when CA was first detected), not latestDate
+            // "Signals from last 24H" means "CAs first detected in last 24H"
+            if (timeframeLabel !== 'ALL' && row.earliestDate < timeframeCutoff) return false;
             
             // Only gainers filter
             if (onlyGainers && (row.pnl || 0) < 0) return false;
@@ -1096,19 +1100,20 @@ export const handleLiveSignals = async (ctx: BotContext) => {
             if (minMult > 0) {
               // Convert multiple to PnL: 2x = 100%, 5x = 400%
               const requiredPnl = (minMult - 1) * 100;
+              
+              // FIX: Use backup _calculatedPnl if available (calculated when entryMc/currentMc both > 0)
+              // If both row.pnl and _calculatedPnl are 0 or undefined, signal has no MC data yet
+              // We still filter it out, but the backup ensures we use calculated PnL when available
+              const backupPnl = (row as any)._calculatedPnl;
               const signalPnl = row.pnl || 0;
               
-              // FIX: If PnL is 0 but we have calculated values, use those
-              // This handles cases where entryMc/currentMc weren't available during initial calculation
-              const backupPnl = (row as any)._calculatedPnl;
-              const effectivePnl = signalPnl !== 0 ? signalPnl : (backupPnl || 0);
+              // Prefer _calculatedPnl if it exists (it was calculated with available data)
+              // Otherwise use row.pnl (which might be 0 if MC data wasn't available)
+              const effectivePnl = (backupPnl !== undefined && backupPnl !== null) ? backupPnl : signalPnl;
               
               if (effectivePnl < requiredPnl) {
-                  // DEBUG: Log filtered signals for debugging
-                  // logger.debug(`Filtering out ${row.symbol}: PnL ${effectivePnl}% < required ${requiredPnl}%`);
                   return false;
               }
-              // REMOVED duplicate timeframe check - already checked above
             }
             
             // ATH threshold filter (uses ATH multiple from OHLCV)
