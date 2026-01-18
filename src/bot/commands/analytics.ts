@@ -988,13 +988,14 @@ export const handleLiveSignals = async (ctx: BotContext) => {
     // Velocity calculation removed - can be re-added later using cached metrics if needed
     // For now, trending sort will use PnL instead of velocity
     
-    // Sort and Filter based on Market Cap (not price)
+    // CRITICAL FIX: Calculate PnL for ALL signals FIRST, before filtering/sorting
+    // This ensures filters and sorting have accurate PnL values
     const candidates = Array.from(aggregated.values())
         .map(row => {
              // Find entry market cap from earliest signal
              const sig = signals.find(s => s.id === (row as any).earliestSignalId) || signals.find(s => s.mint === row.mint);
              
-             // FIX: Initialize PnL to 0 to ensure it's always defined
+             // Initialize PnL to 0 to ensure it's always defined
              row.pnl = 0;
              
              if (!sig) {
@@ -1005,10 +1006,31 @@ export const handleLiveSignals = async (ctx: BotContext) => {
              const currentPrice = prices.get(row.mint) ?? 0;
              row.currentPrice = currentPrice;
              
-             // Find entry market cap from earliest signal
-             const entryMc = sig?.entryMarketCap || sig?.priceSamples?.[0]?.marketCap || 0;
+             // FIX: Entry MC - try multiple sources and backfill if missing
+             let entryMc = sig?.entryMarketCap || 0;
+             if (!entryMc && sig.priceSamples && sig.priceSamples.length > 0) {
+                 // Use first priceSample marketCap as fallback
+                 entryMc = sig.priceSamples[0]?.marketCap || 0;
+                 // Backfill entryMarketCap if missing
+                 if (entryMc > 0 && !sig.entryMarketCap) {
+                     prisma.signal.update({
+                         where: { id: sig.id },
+                         data: { entryMarketCap: entryMc }
+                     }).catch(() => {});
+                 }
+             }
+             // Fallback: calculate from entryPrice * entrySupply if available
+             if (!entryMc && sig.entryPrice && sig.entrySupply) {
+                 entryMc = sig.entryPrice * sig.entrySupply;
+                 if (entryMc > 0) {
+                     prisma.signal.update({
+                         where: { id: sig.id },
+                         data: { entryMarketCap: entryMc }
+                     }).catch(() => {});
+                 }
+             }
              
-             // Calculate PnL based on market cap (preferred)
+             // Calculate PnL - try market cap first, then price fallback
              if (currentMc > 0 && entryMc > 0) {
                  row.pnl = ((currentMc - entryMc) / entryMc) * 100;
              } else if (currentPrice > 0 && sig?.entryPrice && sig.entryPrice > 0) {
@@ -1030,57 +1052,57 @@ export const handleLiveSignals = async (ctx: BotContext) => {
              // Use PnL-based trending instead (high PnL = trending up)
              (row as any).velocity = row.pnl; // Fallback: use PnL as velocity proxy
              (row as any).currentMarketCap = currentMc;
+             (row as any).entryMarketCap = entryMc; // Store for later use
              
              return row;
-        })
-        .filter(row => {
-            if (onlyGainers && row.pnl < 0) return false;
-            // FIX: > 2x / > 5x filters should use CURRENT PnL (current MC vs entry MC), not ATH
-            // 2x = 100% PnL, 5x = 400% PnL (current multiple = 1 + PnL/100)
-            // User wants to see signals that are CURRENTLY above 2x/5x, not historically
-            if (minMult > 0) {
-              // Convert multiple to PnL: 2x = 100%, 5x = 400%
-              const requiredPnl = (minMult - 1) * 100;
-              if (!row.pnl || row.pnl < requiredPnl) return false;
-              // When filtering by 2x/5x, only include signals called within selected timeframe
-              if (row.latestDate < timeframeCutoff) return false;
-            }
-            // ATH threshold filter (uses ATH multiple from OHLCV)
-            if (minAth > 0) {
-              const ath = (row as any).athMultiple || 0;
-              if (ath < minAth) return false;
-            }
-            // Timeframe filter for general view (only apply if timeframe is not ALL)
-            // Don't filter by timeframe if timeframe is ALL (timeframeCutoff would be epoch 0)
-            if (timeframeLabel !== 'ALL' && row.latestDate < timeframeCutoff) return false;
-            return true;
         });
     
-    // Apply sorting based on sortBy
+    // FIX: Apply sorting BEFORE filtering (so filtering uses correct order)
+    // Sort by the selected method
     if (sortBy === 'trending') {
         candidates.sort((a, b) => (b as any).velocity - (a as any).velocity);
     } else if (sortBy === 'newest') {
         candidates.sort((a, b) => b.latestDate.getTime() - a.latestDate.getTime());
     } else {
         // Default: Highest PnL
-        candidates.sort((a, b) => b.pnl - a.pnl);
-    }
-
-    // 5. FIX: Recalculate PnL for ALL candidates (not just top 10)
-    // This ensures PnL is accurate for all signals, especially those that might be filtered
-    for (const row of candidates) {
-        const sig = signals.find(s => s.id === (row as any).earliestSignalId) || signals.find(s => s.mint === row.mint);
-        if (sig) {
-            const entryMc = sig.entryMarketCap || sig.priceSamples?.[0]?.marketCap || 0;
-            const currentMc = (row as any).currentMarketCap || marketCaps.get(row.mint) || sig?.metrics?.currentMarketCap || 0;
-            if (currentMc > 0 && entryMc > 0) {
-                row.pnl = ((currentMc - entryMc) / entryMc) * 100;
-            }
-        }
+        candidates.sort((a, b) => (b.pnl || 0) - (a.pnl || 0));
     }
     
+    // FIX: Apply filters AFTER sorting and PnL calculation
+    const filteredCandidates = candidates.filter(row => {
+            // Timeframe filter for general view (only apply if timeframe is not ALL)
+            if (timeframeLabel !== 'ALL' && row.latestDate < timeframeCutoff) return false;
+            
+            // Only gainers filter
+            if (onlyGainers && (row.pnl || 0) < 0) return false;
+            
+            // FIX: > 2x / > 5x filters should use CURRENT PnL (current MC vs entry MC), not ATH
+            // 2x = 100% PnL, 5x = 400% PnL (current multiple = 1 + PnL/100)
+            // User wants to see signals that are CURRENTLY above 2x/5x, not historically
+            if (minMult > 0) {
+              // Convert multiple to PnL: 2x = 100%, 5x = 400%
+              const requiredPnl = (minMult - 1) * 100;
+              const signalPnl = row.pnl || 0;
+              if (signalPnl < requiredPnl) return false;
+              // When filtering by 2x/5x, only include signals called within selected timeframe
+              if (timeframeLabel !== 'ALL' && row.latestDate < timeframeCutoff) return false;
+            }
+            
+            // ATH threshold filter (uses ATH multiple from OHLCV)
+            if (minAth > 0) {
+              const ath = (row as any).athMultiple || 0;
+              if (ath < minAth) return false;
+            }
+            
+            return true;
+        });
+    
+    // Use filtered candidates for display
+    // Note: After metadata fetch, we'll recalculate PnL for top10, which might change order slightly
+    // but filters are already applied, so we display what passed the filter
+    
     // 6. Lazy Load Metadata (Top 10 Only) - Also update market caps with fresh data
-    const top10 = candidates.slice(0, 10);
+    const top10 = filteredCandidates.slice(0, 10);
     const metaMap = new Map<string, any>();
     
     // Parallel fetch for top 10 - also get fresh market caps
@@ -1112,7 +1134,8 @@ export const handleLiveSignals = async (ctx: BotContext) => {
             // This ensures PnL reflects the latest market cap values for displayed signals
             const sig = signals.find(s => s.id === (row as any).earliestSignalId) || signals.find(s => s.mint === row.mint);
             if (sig) {
-                const entryMc = sig.entryMarketCap || sig.priceSamples?.[0]?.marketCap || 0;
+                // Use stored entryMc from mapping phase for consistency
+                const entryMc = (row as any).entryMarketCap || sig.entryMarketCap || sig.priceSamples?.[0]?.marketCap || 0;
                 const currentMc = (row as any).currentMarketCap || 0;
                 if (currentMc > 0 && entryMc > 0) {
                     row.pnl = ((currentMc - entryMc) / entryMc) * 100;
@@ -1144,13 +1167,20 @@ export const handleLiveSignals = async (ctx: BotContext) => {
         }
         
         // Entry -> Current Market Cap (preferred) or Price (fallback)
-        // FIX: Use the same values that were used to calculate row.pnl for consistency
-        const entryMc = sig?.entryMarketCap || sig?.priceSamples?.[0]?.marketCap || null;
+        // FIX: Use stored entryMc from mapping phase for consistency, or recalculate if missing
+        const entryMc = (row as any).entryMarketCap || sig?.entryMarketCap || sig?.priceSamples?.[0]?.marketCap || null;
         const currentMc = (row as any).currentMarketCap || sig?.metrics?.currentMarketCap || null;
         
-        // FIX: Recalculate PnL if it's missing or zero, using the display values
-        // This ensures PnL matches what's displayed
-        if ((!row.pnl || row.pnl === 0) && currentMc && entryMc && entryMc > 0) {
+        // FIX: Recalculate PnL after metadata fetch if currentMc was updated
+        // This ensures PnL reflects fresh market cap from metadata
+        if (currentMc && entryMc && entryMc > 0) {
+            const newPnl = ((currentMc - entryMc) / entryMc) * 100;
+            // Only update if it's different (metadata might have fresher data)
+            if (Math.abs(newPnl - (row.pnl || 0)) > 0.1) {
+                row.pnl = newPnl;
+            }
+        } else if ((!row.pnl || row.pnl === 0) && currentMc && entryMc && entryMc > 0) {
+            // Fallback: calculate if PnL is still 0
             row.pnl = ((currentMc - entryMc) / entryMc) * 100;
         }
         
