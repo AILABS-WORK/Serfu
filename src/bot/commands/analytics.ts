@@ -1015,6 +1015,11 @@ export const handleLiveSignals = async (ctx: BotContext) => {
              const currentMultiple = entryMc > 0 && currentMc > 0 ? currentMc / entryMc : (sig?.metrics?.currentMultiple || 0);
              (row as any).currentMultiple = currentMultiple;
              
+             // FIX: Use ATH multiple from metrics (real ATH from OHLCV), not current multiple
+             // ATH is the maximum MC from entry to now, calculated by background jobs
+             const athMult = sig?.metrics?.athMultiple || 0;
+             (row as any).athMultiple = athMult;
+             
              // Velocity calculation removed to prevent timeout
              // Use PnL-based trending instead (high PnL = trending up)
              (row as any).velocity = row.pnl; // Fallback: use PnL as velocity proxy
@@ -1024,10 +1029,11 @@ export const handleLiveSignals = async (ctx: BotContext) => {
         })
         .filter(row => {
             if (onlyGainers && row.pnl < 0) return false;
-            // MinMult check
-            const mult = (row as any).currentMultiple || ((row.pnl / 100) + 1);
+            // FIX: > 2x / > 5x filters should use ATH multiple, not current multiple
+            // ATH multiple shows the peak performance from entry to now
+            const athMult = (row as any).athMultiple || 0;
             if (minMult > 0) {
-              if (mult <= 0 || mult < minMult) return false;
+              if (athMult <= 0 || athMult < minMult) return false;
               // When filtering by 2x/5x, only include signals called within selected timeframe
               if (row.latestDate < timeframeCutoff) return false;
             }
@@ -1105,6 +1111,7 @@ export const handleLiveSignals = async (ctx: BotContext) => {
         }
         
         // PnL & formatting
+        // FIX: Icon should be green if positive compared to entry MC, red if negative
         const pnlStr = UIHelper.formatPercent(row.pnl);
         const icon = row.pnl >= 0 ? '🟢' : '🔴';
         const timeAgo = UIHelper.formatTimeAgo(row.latestDate);
@@ -1121,11 +1128,10 @@ export const handleLiveSignals = async (ctx: BotContext) => {
         const currentMc = (row as any).currentMarketCap || sig?.metrics?.currentMarketCap || null;
         const entryStr = entryMc ? UIHelper.formatMarketCap(entryMc) : 'N/A';
         const currentStr = currentMc ? UIHelper.formatMarketCap(currentMc) : 'N/A';
-        let athMult = sig?.metrics?.athMultiple || 0;
-        if (!athMult && entryMc && currentMc) {
-          athMult = currentMc / entryMc;
-        }
-        (row as any).athMultiple = athMult;
+        
+        // FIX: Use ATH multiple from metrics (real ATH from OHLCV data, not current/entry ratio)
+        // ATH multiple is calculated by background jobs using OHLCV data from entry to now
+        const athMult = (row as any).athMultiple || sig?.metrics?.athMultiple || 0;
         const athLabel = athMult > 0
           ? `${athMult.toFixed(1).replace(/\.0$/, '')}x ATH`
           : 'ATH N/A';
