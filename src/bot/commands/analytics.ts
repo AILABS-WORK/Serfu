@@ -953,28 +953,16 @@ export const handleLiveSignals = async (ctx: BotContext) => {
         if (sig.detectedAt >= row.latestDate) row.latestSignalId = sig.id;
     }
 
-    // 4. NEW FLOW: Fetch metadata for ALL signals first to get accurate current MC/PnL
+    // 4. Fetch fresh metadata for ALL signals (no cached metrics - always fresh data)
     // Then calculate all data, sort, then filter
     const uniqueMints = Array.from(aggregated.keys());
     const marketCaps = new Map<string, number>();
     const prices = new Map<string, number>();
     
-    // First, populate with cached metrics (fast, available immediately)
-    for (const mint of uniqueMints) {
-      const sig = signals.find(s => s.mint === mint);
-      if (sig?.metrics?.currentMarketCap) {
-        marketCaps.set(mint, sig.metrics.currentMarketCap);
-        if (sig.entrySupply && sig.entrySupply > 0) {
-          prices.set(mint, sig.metrics.currentMarketCap / sig.entrySupply);
-        }
-      }
-    }
-    
-    // Fetch metadata for signals missing current MC (batch parallel, limit concurrency to avoid timeout)
-    const missingMints = uniqueMints.filter(mint => !marketCaps.has(mint));
+    // Fetch fresh metadata for all signals in batches (parallel, limit concurrency to avoid timeout)
     const BATCH_SIZE = 10; // Process 10 at a time to avoid overwhelming APIs
-    for (let i = 0; i < missingMints.length; i += BATCH_SIZE) {
-      const batch = missingMints.slice(i, i + BATCH_SIZE);
+    for (let i = 0; i < uniqueMints.length; i += BATCH_SIZE) {
+      const batch = uniqueMints.slice(i, i + BATCH_SIZE);
       await Promise.all(batch.map(async (mint) => {
         try {
           const meta = await provider.getTokenMeta(mint);
@@ -988,7 +976,7 @@ export const handleLiveSignals = async (ctx: BotContext) => {
             }
           }
         } catch (err) {
-          // If metadata fetch fails, keep using cached metrics or 0
+          // If metadata fetch fails, leave as 0 (will use fallback in PnL calculation)
         }
       }));
     }
