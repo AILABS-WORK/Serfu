@@ -231,12 +231,19 @@ This document details the current state of the Serfu bot, identifies all broken 
 - Removed lines 991-1011: priceSample query and mcapHistory building
 - Modified velocity assignment to use `row.pnl` as proxy
 
+**Additional Fix (Round 2):**
+- ✅ **Removed expensive `getMultipleTokenPrices` call for all mints**
+  - Was calling Jupiter API for potentially hundreds of tokens
+  - Now uses cached `signal.metrics.currentMarketCap` (updated by background jobs)
+  - Only fetches fresh metadata for top 10 displayed signals
+
 **Testing Needed:**
-- [ ] Test Live Signals loads without timeout
+- [ ] Test Live Signals loads without timeout (< 5 seconds expected)
 - [ ] Verify trending sort still works (uses PnL now)
 - [ ] Verify all other filters/sorts still work
+- [ ] Test with many active signals (should not timeout)
 
-**Estimated Time:** 2-3 hours (Partial: ~30 min done)
+**Estimated Time:** 2-3 hours (Completed: ~1 hour)
 
 ---
 

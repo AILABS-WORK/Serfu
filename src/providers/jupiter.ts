@@ -24,44 +24,59 @@ export const getMultipleTokenPrices = async (mints: string[]): Promise<Record<st
 
     const results: Record<string, number | null> = {};
 
+    // Process chunks with timeout (10 seconds per chunk)
     for (const chunk of chunks) {
-        const ids = chunk.join(',');
-        const headers: Record<string, string> = {};
-        if (JUP_API_KEY) {
-          headers['x-api-key'] = JUP_API_KEY;
-        }
-        const url = `${JUP_PRICE_URL}?ids=${ids}`;
-        const res = await fetch(url, { headers });
-        if (!res.ok) {
-          logger.debug(`Jupiter batch price failed status ${res.status}`);
-          // Mark chunk as missing so we can try fallback later
+        try {
+          const ids = chunk.join(',');
+          const headers: Record<string, string> = {};
+          if (JUP_API_KEY) {
+            headers['x-api-key'] = JUP_API_KEY;
+          }
+          const url = `${JUP_PRICE_URL}?ids=${ids}`;
+          
+          // Add timeout: 10 seconds per chunk
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 10000);
+          
+          try {
+            const res = await fetch(url, { headers, signal: controller.signal });
+            clearTimeout(timeoutId);
+            
+            if (!res.ok) {
+              logger.debug(`Jupiter batch price failed status ${res.status}`);
+              chunk.forEach(mint => {
+                if (!(mint in results)) results[mint] = null;
+              });
+              continue;
+            }
+            const data: any = await res.json();
+            
+            chunk.forEach(mint => {
+                const price = data?.data?.[mint]?.price;
+                results[mint] = price !== undefined && price !== null ? Number(price) : null;
+            });
+          } catch (fetchErr: any) {
+            clearTimeout(timeoutId);
+            if (fetchErr.name === 'AbortError') {
+              logger.debug(`Jupiter batch price timeout for chunk of ${chunk.length} tokens`);
+            } else {
+              logger.debug(`Jupiter batch price error:`, fetchErr);
+            }
+            // Mark chunk as missing
+            chunk.forEach(mint => {
+              if (!(mint in results)) results[mint] = null;
+            });
+          }
+        } catch (err) {
+          // Mark chunk as missing on any error
           chunk.forEach(mint => {
             if (!(mint in results)) results[mint] = null;
           });
-          continue;
         }
-        const data: any = await res.json();
-        
-        chunk.forEach(mint => {
-            const price = data?.data?.[mint]?.price;
-            results[mint] = price !== undefined && price !== null ? Number(price) : null;
-        });
     }
     
-    // Fallback: use Jupiter search (token info) when batch price returns null
-    const missing = Object.entries(results)
-      .filter(([, price]) => price === null)
-      .map(([mint]) => mint);
-    for (const mint of missing) {
-      try {
-        const info = await getJupiterTokenInfo(mint);
-        if (info?.usdPrice !== undefined && info.usdPrice !== null) {
-          results[mint] = Number(info.usdPrice);
-        }
-      } catch (err: any) {
-        logger.debug(`Jupiter search fallback failed for ${mint}:`, err);
-      }
-    }
+    // Skip fallback loop - it's too slow and causes timeouts
+    // Missing prices will be null, which is fine for Live Signals (they'll show 0% PnL or skip)
 
     return results;
 

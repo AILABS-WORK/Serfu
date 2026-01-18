@@ -981,20 +981,28 @@ export const handleLiveSignals = async (ctx: BotContext) => {
     }
     
     // Fallback: For signals without entrySupply, fetch full metadata to get MC directly
+    // Limit to prevent timeout - skip if too many signals need metadata
     const missingMcMints = uniqueMints.filter(mint => !marketCaps.has(mint) && priceMap[mint] !== null);
-    if (missingMcMints.length > 0) {
-      const FALLBACK_BATCH_SIZE = 10; // Smaller batch for full metadata fetch
-      for (let i = 0; i < missingMcMints.length; i += FALLBACK_BATCH_SIZE) {
-        const batch = missingMcMints.slice(i, i + FALLBACK_BATCH_SIZE);
+    if (missingMcMints.length > 0 && missingMcMints.length <= 20) {
+      // Only fetch metadata for up to 20 missing MC signals to avoid timeout
+      const toFetch = missingMcMints.slice(0, 20);
+      const FALLBACK_BATCH_SIZE = 5; // Smaller batch for full metadata fetch
+      for (let i = 0; i < toFetch.length; i += FALLBACK_BATCH_SIZE) {
+        const batch = toFetch.slice(i, i + FALLBACK_BATCH_SIZE);
         await Promise.all(batch.map(async (mint) => {
           try {
-            const meta = await provider.getTokenMeta(mint);
-            const freshMc = meta.liveMarketCap || meta.marketCap;
+            // Add timeout wrapper (5 seconds per metadata fetch)
+            const metaPromise = provider.getTokenMeta(mint);
+            const timeoutPromise = new Promise((_, reject) => 
+              setTimeout(() => reject(new Error('Metadata fetch timeout')), 5000)
+            );
+            const meta = await Promise.race([metaPromise, timeoutPromise]) as any;
+            const freshMc = meta?.liveMarketCap || meta?.marketCap;
             if (freshMc) {
               marketCaps.set(mint, freshMc);
             }
           } catch (err) {
-            // If metadata fetch fails, leave as 0 (will use fallback in PnL calculation)
+            // If metadata fetch fails or times out, leave as 0 (will use fallback in PnL calculation)
           }
         }));
       }

@@ -95,8 +95,8 @@ export const runSamplingCycle = async () => {
           });
         }
         
-        // Update Metrics & Check Thresholds (using market cap)
-        await updateSignalMetrics(signal.id, marketCap || quote.price, quote.price);
+        // Update Metrics & Check Thresholds (use market cap when available)
+        await updateSignalMetrics(signal.id, marketCap ?? null, quote.price);
         
       } catch (error) {
         logger.error(`Failed to sample ${signal.mint}:`, error);
