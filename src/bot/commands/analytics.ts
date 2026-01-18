@@ -993,6 +993,14 @@ export const handleLiveSignals = async (ctx: BotContext) => {
         .map(row => {
              // Find entry market cap from earliest signal
              const sig = signals.find(s => s.id === (row as any).earliestSignalId) || signals.find(s => s.mint === row.mint);
+             
+             // FIX: Initialize PnL to 0 to ensure it's always defined
+             row.pnl = 0;
+             
+             if (!sig) {
+                 return row; // Return early if no signal found
+             }
+             
              const currentMc = marketCaps.get(row.mint) ?? sig?.metrics?.currentMarketCap ?? 0;
              const currentPrice = prices.get(row.mint) ?? 0;
              row.currentPrice = currentPrice;
@@ -1003,13 +1011,11 @@ export const handleLiveSignals = async (ctx: BotContext) => {
              // Calculate PnL based on market cap (preferred)
              if (currentMc > 0 && entryMc > 0) {
                  row.pnl = ((currentMc - entryMc) / entryMc) * 100;
-             } else {
+             } else if (currentPrice > 0 && sig?.entryPrice && sig.entryPrice > 0) {
                  // Fallback to price if market cap not available
-                 const entryPrice = sig?.entryPrice || 0;
-                 if (currentPrice > 0 && entryPrice > 0) {
-                     row.pnl = ((currentPrice - entryPrice) / entryPrice) * 100;
-                 }
+                 row.pnl = ((currentPrice - sig.entryPrice) / sig.entryPrice) * 100;
              }
+             // If no data, pnl remains 0 (already initialized above)
 
              // Current multiple (market cap preferred)
              const currentMultiple = entryMc > 0 && currentMc > 0 ? currentMc / entryMc : (sig?.metrics?.currentMultiple || 0);
