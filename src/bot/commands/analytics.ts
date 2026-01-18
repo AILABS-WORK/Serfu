@@ -1014,9 +1014,8 @@ export const handleLiveSignals = async (ctx: BotContext) => {
                  return row; // Return early if no signal found
              }
              
-             // Get current MC - prefer cached from metrics map, fallback to signal.metrics, then 0
-             // NOTE: This might be 0 for signals without metrics yet - we fetch fresh data for top 10 later
-             const currentMc = marketCaps.get(row.mint) ?? sig?.metrics?.currentMarketCap ?? 0;
+             // Get current MC from fresh metadata (always fetched above, no cached metrics)
+             const currentMc = marketCaps.get(row.mint) ?? 0;
              const currentPrice = prices.get(row.mint) ?? 0;
              row.currentPrice = currentPrice;
              
