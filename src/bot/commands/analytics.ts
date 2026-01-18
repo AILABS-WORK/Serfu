@@ -953,32 +953,51 @@ export const handleLiveSignals = async (ctx: BotContext) => {
         if (sig.detectedAt >= row.latestDate) row.latestSignalId = sig.id;
     }
 
-    // 4. Fetch fresh metadata for ALL signals (no cached metrics - always fresh data)
-    // Then calculate all data, sort, then filter
+    // 4. OPTIMIZED: Fetch current prices using Jupiter batch API (50 tokens at once - much faster!)
+    // Then calculate current MC from price * entrySupply for signals with supply stored
+    // Entry MC is already stored in signal, so we don't need to fetch it
     const uniqueMints = Array.from(aggregated.keys());
     const marketCaps = new Map<string, number>();
     const prices = new Map<string, number>();
     
-    // Fetch fresh metadata for all signals in batches (parallel, limit concurrency to avoid timeout)
-    const BATCH_SIZE = 10; // Process 10 at a time to avoid overwhelming APIs
-    for (let i = 0; i < uniqueMints.length; i += BATCH_SIZE) {
-      const batch = uniqueMints.slice(i, i + BATCH_SIZE);
-      await Promise.all(batch.map(async (mint) => {
-        try {
-          const meta = await provider.getTokenMeta(mint);
-          const freshMc = meta.liveMarketCap || meta.marketCap;
-          if (freshMc) {
-            marketCaps.set(mint, freshMc);
-            if (meta.supply && meta.supply > 0) {
-              prices.set(mint, freshMc / meta.supply);
-            } else if (meta.livePrice) {
-              prices.set(mint, meta.livePrice);
-            }
-          }
-        } catch (err) {
-          // If metadata fetch fails, leave as 0 (will use fallback in PnL calculation)
+    // OPTIMIZATION: Use Jupiter batch API to fetch prices for all mints at once (up to 50 per batch)
+    const { getMultipleTokenPrices } = await import('../providers/jupiter');
+    const priceMap = await getMultipleTokenPrices(uniqueMints);
+    
+    // Calculate current MC from price * entrySupply (if supply is stored in signal)
+    // This is much faster than fetching full metadata for each token
+    for (const mint of uniqueMints) {
+      const price = priceMap[mint];
+      if (price !== null && price !== undefined) {
+        prices.set(mint, price);
+        
+        // Get entrySupply from signal to calculate current MC
+        const sig = signals.find(s => s.mint === mint);
+        if (sig?.entrySupply && sig.entrySupply > 0) {
+          const currentMc = price * sig.entrySupply;
+          marketCaps.set(mint, currentMc);
         }
-      }));
+      }
+    }
+    
+    // Fallback: For signals without entrySupply, fetch full metadata to get MC directly
+    const missingMcMints = uniqueMints.filter(mint => !marketCaps.has(mint) && priceMap[mint] !== null);
+    if (missingMcMints.length > 0) {
+      const FALLBACK_BATCH_SIZE = 10; // Smaller batch for full metadata fetch
+      for (let i = 0; i < missingMcMints.length; i += FALLBACK_BATCH_SIZE) {
+        const batch = missingMcMints.slice(i, i + FALLBACK_BATCH_SIZE);
+        await Promise.all(batch.map(async (mint) => {
+          try {
+            const meta = await provider.getTokenMeta(mint);
+            const freshMc = meta.liveMarketCap || meta.marketCap;
+            if (freshMc) {
+              marketCaps.set(mint, freshMc);
+            }
+          } catch (err) {
+            // If metadata fetch fails, leave as 0 (will use fallback in PnL calculation)
+          }
+        }));
+      }
     }
 
     // Apply Filters & Calculate PnL (Pre-Sort) - Using Market Cap
