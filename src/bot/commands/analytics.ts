@@ -1172,6 +1172,12 @@ export const handleLiveSignals = async (ctx: BotContext) => {
         } catch {}
     }));
 
+    // FIX: Re-sort top10 after metadata fetch if sorting by PnL
+    // PnL values may have changed after fetching fresh market cap data
+    if (sortBy === 'pnl') {
+        top10.sort((a, b) => (b.pnl || 0) - (a.pnl || 0));
+    }
+
     // 6. Construct Message
     let message = UIHelper.header('Live Signals (Active)');
     
