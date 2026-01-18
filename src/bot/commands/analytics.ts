@@ -1044,8 +1044,9 @@ export const handleLiveSignals = async (ctx: BotContext) => {
               const ath = (row as any).athMultiple || 0;
               if (ath < minAth) return false;
             }
-            // Timeframe filter for general view
-            if (row.latestDate < timeframeCutoff) return false;
+            // Timeframe filter for general view (only apply if timeframe is not ALL)
+            // Don't filter by timeframe if timeframe is ALL (timeframeCutoff would be epoch 0)
+            if (timeframeLabel !== 'ALL' && row.latestDate < timeframeCutoff) return false;
             return true;
         });
     
