@@ -975,7 +975,8 @@ export const handleLiveSignals = async (ctx: BotContext) => {
     const liveFilters = ctx.session?.liveFilters || {};
     const minMult = liveFilters.minMult || 0;
     const onlyGainers = liveFilters.onlyGainers || false;
-    const sortBy = (liveFilters as any).sortBy || 'pnl';
+    // FIX: Default sort should be 'newest', not 'pnl'
+    const sortBy = (liveFilters as any).sortBy || 'newest';
     const timeframeLabel = (liveFilters as any).timeframe || '24H';
     const timeframeParsed = UIHelper.parseTimeframeInput(timeframeLabel);
     const timeframeCutoff =
@@ -1054,21 +1055,34 @@ export const handleLiveSignals = async (ctx: BotContext) => {
              (row as any).currentMarketCap = currentMc;
              (row as any).entryMarketCap = entryMc; // Store for later use
              
+             // Store calculated PnL separately for backup during filtering
+             if (entryMc > 0 && currentMc > 0) {
+                 (row as any)._calculatedPnl = ((currentMc - entryMc) / entryMc) * 100;
+             }
+             
              return row;
         });
     
     // FIX: Apply sorting BEFORE filtering (so filtering uses correct order)
     // Sort by the selected method
     if (sortBy === 'trending') {
-        candidates.sort((a, b) => (b as any).velocity - (a as any).velocity);
+        // Use PnL as proxy for trending (high PnL = trending up)
+        candidates.sort((a, b) => (b.pnl || (b as any)._calculatedPnl || 0) - (a.pnl || (a as any)._calculatedPnl || 0));
     } else if (sortBy === 'newest') {
+        // Sort by latest mention time (most recent first)
         candidates.sort((a, b) => b.latestDate.getTime() - a.latestDate.getTime());
+    } else if (sortBy === 'pnl') {
+        // Highest PnL first
+        candidates.sort((a, b) => (b.pnl || (b as any)._calculatedPnl || 0) - (a.pnl || (a as any)._calculatedPnl || 0));
     } else {
-        // Default: Highest PnL
-        candidates.sort((a, b) => (b.pnl || 0) - (a.pnl || 0));
+        // Fallback to newest if sortBy is unknown
+        candidates.sort((a, b) => b.latestDate.getTime() - a.latestDate.getTime());
     }
     
     // FIX: Apply filters AFTER sorting and PnL calculation
+    // IMPORTANT: Filters are applied BEFORE metadata fetch, so PnL might not be 100% accurate yet
+    // Signals with missing entry/current MC will have PnL=0 and might be incorrectly filtered
+    // We'll recalculate PnL after metadata fetch, but filtering has already happened
     const filteredCandidates = candidates.filter(row => {
             // Timeframe filter for general view (only apply if timeframe is not ALL)
             if (timeframeLabel !== 'ALL' && row.latestDate < timeframeCutoff) return false;
@@ -1083,9 +1097,18 @@ export const handleLiveSignals = async (ctx: BotContext) => {
               // Convert multiple to PnL: 2x = 100%, 5x = 400%
               const requiredPnl = (minMult - 1) * 100;
               const signalPnl = row.pnl || 0;
-              if (signalPnl < requiredPnl) return false;
-              // When filtering by 2x/5x, only include signals called within selected timeframe
-              if (timeframeLabel !== 'ALL' && row.latestDate < timeframeCutoff) return false;
+              
+              // FIX: If PnL is 0 but we have calculated values, use those
+              // This handles cases where entryMc/currentMc weren't available during initial calculation
+              const backupPnl = (row as any)._calculatedPnl;
+              const effectivePnl = signalPnl !== 0 ? signalPnl : (backupPnl || 0);
+              
+              if (effectivePnl < requiredPnl) {
+                  // DEBUG: Log filtered signals for debugging
+                  // logger.debug(`Filtering out ${row.symbol}: PnL ${effectivePnl}% < required ${requiredPnl}%`);
+                  return false;
+              }
+              // REMOVED duplicate timeframe check - already checked above
             }
             
             // ATH threshold filter (uses ATH multiple from OHLCV)
