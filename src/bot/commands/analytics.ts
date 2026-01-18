@@ -1066,7 +1066,20 @@ export const handleLiveSignals = async (ctx: BotContext) => {
         candidates.sort((a, b) => b.pnl - a.pnl);
     }
 
-    // 5. Lazy Load Metadata (Top 10 Only) - Also update market caps with fresh data
+    // 5. FIX: Recalculate PnL for ALL candidates (not just top 10)
+    // This ensures PnL is accurate for all signals, especially those that might be filtered
+    for (const row of candidates) {
+        const sig = signals.find(s => s.id === (row as any).earliestSignalId) || signals.find(s => s.mint === row.mint);
+        if (sig) {
+            const entryMc = sig.entryMarketCap || sig.priceSamples?.[0]?.marketCap || 0;
+            const currentMc = (row as any).currentMarketCap || marketCaps.get(row.mint) || sig?.metrics?.currentMarketCap || 0;
+            if (currentMc > 0 && entryMc > 0) {
+                row.pnl = ((currentMc - entryMc) / entryMc) * 100;
+            }
+        }
+    }
+    
+    // 6. Lazy Load Metadata (Top 10 Only) - Also update market caps with fresh data
     const top10 = candidates.slice(0, 10);
     const metaMap = new Map<string, any>();
     
@@ -1096,7 +1109,7 @@ export const handleLiveSignals = async (ctx: BotContext) => {
             }
             
             // FIX: Recalculate PnL after updating market cap with fresh metadata
-            // This ensures PnL reflects the latest market cap values
+            // This ensures PnL reflects the latest market cap values for displayed signals
             const sig = signals.find(s => s.id === (row as any).earliestSignalId) || signals.find(s => s.mint === row.mint);
             if (sig) {
                 const entryMc = sig.entryMarketCap || sig.priceSamples?.[0]?.marketCap || 0;
