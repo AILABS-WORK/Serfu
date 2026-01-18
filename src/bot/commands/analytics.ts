@@ -961,7 +961,7 @@ export const handleLiveSignals = async (ctx: BotContext) => {
     const prices = new Map<string, number>();
     
     // OPTIMIZATION: Use Jupiter batch API to fetch prices for all mints at once (up to 50 per batch)
-    const { getMultipleTokenPrices } = await import('../providers/jupiter');
+    const { getMultipleTokenPrices } = await import('../../providers/jupiter');
     const priceMap = await getMultipleTokenPrices(uniqueMints);
     
     // Calculate current MC from price * entrySupply (if supply is stored in signal)
