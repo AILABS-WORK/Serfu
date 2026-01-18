@@ -1085,6 +1085,17 @@ export const handleLiveSignals = async (ctx: BotContext) => {
                     prices.set(row.mint, meta.livePrice);
                 }
             }
+            
+            // FIX: Recalculate PnL after updating market cap with fresh metadata
+            // This ensures PnL reflects the latest market cap values
+            const sig = signals.find(s => s.id === (row as any).earliestSignalId) || signals.find(s => s.mint === row.mint);
+            if (sig) {
+                const entryMc = sig.entryMarketCap || sig.priceSamples?.[0]?.marketCap || 0;
+                const currentMc = (row as any).currentMarketCap || 0;
+                if (currentMc > 0 && entryMc > 0) {
+                    row.pnl = ((currentMc - entryMc) / entryMc) * 100;
+                }
+            }
         } catch {}
     }));
 
@@ -1110,10 +1121,21 @@ export const handleLiveSignals = async (ctx: BotContext) => {
           }
         }
         
+        // Entry -> Current Market Cap (preferred) or Price (fallback)
+        // FIX: Use the same values that were used to calculate row.pnl for consistency
+        const entryMc = sig?.entryMarketCap || sig?.priceSamples?.[0]?.marketCap || null;
+        const currentMc = (row as any).currentMarketCap || sig?.metrics?.currentMarketCap || null;
+        
+        // FIX: Recalculate PnL if it's missing or zero, using the display values
+        // This ensures PnL matches what's displayed
+        if ((!row.pnl || row.pnl === 0) && currentMc && entryMc && entryMc > 0) {
+            row.pnl = ((currentMc - entryMc) / entryMc) * 100;
+        }
+        
         // PnL & formatting
         // FIX: Icon should be green if positive compared to entry MC, red if negative
-        const pnlStr = UIHelper.formatPercent(row.pnl);
-        const icon = row.pnl >= 0 ? '🟢' : '🔴';
+        const pnlStr = UIHelper.formatPercent(row.pnl || 0);
+        const icon = (row.pnl || 0) >= 0 ? '🟢' : '🔴';
         const timeAgo = UIHelper.formatTimeAgo(row.latestDate);
         
         // Use symbol from meta if available
@@ -1122,10 +1144,6 @@ export const handleLiveSignals = async (ctx: BotContext) => {
         // Card Layout per Plan: Symbol, Entry->Now, Dex/Migrated flags, Age, Caller
         message += `\n${icon} *${displaySymbol}* (${row.symbol || 'N/A'})\n`;
         message += `└ \`${row.mint.slice(0, 8)}...${row.mint.slice(-4)}\`\n`;
-        
-        // Entry -> Current Market Cap (preferred) or Price (fallback)
-        const entryMc = sig?.entryMarketCap || sig?.priceSamples?.[0]?.marketCap || null;
-        const currentMc = (row as any).currentMarketCap || sig?.metrics?.currentMarketCap || null;
         const entryStr = entryMc ? UIHelper.formatMarketCap(entryMc) : 'N/A';
         const currentStr = currentMc ? UIHelper.formatMarketCap(currentMc) : 'N/A';
         
