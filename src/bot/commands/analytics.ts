@@ -953,22 +953,44 @@ export const handleLiveSignals = async (ctx: BotContext) => {
         if (sig.detectedAt >= row.latestDate) row.latestSignalId = sig.id;
     }
 
-    // 4. OPTIMIZATION: Use cached metrics instead of fetching prices for all signals
-    // This prevents timeout when there are many active signals
+    // 4. NEW FLOW: Fetch metadata for ALL signals first to get accurate current MC/PnL
+    // Then calculate all data, sort, then filter
     const uniqueMints = Array.from(aggregated.keys());
     const marketCaps = new Map<string, number>();
     const prices = new Map<string, number>();
     
-    // Use cached currentMarketCap from signal.metrics (updated by background jobs)
+    // First, populate with cached metrics (fast, available immediately)
     for (const mint of uniqueMints) {
       const sig = signals.find(s => s.mint === mint);
       if (sig?.metrics?.currentMarketCap) {
         marketCaps.set(mint, sig.metrics.currentMarketCap);
-        // Calculate approximate price from market cap for display
         if (sig.entrySupply && sig.entrySupply > 0) {
           prices.set(mint, sig.metrics.currentMarketCap / sig.entrySupply);
         }
       }
+    }
+    
+    // Fetch metadata for signals missing current MC (batch parallel, limit concurrency to avoid timeout)
+    const missingMints = uniqueMints.filter(mint => !marketCaps.has(mint));
+    const BATCH_SIZE = 10; // Process 10 at a time to avoid overwhelming APIs
+    for (let i = 0; i < missingMints.length; i += BATCH_SIZE) {
+      const batch = missingMints.slice(i, i + BATCH_SIZE);
+      await Promise.all(batch.map(async (mint) => {
+        try {
+          const meta = await provider.getTokenMeta(mint);
+          const freshMc = meta.liveMarketCap || meta.marketCap;
+          if (freshMc) {
+            marketCaps.set(mint, freshMc);
+            if (meta.supply && meta.supply > 0) {
+              prices.set(mint, freshMc / meta.supply);
+            } else if (meta.livePrice) {
+              prices.set(mint, meta.livePrice);
+            }
+          }
+        } catch (err) {
+          // If metadata fetch fails, keep using cached metrics or 0
+        }
+      }));
     }
 
     // Apply Filters & Calculate PnL (Pre-Sort) - Using Market Cap
@@ -989,7 +1011,8 @@ export const handleLiveSignals = async (ctx: BotContext) => {
     // Velocity calculation removed - can be re-added later using cached metrics if needed
     // For now, trending sort will use PnL instead of velocity
     
-    // CRITICAL FIX: Calculate PnL for ALL signals FIRST, before filtering/sorting
+    // STEP 1: Calculate PnL and all data for ALL signals FIRST
+    // We already fetched metadata for missing MC above, so we have current MC for all signals
     // This ensures filters and sorting have accurate PnL values
     const candidates = Array.from(aggregated.values())
         .map(row => {
@@ -1065,8 +1088,8 @@ export const handleLiveSignals = async (ctx: BotContext) => {
              return row;
         });
     
-    // FIX: Apply sorting BEFORE filtering (so filtering uses correct order)
-    // Sort by the selected method
+    // STEP 2: Apply default sort (newest first by default, then user-selected sort)
+    // Sorting happens AFTER data calculation but BEFORE filtering
     if (sortBy === 'trending') {
         // Use PnL as proxy for trending (high PnL = trending up)
         candidates.sort((a, b) => (b.pnl || (b as any)._calculatedPnl || 0) - (a.pnl || (a as any)._calculatedPnl || 0));
@@ -1082,10 +1105,8 @@ export const handleLiveSignals = async (ctx: BotContext) => {
         candidates.sort((a, b) => b.earliestDate.getTime() - a.earliestDate.getTime());
     }
     
-    // FIX: Apply filters AFTER sorting and PnL calculation
-    // IMPORTANT: Filters are applied BEFORE metadata fetch, so PnL might not be 100% accurate yet
-    // Signals with missing entry/current MC will have PnL=0 and might be incorrectly filtered
-    // We'll recalculate PnL after metadata fetch, but filtering has already happened
+    // STEP 3: Apply filters AFTER sorting and data calculation
+    // All data (entry MC, current MC, PnL) has been calculated above, so filters use accurate values
     const filteredCandidates = candidates.filter(row => {
             // FIX: Timeframe filter should use earliestDate (when CA was first detected), not latestDate
             // "Signals from last 24H" means "CAs first detected in last 24H"
