@@ -953,24 +953,20 @@ export const handleLiveSignals = async (ctx: BotContext) => {
         if (sig.detectedAt >= row.latestDate) row.latestSignalId = sig.id;
     }
 
-    // 4. Batch Market Cap Fetching (OPTIMIZATION - Using Market Cap instead of Price)
+    // 4. OPTIMIZATION: Use cached metrics instead of fetching prices for all signals
+    // This prevents timeout when there are many active signals
     const uniqueMints = Array.from(aggregated.keys());
-    
-    // Use batch price fetching for better performance
-    const { getMultipleTokenPrices } = await import('../../providers/jupiter');
-    const prices = await getMultipleTokenPrices(uniqueMints);
-    
-    // Fetch metadata only for top signals (lazy loading)
     const marketCaps = new Map<string, number>();
+    const prices = new Map<string, number>();
     
-    // Calculate market caps from prices and supply (we'll get supply from signals)
+    // Use cached currentMarketCap from signal.metrics (updated by background jobs)
     for (const mint of uniqueMints) {
-      const price = prices[mint] || null;
-      if (price) {
-        const sig = signals.find(s => s.mint === mint);
-        const supply = sig?.entrySupply;
-        if (supply) {
-          marketCaps.set(mint, price * supply);
+      const sig = signals.find(s => s.mint === mint);
+      if (sig?.metrics?.currentMarketCap) {
+        marketCaps.set(mint, sig.metrics.currentMarketCap);
+        // Calculate approximate price from market cap for display
+        if (sig.entrySupply && sig.entrySupply > 0) {
+          prices.set(mint, sig.metrics.currentMarketCap / sig.entrySupply);
         }
       }
     }
@@ -998,7 +994,7 @@ export const handleLiveSignals = async (ctx: BotContext) => {
              // Find entry market cap from earliest signal
              const sig = signals.find(s => s.id === (row as any).earliestSignalId) || signals.find(s => s.mint === row.mint);
              const currentMc = marketCaps.get(row.mint) ?? sig?.metrics?.currentMarketCap ?? 0;
-             const currentPrice = prices[row.mint] ?? 0;
+             const currentPrice = prices.get(row.mint) ?? 0;
              row.currentPrice = currentPrice;
              
              // Find entry market cap from earliest signal
@@ -1070,10 +1066,18 @@ export const handleLiveSignals = async (ctx: BotContext) => {
             if (freshMc) {
                 marketCaps.set(row.mint, freshMc);
                 (row as any).currentMarketCap = freshMc;
-            } else if (meta.supply && prices[row.mint] !== null && prices[row.mint] !== undefined) {
-                const calculatedMc = prices[row.mint]! * meta.supply;
-                marketCaps.set(row.mint, calculatedMc);
-                (row as any).currentMarketCap = calculatedMc;
+            } else if (meta.supply) {
+                // Try to get price from market cap if available
+                const currentMc = marketCaps.get(row.mint);
+                if (currentMc && meta.supply > 0) {
+                    const calculatedPrice = currentMc / meta.supply;
+                    prices.set(row.mint, calculatedPrice);
+                } else if (meta.livePrice) {
+                    const calculatedMc = meta.livePrice * meta.supply;
+                    marketCaps.set(row.mint, calculatedMc);
+                    (row as any).currentMarketCap = calculatedMc;
+                    prices.set(row.mint, meta.livePrice);
+                }
             }
         } catch {}
     }));
