@@ -1,5 +1,6 @@
 import { prisma } from '../db';
 import { Prisma, Signal, SignalMetric } from '../generated/client';
+import { logger } from '../utils/logger';
 
 export interface EntityStats {
   id: number;
