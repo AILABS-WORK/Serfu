@@ -1029,15 +1029,17 @@ export const handleLiveSignals = async (ctx: BotContext) => {
         })
         .filter(row => {
             if (onlyGainers && row.pnl < 0) return false;
-            // FIX: > 2x / > 5x filters should use ATH multiple, not current multiple
-            // ATH multiple shows the peak performance from entry to now
-            const athMult = (row as any).athMultiple || 0;
+            // FIX: > 2x / > 5x filters should use CURRENT PnL (current MC vs entry MC), not ATH
+            // 2x = 100% PnL, 5x = 400% PnL (current multiple = 1 + PnL/100)
+            // User wants to see signals that are CURRENTLY above 2x/5x, not historically
             if (minMult > 0) {
-              if (athMult <= 0 || athMult < minMult) return false;
+              // Convert multiple to PnL: 2x = 100%, 5x = 400%
+              const requiredPnl = (minMult - 1) * 100;
+              if (!row.pnl || row.pnl < requiredPnl) return false;
               // When filtering by 2x/5x, only include signals called within selected timeframe
               if (row.latestDate < timeframeCutoff) return false;
             }
-            // ATH threshold filter
+            // ATH threshold filter (uses ATH multiple from OHLCV)
             if (minAth > 0) {
               const ath = (row as any).athMultiple || 0;
               if (ath < minAth) return false;
