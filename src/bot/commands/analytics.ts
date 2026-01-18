@@ -1214,9 +1214,9 @@ export const handleLiveSignals = async (ctx: BotContext) => {
             { text: '💰 Highest PnL', callback_data: 'live_sort:pnl' }
         ],
         [
-            { text: '🚀 > 2x', callback_data: 'live_filter:2x' },
-            { text: '🌕 > 5x', callback_data: 'live_filter:5x' },
-            { text: '🟢 Gainers', callback_data: 'live_filter:gainers' }
+            { text: minMult === 2 ? '✅ > 2x' : '🚀 > 2x', callback_data: 'live_filter:2x' },
+            { text: minMult === 5 ? '✅ > 5x' : '🌕 > 5x', callback_data: 'live_filter:5x' },
+            { text: onlyGainers ? '✅ Gainers' : '🟢 Gainers', callback_data: 'live_filter:gainers' }
         ],
         [
             { text: timeframeLabel === '1H' ? '✅ 1H' : '1H', callback_data: 'live_time:1H' },
