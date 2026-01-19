@@ -1227,22 +1227,37 @@ export const handleLiveSignals = async (ctx: BotContext) => {
                 const entryPrice = sig.entryPrice || sig.priceSamples?.[0]?.price || null;
                 
                 if (entrySupply && entrySupply > 0 && entryDate) {
-                    // Determine best timeframe based on age
+                    // OPTIMIZED: Use largest possible timeframe to minimize number of candles fetched
+                    // Strategy: Use daily candles if trade is > 24h, hourly if > 1h, otherwise minute
+                    // This minimizes API calls and speeds up ATH calculation
                     const ageMs = Date.now() - entryDate.getTime();
                     const ageMinutes = Math.ceil(ageMs / (60 * 1000));
+                    const ageHours = Math.ceil(ageMs / (60 * 60 * 1000));
+                    const ageDays = Math.ceil(ageMs / (24 * 60 * 60 * 1000));
                     
                     let timeframe: 'minute' | 'hour' | 'day' = 'minute';
                     let limit = 1000;
                     
-                    if (ageMinutes <= 1000) {
-                        timeframe = 'minute';
-                        limit = Math.min(1000, ageMinutes + 10); // Add buffer for entry
-                    } else if (ageMinutes <= 1440) {
-                        timeframe = 'hour';
-                        limit = Math.min(1000, Math.ceil(ageMinutes / 60) + 1);
-                    } else {
+                    // Use largest timeframe that still covers the trade period
+                    // Daily candles: 1 candle per day, max 1000 days
+                    // Hourly candles: 1 candle per hour, max 1000 hours (~41 days)
+                    // Minute candles: 1 candle per minute, max 1000 minutes (~16 hours)
+                    if (ageDays > 0 && ageDays <= 1000) {
+                        // Trade is days old - use daily candles (fastest, fewest candles)
                         timeframe = 'day';
-                        limit = Math.min(1000, Math.ceil(ageMinutes / (60 * 24)) + 1);
+                        limit = ageDays + 2; // Add buffer for entry and current day
+                    } else if (ageHours > 0 && ageHours <= 1000) {
+                        // Trade is hours old - use hourly candles (faster than minutes)
+                        timeframe = 'hour';
+                        limit = ageHours + 2; // Add buffer for entry and current hour
+                    } else if (ageMinutes <= 1000) {
+                        // Trade is minutes old - use minute candles (most granular)
+                        timeframe = 'minute';
+                        limit = ageMinutes + 10; // Add buffer for entry
+                    } else {
+                        // Very old trade (> 1000 days) - use daily candles with max limit
+                        timeframe = 'day';
+                        limit = 1000;
                     }
                     
                     // Fetch OHLCV candles that encompass the whole trade (entry to now)
