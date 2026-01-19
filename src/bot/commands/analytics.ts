@@ -1264,39 +1264,90 @@ export const handleLiveSignals = async (ctx: BotContext) => {
                     const candles = await geckoTerminal.getOHLCV(sig.mint, timeframe, limit);
                     
                     if (candles.length > 0) {
-                        // Find the candle that contains the entry timestamp
+                        // CRITICAL FIX: Only consider candles that start AT OR AFTER entry timestamp
+                        // This ensures we don't include prices from before the signal was called
+                        // Example: Daily candle starts at 00:00, token peaks at 100k at 10:00, drops to 20k at 10:20
+                        // Signal called at 10:20 (entry = 20k), token goes to 80k at 10:40
+                        // ATH should be 80k/20k = 4x, NOT 100k/20k = 5x (100k was before signal)
+                        const entryTimestamp = entryDate.getTime();
                         const intervalMs = timeframe === 'minute' ? 60 * 1000 : timeframe === 'hour' ? 60 * 60 * 1000 : 24 * 60 * 60 * 1000;
-                        let startIndex = candles.findIndex(
-                            (c) => entryDate.getTime() >= c.timestamp && entryDate.getTime() < c.timestamp + intervalMs
-                        );
                         
-                        // If exact match not found, find first candle after entry
-                        if (startIndex === -1) {
-                            startIndex = candles.findIndex((c) => c.timestamp >= entryDate.getTime());
-                        }
+                        // Get entry price for baseline
+                        const entryMc = (row as any).entryMarketCap || sig.entryMarketCap || 0;
+                        const entryPriceValue = entryPrice || (entryMc > 0 && entrySupply > 0 ? entryMc / entrySupply : 0);
                         
-                        // If still not found, use first candle (entry might be before all candles)
-                        if (startIndex === -1) startIndex = 0;
+                        // Find candles that start at or after entry timestamp
+                        // These are the ONLY candles we can trust (they don't include pre-entry prices)
+                        const postEntryCandles = candles.filter((c) => c.timestamp >= entryTimestamp);
                         
-                        // Find max high price from entry candle to now
-                        let maxHigh = 0;
-                        let maxAt = candles[startIndex]?.timestamp || entryDate.getTime();
+                        // Find max high price from post-entry candles only
+                        let maxHigh = entryPriceValue || 0; // Start with entry price as baseline
+                        let maxAt = entryTimestamp;
                         
-                        // Start from entry candle and go to the end
-                        for (let i = startIndex; i < candles.length; i++) {
-                            if (candles[i].high > maxHigh) {
-                                maxHigh = candles[i].high;
-                                maxAt = candles[i].timestamp;
+                        if (postEntryCandles.length > 0) {
+                            // We have candles that start at/after entry - use their highs directly
+                            for (const candle of postEntryCandles) {
+                                if (candle.high > maxHigh) {
+                                    maxHigh = candle.high;
+                                    maxAt = candle.timestamp;
+                                }
+                            }
+                        } else {
+                            // No candles start after entry - this means entry is within a candle that started before entry
+                            // For example: Daily candle starts at 00:00, entry is at 10:20
+                            // In this case, we need to handle the entry candle specially
+                            const entryCandleIndex = candles.findIndex(
+                                (c) => entryTimestamp >= c.timestamp && entryTimestamp < c.timestamp + intervalMs
+                            );
+                            
+                            if (entryCandleIndex !== -1) {
+                                // Entry is within this candle, but candle started before entry
+                                // We can't trust this candle's high (it might include pre-entry prices)
+                                // Solution: Fetch minute candles for just the entry period to get accurate data
+                                try {
+                                    // Fetch minute candles to get accurate entry period data
+                                    const entryAgeMinutes = Math.ceil((Date.now() - entryTimestamp) / (60 * 1000));
+                                    const minuteLimit = Math.min(1000, entryAgeMinutes + 10);
+                                    const minuteCandles = await geckoTerminal.getOHLCV(sig.mint, 'minute', minuteLimit);
+                                    
+                                    // Find minute candles that start at or after entry
+                                    const postEntryMinuteCandles = minuteCandles.filter((c) => c.timestamp >= entryTimestamp);
+                                    
+                                    if (postEntryMinuteCandles.length > 0) {
+                                        // Use minute candles for accurate entry period ATH
+                                        for (const candle of postEntryMinuteCandles) {
+                                            if (candle.high > maxHigh) {
+                                                maxHigh = candle.high;
+                                                maxAt = candle.timestamp;
+                                            }
+                                        }
+                                    } else {
+                                        // No minute candles after entry - use entry price as baseline
+                                        maxHigh = entryPriceValue || 0;
+                                    }
+                                } catch (minuteErr) {
+                                    // If minute candles fail, we can't trust the entry candle's high
+                                    // Fall back to entry price as baseline
+                                    maxHigh = entryPriceValue || 0;
+                                }
+                            }
+                            
+                            // Also check subsequent candles (after the entry candle) for ATH
+                            // These are safe to use since they start after entry
+                            if (entryCandleIndex !== -1 && entryCandleIndex + 1 < candles.length) {
+                                for (let i = entryCandleIndex + 1; i < candles.length; i++) {
+                                    if (candles[i].high > maxHigh) {
+                                        maxHigh = candles[i].high;
+                                        maxAt = candles[i].timestamp;
+                                    }
+                                }
                             }
                         }
                         
                         // Ensure maxHigh is at least entry price (ATH can't be lower than entry)
-                        const entryMc = (row as any).entryMarketCap || sig.entryMarketCap || 0;
-                        const entryPriceValue = entryPrice || (entryMc > 0 && entrySupply > 0 ? entryMc / entrySupply : 0);
-                        
-                        if (maxHigh < entryPriceValue) {
+                        if (entryPriceValue > 0 && maxHigh < entryPriceValue) {
                             maxHigh = entryPriceValue;
-                            maxAt = entryDate.getTime();
+                            maxAt = entryTimestamp;
                         }
                         
                         // Calculate ATH multiple and market cap
