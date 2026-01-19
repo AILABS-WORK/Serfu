@@ -1283,16 +1283,25 @@ export const handleLiveSignals = async (ctx: BotContext) => {
                             }
                         }
                         
-                        // STEP 2: Fetch hourly candles from next hour boundary until next day boundary (if trade spans hours)
-                        // Only fetch if trade is still active after next hour
+                        // STEP 2: Fetch hourly candles from next hour boundary onwards
+                        // If trade spans days, use hourly until next day boundary, then switch to daily
+                        // If trade is < 24h, use hourly until now
                         if (nowTimestamp > nextHourTimestamp && ageHours > 0) {
-                            const hoursToNextDay = Math.ceil((nextDayTimestamp - nextHourTimestamp) / (60 * 60 * 1000));
-                            const hourLimit = Math.min(1000, hoursToNextDay + 1);
+                            let hourlyEndTimestamp = nowTimestamp;
+                            
+                            // If trade spans days, use hourly until next day, then switch to daily
+                            if (nowTimestamp > nextDayTimestamp) {
+                                hourlyEndTimestamp = nextDayTimestamp; // Use hourly until next day
+                            }
+                            
+                            // Calculate hours needed from next hour until end
+                            const hoursNeeded = Math.ceil((hourlyEndTimestamp - nextHourTimestamp) / (60 * 60 * 1000));
+                            const hourLimit = Math.min(1000, hoursNeeded + 1);
                             
                             const hourlyCandles = await geckoTerminal.getOHLCV(sig.mint, 'hour', hourLimit);
                             
-                            // Only use hourly candles between next hour and next day boundaries
-                            const hourlyInRange = hourlyCandles.filter((c) => c.timestamp >= nextHourTimestamp && c.timestamp < nextDayTimestamp);
+                            // Only use hourly candles between next hour and end timestamp
+                            const hourlyInRange = hourlyCandles.filter((c) => c.timestamp >= nextHourTimestamp && c.timestamp < hourlyEndTimestamp);
                             
                             for (const candle of hourlyInRange) {
                                 if (candle.high > maxHigh) {
@@ -1300,29 +1309,27 @@ export const handleLiveSignals = async (ctx: BotContext) => {
                                     maxAt = candle.timestamp;
                                 }
                             }
-                        }
-                        
-                        // STEP 3: Fetch daily candles from next day boundary until now (if trade spans days)
-                        // Only fetch if trade is still active after next day
-                        if (nowTimestamp > nextDayTimestamp && ageDays > 0) {
-                            const daysFromNextDay = Math.ceil((nowTimestamp - nextDayTimestamp) / (24 * 60 * 60 * 1000));
-                            const dayLimit = Math.min(1000, daysFromNextDay + 1);
                             
-                            const dailyCandles = await geckoTerminal.getOHLCV(sig.mint, 'day', dayLimit);
-                            
-                            // Only use daily candles from next day onwards
-                            const dailyInRange = dailyCandles.filter((c) => c.timestamp >= nextDayTimestamp && c.timestamp <= nowTimestamp);
-                            
-                            for (const candle of dailyInRange) {
-                                if (candle.high > maxHigh) {
-                                    maxHigh = candle.high;
-                                    maxAt = candle.timestamp;
+                            // STEP 3: Fetch daily candles from next day boundary until now (if trade spans days)
+                            // Only fetch if trade is still active after next day
+                            if (nowTimestamp > nextDayTimestamp && ageDays > 0) {
+                                const daysFromNextDay = Math.ceil((nowTimestamp - nextDayTimestamp) / (24 * 60 * 60 * 1000));
+                                const dayLimit = Math.min(1000, daysFromNextDay + 1);
+                                
+                                const dailyCandles = await geckoTerminal.getOHLCV(sig.mint, 'day', dayLimit);
+                                
+                                // Only use daily candles from next day onwards
+                                const dailyInRange = dailyCandles.filter((c) => c.timestamp >= nextDayTimestamp && c.timestamp <= nowTimestamp);
+                                
+                                for (const candle of dailyInRange) {
+                                    if (candle.high > maxHigh) {
+                                        maxHigh = candle.high;
+                                        maxAt = candle.timestamp;
+                                    }
                                 }
                             }
-                        }
-                        
-                        // STEP 4: Handle case where entry is very recent (< 1 hour) - just use minute candles
-                        if (ageHours === 0 && ageMinutes > 0) {
+                        } else if (ageHours === 0 && ageMinutes > 0) {
+                            // STEP 4: Handle case where entry is very recent (< 1 hour) - just use minute candles
                             // Trade is less than 1 hour old - minute candles are sufficient
                             const minuteLimit = Math.min(1000, ageMinutes + 10);
                             const minuteCandles = await geckoTerminal.getOHLCV(sig.mint, 'minute', minuteLimit);
