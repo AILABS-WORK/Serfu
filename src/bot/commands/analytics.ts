@@ -1227,119 +1227,112 @@ export const handleLiveSignals = async (ctx: BotContext) => {
                 const entryPrice = sig.entryPrice || sig.priceSamples?.[0]?.price || null;
                 
                 if (entrySupply && entrySupply > 0 && entryDate) {
-                    // OPTIMIZED: Use largest possible timeframe to minimize number of candles fetched
-                    // Strategy: Use daily candles if trade is > 24h, hourly if > 1h, otherwise minute
-                    // This minimizes API calls and speeds up ATH calculation
-                    const ageMs = Date.now() - entryDate.getTime();
+                    // OPTIMIZED PROGRESSIVE TIMEFRAME STRATEGY:
+                    // Use minute candles from entry until next hour/day boundary, then use larger timeframes
+                    // This ensures accurate entry price while minimizing API calls
+                    // Example: Entry at 10:34 -> use minute until 11:00, then hourly until next day, then daily
+                    const entryTimestamp = entryDate.getTime();
+                    const nowTimestamp = Date.now();
+                    const entryDateObj = new Date(entryTimestamp);
+                    
+                    // Get entry price for baseline
+                    const entryMc = (row as any).entryMarketCap || sig.entryMarketCap || 0;
+                    const entryPriceValue = entryPrice || (entryMc > 0 && entrySupply > 0 ? entryMc / entrySupply : 0);
+                    
+                    let maxHigh = entryPriceValue || 0;
+                    let maxAt = entryTimestamp;
+                    
+                    // Calculate boundaries
+                    const entryMinutes = entryDateObj.getMinutes();
+                    const entryHours = entryDateObj.getHours();
+                    
+                    // Next hour boundary (e.g., 10:34 -> 11:00)
+                    const nextHourBoundary = new Date(entryDateObj);
+                    nextHourBoundary.setMinutes(0, 0, 0);
+                    nextHourBoundary.setHours(entryHours + 1);
+                    const nextHourTimestamp = nextHourBoundary.getTime();
+                    
+                    // Next day boundary (00:00 of next day)
+                    const nextDayBoundary = new Date(entryDateObj);
+                    nextDayBoundary.setHours(0, 0, 0, 0);
+                    nextDayBoundary.setDate(nextDayBoundary.getDate() + 1);
+                    const nextDayTimestamp = nextDayBoundary.getTime();
+                    
+                    const ageMs = nowTimestamp - entryTimestamp;
                     const ageMinutes = Math.ceil(ageMs / (60 * 1000));
                     const ageHours = Math.ceil(ageMs / (60 * 60 * 1000));
                     const ageDays = Math.ceil(ageMs / (24 * 60 * 60 * 1000));
                     
-                    let timeframe: 'minute' | 'hour' | 'day' = 'minute';
-                    let limit = 1000;
-                    
-                    // Use largest timeframe that still covers the trade period
-                    // Daily candles: 1 candle per day, max 1000 days
-                    // Hourly candles: 1 candle per hour, max 1000 hours (~41 days)
-                    // Minute candles: 1 candle per minute, max 1000 minutes (~16 hours)
-                    if (ageDays > 0 && ageDays <= 1000) {
-                        // Trade is days old - use daily candles (fastest, fewest candles)
-                        timeframe = 'day';
-                        limit = ageDays + 2; // Add buffer for entry and current day
-                    } else if (ageHours > 0 && ageHours <= 1000) {
-                        // Trade is hours old - use hourly candles (faster than minutes)
-                        timeframe = 'hour';
-                        limit = ageHours + 2; // Add buffer for entry and current hour
-                    } else if (ageMinutes <= 1000) {
-                        // Trade is minutes old - use minute candles (most granular)
-                        timeframe = 'minute';
-                        limit = ageMinutes + 10; // Add buffer for entry
-                    } else {
-                        // Very old trade (> 1000 days) - use daily candles with max limit
-                        timeframe = 'day';
-                        limit = 1000;
-                    }
-                    
-                    // Fetch OHLCV candles that encompass the whole trade (entry to now)
-                    const candles = await geckoTerminal.getOHLCV(sig.mint, timeframe, limit);
-                    
-                    if (candles.length > 0) {
-                        // CRITICAL FIX: Only consider candles that start AT OR AFTER entry timestamp
-                        // This ensures we don't include prices from before the signal was called
-                        // Example: Daily candle starts at 00:00, token peaks at 100k at 10:00, drops to 20k at 10:20
-                        // Signal called at 10:20 (entry = 20k), token goes to 80k at 10:40
-                        // ATH should be 80k/20k = 4x, NOT 100k/20k = 5x (100k was before signal)
-                        const entryTimestamp = entryDate.getTime();
-                        const intervalMs = timeframe === 'minute' ? 60 * 1000 : timeframe === 'hour' ? 60 * 60 * 1000 : 24 * 60 * 60 * 1000;
-                        
-                        // Get entry price for baseline
-                        const entryMc = (row as any).entryMarketCap || sig.entryMarketCap || 0;
-                        const entryPriceValue = entryPrice || (entryMc > 0 && entrySupply > 0 ? entryMc / entrySupply : 0);
-                        
-                        // Find candles that start at or after entry timestamp
-                        // These are the ONLY candles we can trust (they don't include pre-entry prices)
-                        const postEntryCandles = candles.filter((c) => c.timestamp >= entryTimestamp);
-                        
-                        // Find max high price from post-entry candles only
-                        let maxHigh = entryPriceValue || 0; // Start with entry price as baseline
-                        let maxAt = entryTimestamp;
-                        
-                        if (postEntryCandles.length > 0) {
-                            // We have candles that start at/after entry - use their highs directly
-                            for (const candle of postEntryCandles) {
+                    try {
+                        // STEP 1: Fetch minute candles from entry until next hour boundary (accurate entry period)
+                        // This ensures we capture accurate prices from entry point without pre-entry contamination
+                        if (nowTimestamp > entryTimestamp && nextHourTimestamp > entryTimestamp) {
+                            const minutesToNextHour = Math.ceil((nextHourTimestamp - entryTimestamp) / (60 * 1000));
+                            const minuteLimit = Math.min(1000, minutesToNextHour + 5); // Add small buffer
+                            
+                            const minuteCandles = await geckoTerminal.getOHLCV(sig.mint, 'minute', minuteLimit);
+                            
+                            // Only use minute candles that start at or after entry
+                            const postEntryMinutes = minuteCandles.filter((c) => c.timestamp >= entryTimestamp && c.timestamp < nextHourTimestamp);
+                            
+                            for (const candle of postEntryMinutes) {
                                 if (candle.high > maxHigh) {
                                     maxHigh = candle.high;
                                     maxAt = candle.timestamp;
                                 }
                             }
-                        } else {
-                            // No candles start after entry - this means entry is within a candle that started before entry
-                            // For example: Daily candle starts at 00:00, entry is at 10:20
-                            // In this case, we need to handle the entry candle specially
-                            const entryCandleIndex = candles.findIndex(
-                                (c) => entryTimestamp >= c.timestamp && entryTimestamp < c.timestamp + intervalMs
-                            );
+                        }
+                        
+                        // STEP 2: Fetch hourly candles from next hour boundary until next day boundary (if trade spans hours)
+                        // Only fetch if trade is still active after next hour
+                        if (nowTimestamp > nextHourTimestamp && ageHours > 0) {
+                            const hoursToNextDay = Math.ceil((nextDayTimestamp - nextHourTimestamp) / (60 * 60 * 1000));
+                            const hourLimit = Math.min(1000, hoursToNextDay + 1);
                             
-                            if (entryCandleIndex !== -1) {
-                                // Entry is within this candle, but candle started before entry
-                                // We can't trust this candle's high (it might include pre-entry prices)
-                                // Solution: Fetch minute candles for just the entry period to get accurate data
-                                try {
-                                    // Fetch minute candles to get accurate entry period data
-                                    const entryAgeMinutes = Math.ceil((Date.now() - entryTimestamp) / (60 * 1000));
-                                    const minuteLimit = Math.min(1000, entryAgeMinutes + 10);
-                                    const minuteCandles = await geckoTerminal.getOHLCV(sig.mint, 'minute', minuteLimit);
-                                    
-                                    // Find minute candles that start at or after entry
-                                    const postEntryMinuteCandles = minuteCandles.filter((c) => c.timestamp >= entryTimestamp);
-                                    
-                                    if (postEntryMinuteCandles.length > 0) {
-                                        // Use minute candles for accurate entry period ATH
-                                        for (const candle of postEntryMinuteCandles) {
-                                            if (candle.high > maxHigh) {
-                                                maxHigh = candle.high;
-                                                maxAt = candle.timestamp;
-                                            }
-                                        }
-                                    } else {
-                                        // No minute candles after entry - use entry price as baseline
-                                        maxHigh = entryPriceValue || 0;
-                                    }
-                                } catch (minuteErr) {
-                                    // If minute candles fail, we can't trust the entry candle's high
-                                    // Fall back to entry price as baseline
-                                    maxHigh = entryPriceValue || 0;
+                            const hourlyCandles = await geckoTerminal.getOHLCV(sig.mint, 'hour', hourLimit);
+                            
+                            // Only use hourly candles between next hour and next day boundaries
+                            const hourlyInRange = hourlyCandles.filter((c) => c.timestamp >= nextHourTimestamp && c.timestamp < nextDayTimestamp);
+                            
+                            for (const candle of hourlyInRange) {
+                                if (candle.high > maxHigh) {
+                                    maxHigh = candle.high;
+                                    maxAt = candle.timestamp;
                                 }
                             }
+                        }
+                        
+                        // STEP 3: Fetch daily candles from next day boundary until now (if trade spans days)
+                        // Only fetch if trade is still active after next day
+                        if (nowTimestamp > nextDayTimestamp && ageDays > 0) {
+                            const daysFromNextDay = Math.ceil((nowTimestamp - nextDayTimestamp) / (24 * 60 * 60 * 1000));
+                            const dayLimit = Math.min(1000, daysFromNextDay + 1);
                             
-                            // Also check subsequent candles (after the entry candle) for ATH
-                            // These are safe to use since they start after entry
-                            if (entryCandleIndex !== -1 && entryCandleIndex + 1 < candles.length) {
-                                for (let i = entryCandleIndex + 1; i < candles.length; i++) {
-                                    if (candles[i].high > maxHigh) {
-                                        maxHigh = candles[i].high;
-                                        maxAt = candles[i].timestamp;
-                                    }
+                            const dailyCandles = await geckoTerminal.getOHLCV(sig.mint, 'day', dayLimit);
+                            
+                            // Only use daily candles from next day onwards
+                            const dailyInRange = dailyCandles.filter((c) => c.timestamp >= nextDayTimestamp && c.timestamp <= nowTimestamp);
+                            
+                            for (const candle of dailyInRange) {
+                                if (candle.high > maxHigh) {
+                                    maxHigh = candle.high;
+                                    maxAt = candle.timestamp;
+                                }
+                            }
+                        }
+                        
+                        // STEP 4: Handle case where entry is very recent (< 1 hour) - just use minute candles
+                        if (ageHours === 0 && ageMinutes > 0) {
+                            // Trade is less than 1 hour old - minute candles are sufficient
+                            const minuteLimit = Math.min(1000, ageMinutes + 10);
+                            const minuteCandles = await geckoTerminal.getOHLCV(sig.mint, 'minute', minuteLimit);
+                            
+                            const postEntryMinutes = minuteCandles.filter((c) => c.timestamp >= entryTimestamp);
+                            
+                            for (const candle of postEntryMinutes) {
+                                if (candle.high > maxHigh) {
+                                    maxHigh = candle.high;
+                                    maxAt = candle.timestamp;
                                 }
                             }
                         }
@@ -1355,6 +1348,9 @@ export const handleLiveSignals = async (ctx: BotContext) => {
                             athMultiple = maxHigh / entryPriceValue;
                             athMarketCap = maxHigh * entrySupply;
                         }
+                    } catch (ohlcvErr) {
+                        // If OHLCV fails, fallback to price samples
+                        logger.debug(`OHLCV ATH calculation failed for ${sig.mint}, using price samples fallback`);
                     }
                 }
             } catch (err) {
