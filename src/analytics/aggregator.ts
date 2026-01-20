@@ -1,6 +1,7 @@
 import { prisma } from '../db';
 import { Prisma, Signal, SignalMetric } from '../generated/client';
 import { logger } from '../utils/logger';
+import { geckoTerminal } from '../providers/geckoTerminal';
 
 export interface EntityStats {
   id: number;
@@ -771,10 +772,10 @@ export interface DistributionStats {
     wins: number;
     avgMult: number;
   }>;
-  rugPullRatio: number;
-  moonshotProbability: number;
-  moonshotCounts: { gt2x: number; gt5x: number; gt10x: number };
-  moonshotTimes: { timeTo2x: number; timeTo5x: number; timeTo10x: number };
+    rugPullRatio: number;
+    moonshotProbability: number;
+    moonshotCounts: { gt2x: number; gt3x: number; gt4x: number; gt5x: number; gt10x: number; gt15x: number; gt20x: number; gt50x: number; gt100x: number };
+    moonshotTimes: { timeTo2x: number; timeTo5x: number; timeTo10x: number };
   streakAnalysis: {
     after1Loss: { count: number; winRate: number };
     after2Losses: { count: number; winRate: number };
@@ -846,12 +847,11 @@ export const getDistributionStats = async (
     scopeFilter = { userId: target.id };
   }
 
-  // OPTIMIZED: Filter by metrics existence to ensure we only process signals with cached metrics
-  // This avoids expensive calculations and ensures consistency with other features
+  // FIXED: Include all signals, not just those with metrics, to support 1D timeframe
+  // Real-time ATH calculation will be done for signals without metrics or with stale metrics
   const signals = await prisma.signal.findMany({
     where: {
       detectedAt: { gte: since },
-      metrics: { isNot: null }, // Only signals with metrics (faster, consistent)
       ...scopeFilter
     },
     include: { 
@@ -863,6 +863,279 @@ export const getDistributionStats = async (
       }
     }
   });
+
+  // Real-time ATH calculation for signals without metrics or with stale metrics (>2 min old)
+  const STALE_METRICS_MS = 2 * 60 * 1000; // 2 minutes
+  const now = Date.now();
+  const signalsNeedingAth = signals.filter(s => {
+    if (!s.metrics) return true; // No metrics at all
+    if (!s.metrics.updatedAt) return true; // No update timestamp
+    const age = now - s.metrics.updatedAt.getTime();
+    return age > STALE_METRICS_MS; // Stale metrics
+  });
+
+  // Calculate ATH for signals that need it (in parallel batches to avoid rate limits)
+  const BATCH_SIZE = 5;
+  const DELAY_BETWEEN_BATCHES = 500;
+  
+  for (let i = 0; i < signalsNeedingAth.length; i += BATCH_SIZE) {
+    const batch = signalsNeedingAth.slice(i, i + BATCH_SIZE);
+    await Promise.allSettled(batch.map(async (s) => {
+      try {
+        const entryTimestamp = s.detectedAt.getTime();
+        const entrySupply = s.entrySupply || (s.priceSamples?.[0]?.marketCap && s.entryPrice ? s.priceSamples[0].marketCap / s.entryPrice : null);
+        const entryPrice = s.entryPrice || s.priceSamples?.[0]?.price || null;
+        const entryMc = s.entryMarketCap || s.priceSamples?.[0]?.marketCap || 0;
+        
+        if (!entrySupply || entrySupply <= 0 || !entryPrice || entryPrice <= 0) {
+          return; // Can't calculate ATH without entry data
+        }
+
+        const entryPriceValue = entryPrice || (entryMc > 0 && entrySupply > 0 ? entryMc / entrySupply : 0);
+        if (entryPriceValue <= 0) return;
+
+        const nowTimestamp = Date.now();
+        const entryDateObj = new Date(entryTimestamp);
+        
+        // PROGRESSIVE BOUNDARY CALCULATION: Same as live signals
+        const calculateNextBoundary = (date: Date, intervalMinutes: number): Date => {
+            const result = new Date(date);
+            const currentMinutes = result.getMinutes();
+            const remainder = currentMinutes % intervalMinutes;
+            if (remainder === 0) {
+                result.setMinutes(currentMinutes + intervalMinutes);
+            } else {
+                result.setMinutes(currentMinutes + (intervalMinutes - remainder));
+            }
+            result.setSeconds(0);
+            result.setMilliseconds(0);
+            return result;
+        };
+        
+        const next05Boundary = calculateNextBoundary(entryDateObj, 5);
+        const next05Timestamp = next05Boundary.getTime();
+        
+        const next15Boundary = calculateNextBoundary(entryDateObj, 15);
+        const next15Timestamp = next15Boundary.getTime();
+        
+        const next30Boundary = calculateNextBoundary(entryDateObj, 30);
+        const next30Timestamp = next30Boundary.getTime();
+        
+        const nextHourBoundary = new Date(entryDateObj);
+        nextHourBoundary.setMinutes(0, 0, 0);
+        nextHourBoundary.setSeconds(0, 0);
+        nextHourBoundary.setHours(nextHourBoundary.getHours() + 1);
+        const nextHourTimestamp = nextHourBoundary.getTime();
+        
+        const nextDayBoundary = new Date(entryDateObj);
+        nextDayBoundary.setHours(0, 0, 0, 0);
+        nextDayBoundary.setDate(nextDayBoundary.getDate() + 1);
+        const nextDayTimestamp = nextDayBoundary.getTime();
+        
+        const ageMs = nowTimestamp - entryTimestamp;
+        const ageMinutes = Math.ceil(ageMs / (60 * 1000));
+        const ageHours = Math.ceil(ageMs / (60 * 60 * 1000));
+        const ageDays = Math.ceil(ageMs / (24 * 60 * 60 * 1000));
+
+        let maxHigh = 0;
+        let maxAt = entryTimestamp;
+
+        // Progressive timeframe strategy (same as live signals)
+        try {
+          // PHASE 1: Minute candles from entry until next :05 boundary
+          if (nowTimestamp > entryTimestamp && next05Timestamp > entryTimestamp) {
+            const minutesTo05 = Math.ceil((next05Timestamp - entryTimestamp) / (60 * 1000));
+            const minuteLimit = Math.min(1000, minutesTo05 + 2);
+            try {
+              const minuteCandles = await geckoTerminal.getOHLCV(s.mint, 'minute', minuteLimit);
+              const postEntryMinutes = minuteCandles.filter((c) => c.timestamp >= entryTimestamp && c.timestamp < next05Timestamp);
+              for (const candle of postEntryMinutes) {
+                if (candle.high > maxHigh) {
+                  maxHigh = candle.high;
+                  maxAt = candle.timestamp;
+                }
+              }
+            } catch (err) {
+              logger.debug(`GeckoTerminal minute candles failed for ${s.mint} in distributions: ${err}`);
+            }
+          }
+
+          // PHASE 2: Minute candles from :05 boundary until next :15 boundary
+          if (nowTimestamp > next05Timestamp && next15Timestamp > next05Timestamp) {
+            const minutesTo15 = Math.ceil((next15Timestamp - next05Timestamp) / (60 * 1000));
+            const minuteLimit = Math.min(1000, minutesTo15 + 2);
+            try {
+              const minuteCandles = await geckoTerminal.getOHLCV(s.mint, 'minute', minuteLimit);
+              const post05Minutes = minuteCandles.filter((c) => c.timestamp >= next05Timestamp && c.timestamp < next15Timestamp);
+              for (const candle of post05Minutes) {
+                if (candle.high > maxHigh) {
+                  maxHigh = candle.high;
+                  maxAt = candle.timestamp;
+                }
+              }
+            } catch (err) {
+              logger.debug(`GeckoTerminal minute candles (:05 to :15) failed for ${s.mint} in distributions: ${err}`);
+            }
+          }
+
+          // PHASE 3: Minute candles from :15 boundary until next hour (or :30 if closer)
+          if (nowTimestamp > next15Timestamp) {
+            const endBoundary = next30Timestamp < nextHourTimestamp && next30Timestamp > next15Timestamp 
+              ? next30Timestamp 
+              : nextHourTimestamp;
+            
+            if (endBoundary > next15Timestamp) {
+              const minutesToEnd = Math.ceil((endBoundary - next15Timestamp) / (60 * 1000));
+              const minuteLimit = Math.min(1000, minutesToEnd + 2);
+              try {
+                const minuteCandles = await geckoTerminal.getOHLCV(s.mint, 'minute', minuteLimit);
+                const post15Minutes = minuteCandles.filter((c) => c.timestamp >= next15Timestamp && c.timestamp < endBoundary);
+                for (const candle of post15Minutes) {
+                  if (candle.high > maxHigh) {
+                    maxHigh = candle.high;
+                    maxAt = candle.timestamp;
+                  }
+                }
+              } catch (err) {
+                logger.debug(`GeckoTerminal minute candles (:15 to ${endBoundary === next30Timestamp ? ':30' : 'hour'}) failed for ${s.mint} in distributions: ${err}`);
+              }
+            }
+            
+            // If we stopped at :30, continue with minute candles from :30 to hour
+            if (endBoundary === next30Timestamp && nowTimestamp > next30Timestamp && nextHourTimestamp > next30Timestamp) {
+              const minutesToHour = Math.ceil((nextHourTimestamp - next30Timestamp) / (60 * 1000));
+              const minuteLimit = Math.min(1000, minutesToHour + 2);
+              try {
+                const minuteCandles = await geckoTerminal.getOHLCV(s.mint, 'minute', minuteLimit);
+                const post30Minutes = minuteCandles.filter((c) => c.timestamp >= next30Timestamp && c.timestamp < nextHourTimestamp);
+                for (const candle of post30Minutes) {
+                  if (candle.high > maxHigh) {
+                    maxHigh = candle.high;
+                    maxAt = candle.timestamp;
+                  }
+                }
+              } catch (err) {
+                logger.debug(`GeckoTerminal minute candles (:30 to hour) failed for ${s.mint} in distributions: ${err}`);
+              }
+            }
+          }
+
+          // PHASE 4: Hourly candles from next hour boundary onwards
+          if (nowTimestamp > nextHourTimestamp && ageHours > 0) {
+            let hourlyEndTimestamp = nowTimestamp;
+            if (nowTimestamp > nextDayTimestamp) {
+              hourlyEndTimestamp = nextDayTimestamp;
+            }
+            const hoursNeeded = Math.ceil((hourlyEndTimestamp - nextHourTimestamp) / (60 * 60 * 1000));
+            const hourLimit = Math.min(1000, hoursNeeded + 1);
+            try {
+              const hourlyCandles = await geckoTerminal.getOHLCV(s.mint, 'hour', hourLimit);
+              // CRITICAL: Only include candles that start AT OR AFTER hour boundary
+              const hourlyInRange = hourlyCandles.filter((c) => c.timestamp >= nextHourTimestamp && c.timestamp < hourlyEndTimestamp);
+              for (const candle of hourlyInRange) {
+                if (candle.high > maxHigh) {
+                  maxHigh = candle.high;
+                  maxAt = candle.timestamp;
+                }
+              }
+            } catch (err) {
+              logger.debug(`GeckoTerminal hourly candles failed for ${s.mint} in distributions: ${err}`);
+            }
+
+            // PHASE 5: Daily candles if trade spans days
+            if (nowTimestamp > nextDayTimestamp && ageDays > 0) {
+              const daysNeeded = Math.ceil((nowTimestamp - nextDayTimestamp) / (24 * 60 * 60 * 1000));
+              const dayLimit = Math.min(1000, daysNeeded + 1);
+              try {
+                const dailyCandles = await geckoTerminal.getOHLCV(s.mint, 'day', dayLimit);
+                // CRITICAL: Only include candles that start AT OR AFTER day boundary
+                const dailyInRange = dailyCandles.filter((c) => c.timestamp >= nextDayTimestamp && c.timestamp <= nowTimestamp);
+                for (const candle of dailyInRange) {
+                  if (candle.high > maxHigh) {
+                    maxHigh = candle.high;
+                    maxAt = candle.timestamp;
+                  }
+                }
+              } catch (err) {
+                logger.debug(`GeckoTerminal daily candles failed for ${s.mint} in distributions: ${err}`);
+              }
+            }
+          } else if (ageHours === 0 && ageMinutes > 0 && nowTimestamp <= next05Timestamp) {
+            // Very recent trade (< 1 hour and hasn't reached :05 yet) - just use minute candles
+            const minuteLimit = Math.min(1000, ageMinutes + 10);
+            try {
+              const minuteCandles = await geckoTerminal.getOHLCV(s.mint, 'minute', minuteLimit);
+              const postEntryMinutes = minuteCandles.filter((c) => c.timestamp >= entryTimestamp);
+              for (const candle of postEntryMinutes) {
+                if (candle.high > maxHigh) {
+                  maxHigh = candle.high;
+                  maxAt = candle.timestamp;
+                }
+              }
+            } catch (err) {
+              logger.debug(`GeckoTerminal minute candles (recent) failed for ${s.mint} in distributions: ${err}`);
+            }
+          }
+
+          // Fallback: try all minute candles if maxHigh is still 0
+          if (maxHigh === 0) {
+            try {
+              const allMinuteCandles = await geckoTerminal.getOHLCV(s.mint, 'minute', 1000);
+              const postEntryAllMinutes = allMinuteCandles.filter((c) => c.timestamp >= entryTimestamp);
+              for (const candle of postEntryAllMinutes) {
+                if (candle.high > maxHigh) {
+                  maxHigh = candle.high;
+                  maxAt = candle.timestamp;
+                }
+              }
+            } catch (err) {
+              logger.debug(`GeckoTerminal all-minute fallback failed for ${s.mint} in distributions: ${err}`);
+            }
+          }
+
+          // Calculate ATH multiple
+          if (maxHigh > 0 && entryPriceValue > 0) {
+            const athMultiple = maxHigh / entryPriceValue;
+            // Update or create metrics for this signal
+            if (s.metrics) {
+              await prisma.signalMetric.update({
+                where: { signalId: s.id },
+                data: {
+                  athMultiple,
+                  athPrice: maxHigh,
+                  athMarketCap: maxHigh * entrySupply,
+                  athAt: new Date(maxAt),
+                  updatedAt: new Date()
+                }
+              });
+              s.metrics.athMultiple = athMultiple;
+            } else {
+              // Create new metrics
+              const newMetrics = await prisma.signalMetric.create({
+                data: {
+                  signalId: s.id,
+                  athMultiple,
+                  athPrice: maxHigh,
+                  athMarketCap: maxHigh * entrySupply,
+                  athAt: new Date(maxAt)
+                }
+              });
+              s.metrics = newMetrics;
+            }
+          }
+        } catch (err) {
+          logger.debug(`ATH calculation failed for signal ${s.id} in distributions: ${err}`);
+        }
+      } catch (err) {
+        logger.debug(`Error calculating ATH for signal ${s.id} in distributions: ${err}`);
+      }
+    }));
+
+    // Delay between batches to avoid rate limits
+    if (i + BATCH_SIZE < signalsNeedingAth.length) {
+      await new Promise(resolve => setTimeout(resolve, DELAY_BETWEEN_BATCHES));
+    }
+  }
 
   // 3. Process Distributions - Initialize all stats
   const stats: DistributionStats = {
@@ -908,7 +1181,7 @@ export const getDistributionStats = async (
     ],
     rugPullRatio: 0,
     moonshotProbability: 0,
-    moonshotCounts: { gt2x: 0, gt5x: 0, gt10x: 0 },
+    moonshotCounts: { gt2x: 0, gt3x: 0, gt4x: 0, gt5x: 0, gt10x: 0, gt15x: 0, gt20x: 0, gt50x: 0, gt100x: 0 },
     moonshotTimes: { timeTo2x: 0, timeTo5x: 0, timeTo10x: 0 },
     streakAnalysis: {
       after1Loss: { count: 0, winRate: 0 },
@@ -1057,10 +1330,16 @@ export const getDistributionStats = async (
     // Rug Pull Ratio
     if (isRug) stats.rugPullRatio++;
 
-    // Moonshot Probability
+    // Moonshot Probability - comprehensive buckets
     if (mult > 2) stats.moonshotCounts.gt2x++;
+    if (mult > 3) stats.moonshotCounts.gt3x++;
+    if (mult > 4) stats.moonshotCounts.gt4x++;
     if (mult > 5) stats.moonshotCounts.gt5x++;
     if (mult > 10) stats.moonshotCounts.gt10x++;
+    if (mult > 15) stats.moonshotCounts.gt15x++;
+    if (mult > 20) stats.moonshotCounts.gt20x++;
+    if (mult > 50) stats.moonshotCounts.gt50x++;
+    if (mult > 100) stats.moonshotCounts.gt100x++;
     if (isMoonshot) stats.moonshotProbability++;
 
     // Moonshot Times (ms -> minutes)

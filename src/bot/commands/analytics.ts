@@ -1137,7 +1137,57 @@ export const handleLiveSignals = async (ctx: BotContext) => {
              return row;
         });
     
-    // STEP 2: Apply remaining filters (timeframe already filtered above)
+    // STEP 2: CRITICAL FIX - Ensure ALL candidates have market cap calculated BEFORE filtering
+    // When minMult > 0 or onlyGainers is true, we need accurate PnL for ALL candidates to filter correctly
+    // This prevents valid signals from being filtered out due to missing MC data
+    if (minMult > 0 || onlyGainers) {
+        logger.debug(`Ensuring MC calculated for ${candidates.length} candidates before filtering (minMult: ${minMult}, onlyGainers: ${onlyGainers})`);
+        
+        // Find candidates missing MC
+        const candidatesNeedingMc = candidates.filter(row => {
+            const currentMc = marketCaps.get(row.mint) ?? 0;
+            return currentMc === 0 || !(row as any).currentMarketCap || (row as any).currentMarketCap === 0;
+        });
+        
+        if (candidatesNeedingMc.length > 0) {
+            logger.debug(`Fetching MC for ${candidatesNeedingMc.length} candidates missing MC before filtering`);
+            
+            // Fetch metadata for candidates missing MC
+            await Promise.all(candidatesNeedingMc.map(async (row) => {
+                try {
+                    const meta = await provider.getTokenMeta(row.mint);
+                    const freshMc = meta.liveMarketCap || meta.marketCap;
+                    if (freshMc && freshMc > 0) {
+                        marketCaps.set(row.mint, freshMc);
+                        (row as any).currentMarketCap = freshMc;
+                    } else if (meta.supply && meta.livePrice) {
+                        const calculatedMc = meta.livePrice * meta.supply;
+                        if (calculatedMc > 0) {
+                            marketCaps.set(row.mint, calculatedMc);
+                            (row as any).currentMarketCap = calculatedMc;
+                            prices.set(row.mint, meta.livePrice);
+                        }
+                    }
+                    
+                    // Recalculate PnL with fresh market cap
+                    const sig = signals.find(s => s.id === (row as any).earliestSignalId) || signals.find(s => s.mint === row.mint);
+                    if (sig) {
+                        const entryMc = (row as any).entryMarketCap || sig.entryMarketCap || sig.priceSamples?.[0]?.marketCap || 0;
+                        const currentMc = (row as any).currentMarketCap || 0;
+                        if (currentMc > 0 && entryMc > 0) {
+                            const newPnl = ((currentMc - entryMc) / entryMc) * 100;
+                            row.pnl = newPnl;
+                            (row as any)._calculatedPnl = newPnl;
+                        }
+                    }
+                } catch (err) {
+                    logger.debug(`Failed to fetch metadata for ${row.mint} before filtering: ${err}`);
+                }
+            }));
+        }
+    }
+    
+    // STEP 3: Apply remaining filters (timeframe already filtered above)
     // All data (entry MC, current MC, PnL) has been calculated above, so filters use accurate values
     const filteredCandidates = candidates.filter(row => {
             // Only gainers filter
@@ -1174,13 +1224,13 @@ export const handleLiveSignals = async (ctx: BotContext) => {
             return true;
         });
     
-    // STEP 3: Initialize metaMap for storing token metadata (used for all sorting methods)
+    // STEP 4: Initialize metaMap for storing token metadata (used for all sorting methods)
     const metaMap = new Map<string, any>();
     
-    // STEP 4: CRITICAL FIX - Ensure ALL filtered candidates have market cap calculated before sorting
+    // STEP 5: CRITICAL FIX - Ensure ALL filtered candidates have market cap calculated before sorting
     // For highest PnL sorting, we need accurate PnL for ALL candidates, not just top 30
     // This ensures proper sorting when some signals have missing market cap data
-    if (sortBy === 'pnl' || minMult > 0 || onlyGainers) {
+    if (sortBy === 'pnl') {
         // For PnL-based sorting/filtering, fetch metadata for ALL candidates to ensure accurate PnL
         logger.debug(`Fetching metadata for ${filteredCandidates.length} candidates to ensure accurate PnL calculation`);
         
@@ -1203,30 +1253,30 @@ export const handleLiveSignals = async (ctx: BotContext) => {
             }
             
             // Fetch metadata if market cap is missing or 0
-            try {
-                const meta = await provider.getTokenMeta(row.mint);
-                metaMap.set(row.mint, meta);
-                
-                // Update market cap with fresh data
-                const freshMc = meta.liveMarketCap || meta.marketCap;
+        try {
+            const meta = await provider.getTokenMeta(row.mint);
+            metaMap.set(row.mint, meta);
+            
+            // Update market cap with fresh data
+            const freshMc = meta.liveMarketCap || meta.marketCap;
                 if (freshMc && freshMc > 0) {
-                    marketCaps.set(row.mint, freshMc);
-                    (row as any).currentMarketCap = freshMc;
+                marketCaps.set(row.mint, freshMc);
+                (row as any).currentMarketCap = freshMc;
                 } else if (meta.supply && meta.livePrice) {
                     const calculatedMc = meta.livePrice * meta.supply;
                     if (calculatedMc > 0) {
-                        marketCaps.set(row.mint, calculatedMc);
-                        (row as any).currentMarketCap = calculatedMc;
-                        prices.set(row.mint, meta.livePrice);
-                    }
+                    marketCaps.set(row.mint, calculatedMc);
+                    (row as any).currentMarketCap = calculatedMc;
+                    prices.set(row.mint, meta.livePrice);
                 }
-                
+            }
+            
                 // Recalculate PnL with fresh market cap
-                const sig = signals.find(s => s.id === (row as any).earliestSignalId) || signals.find(s => s.mint === row.mint);
-                if (sig) {
-                    const entryMc = (row as any).entryMarketCap || sig.entryMarketCap || sig.priceSamples?.[0]?.marketCap || 0;
-                    const currentMc = (row as any).currentMarketCap || 0;
-                    if (currentMc > 0 && entryMc > 0) {
+            const sig = signals.find(s => s.id === (row as any).earliestSignalId) || signals.find(s => s.mint === row.mint);
+            if (sig) {
+                const entryMc = (row as any).entryMarketCap || sig.entryMarketCap || sig.priceSamples?.[0]?.marketCap || 0;
+                const currentMc = (row as any).currentMarketCap || 0;
+                if (currentMc > 0 && entryMc > 0) {
                         const newPnl = ((currentMc - entryMc) / entryMc) * 100;
                         row.pnl = newPnl;
                         (row as any)._calculatedPnl = newPnl;
@@ -1289,9 +1339,9 @@ export const handleLiveSignals = async (ctx: BotContext) => {
                             (row as any).currentMarketCap = calculatedMc;
                             prices.set(row.mint, meta.livePrice);
                         }
-                    }
                 }
-            } catch {}
+            }
+        } catch {}
         }
         
         // Ensure current MC is set on row object from marketCaps Map
@@ -1371,11 +1421,41 @@ export const handleLiveSignals = async (ctx: BotContext) => {
                 let ohlcvMethodsTried: string[] = [];
                 let ohlcvCandlesFound = 0;
                 
-                // Calculate boundaries
-                const entryHours = entryDateObj.getHours();
+                // PROGRESSIVE BOUNDARY CALCULATION: Calculate boundaries to minimize API calls
+                // Strategy: minute → :05 → 5-min → :15 → 15/30-min → hour → day
+                // This ensures we never use candles that started before entry time
+                
+                // Helper function to calculate next boundary
+                const calculateNextBoundary = (date: Date, intervalMinutes: number): Date => {
+                    const result = new Date(date);
+                    const currentMinutes = result.getMinutes();
+                    const remainder = currentMinutes % intervalMinutes;
+                    if (remainder === 0) {
+                        // Already on boundary, move to next
+                        result.setMinutes(currentMinutes + intervalMinutes);
+                    } else {
+                        // Round up to next boundary
+                        result.setMinutes(currentMinutes + (intervalMinutes - remainder));
+                    }
+                    result.setSeconds(0);
+                    result.setMilliseconds(0);
+                    return result;
+                };
+                
+                // Calculate all progressive boundaries
+                const next05Boundary = calculateNextBoundary(entryDateObj, 5); // Next :05, :10, :15, etc.
+                const next05Timestamp = next05Boundary.getTime();
+                
+                const next15Boundary = calculateNextBoundary(entryDateObj, 15); // Next :15, :30, :45, :00
+                const next15Timestamp = next15Boundary.getTime();
+                
+                const next30Boundary = calculateNextBoundary(entryDateObj, 30); // Next :30 or :00
+                const next30Timestamp = next30Boundary.getTime();
+                
                 const nextHourBoundary = new Date(entryDateObj);
                 nextHourBoundary.setMinutes(0, 0, 0);
-                nextHourBoundary.setHours(entryHours + 1);
+                nextHourBoundary.setSeconds(0, 0);
+                nextHourBoundary.setHours(nextHourBoundary.getHours() + 1);
                 const nextHourTimestamp = nextHourBoundary.getTime();
                 
                 const nextDayBoundary = new Date(entryDateObj);
@@ -1396,16 +1476,19 @@ export const handleLiveSignals = async (ctx: BotContext) => {
                 
                 try {
                     // STEP 1: Progressive timeframe strategy with GeckoTerminal
+                    // Strategy: minute → :05 → 5-min → :15 → 15/30-min → hour → day
+                    // This ensures we never use candles that started before entry time
                     ohlcvMethodsTried.push('GeckoTerminal-progressive');
                     
-                    // Fetch minute candles from entry until next hour boundary
-                    if (nowTimestamp > entryTimestamp && nextHourTimestamp > entryTimestamp) {
-                        const minutesToNextHour = Math.ceil((nextHourTimestamp - entryTimestamp) / (60 * 1000));
-                        const minuteLimit = Math.min(1000, minutesToNextHour + 5);
+                    // PHASE 1: Minute candles from entry until next :05 boundary
+                    if (nowTimestamp > entryTimestamp && next05Timestamp > entryTimestamp) {
+                        const minutesTo05 = Math.ceil((next05Timestamp - entryTimestamp) / (60 * 1000));
+                        const minuteLimit = Math.min(1000, minutesTo05 + 2); // +2 for safety
                         
                         try {
                             const minuteCandles = await geckoTerminal.getOHLCV(sig.mint, 'minute', minuteLimit);
-                            const postEntryMinutes = minuteCandles.filter((c) => c.timestamp >= entryTimestamp && c.timestamp < nextHourTimestamp);
+                            // CRITICAL: Only include candles that start AT OR AFTER entry timestamp
+                            const postEntryMinutes = minuteCandles.filter((c) => c.timestamp >= entryTimestamp && c.timestamp < next05Timestamp);
                             ohlcvCandlesFound += postEntryMinutes.length;
                             
                             for (const candle of postEntryMinutes) {
@@ -1419,7 +1502,82 @@ export const handleLiveSignals = async (ctx: BotContext) => {
                         }
                     }
                     
-                    // Fetch hourly candles from next hour boundary onwards
+                    // PHASE 2: Minute candles from :05 boundary until next :15 boundary
+                    // Use minute candles but fetch efficiently - only what we need for this range
+                    if (nowTimestamp > next05Timestamp && next15Timestamp > next05Timestamp) {
+                        const minutesTo15 = Math.ceil((next15Timestamp - next05Timestamp) / (60 * 1000));
+                        const minuteLimit = Math.min(1000, minutesTo15 + 2);
+                        
+                        try {
+                            const minuteCandles = await geckoTerminal.getOHLCV(sig.mint, 'minute', minuteLimit);
+                            // CRITICAL: Only include candles that start AT OR AFTER :05 boundary
+                            // Process ALL minute candles in this range (don't filter by alignment)
+                            const post05Minutes = minuteCandles.filter((c) => c.timestamp >= next05Timestamp && c.timestamp < next15Timestamp);
+                            ohlcvCandlesFound += post05Minutes.length;
+                            
+                            for (const candle of post05Minutes) {
+                                if (candle.high > maxHigh) {
+                                    maxHigh = candle.high;
+                                    maxAt = candle.timestamp;
+                                }
+                            }
+                        } catch (err) {
+                            logger.debug(`GeckoTerminal minute candles (:05 to :15) failed for ${sig.mint}: ${err}`);
+                        }
+                    }
+                    
+                    // PHASE 3: Minute candles from :15 boundary until next hour (or :30 if closer)
+                    // Choose which boundary is closer: :30 or hour, to minimize API calls
+                    if (nowTimestamp > next15Timestamp) {
+                        const endBoundary = next30Timestamp < nextHourTimestamp && next30Timestamp > next15Timestamp 
+                            ? next30Timestamp 
+                            : nextHourTimestamp;
+                        
+                        if (endBoundary > next15Timestamp) {
+                            const minutesToEnd = Math.ceil((endBoundary - next15Timestamp) / (60 * 1000));
+                            const minuteLimit = Math.min(1000, minutesToEnd + 2);
+                            
+                            try {
+                                const minuteCandles = await geckoTerminal.getOHLCV(sig.mint, 'minute', minuteLimit);
+                                // CRITICAL: Only include candles that start AT OR AFTER :15 boundary
+                                const post15Minutes = minuteCandles.filter((c) => c.timestamp >= next15Timestamp && c.timestamp < endBoundary);
+                                ohlcvCandlesFound += post15Minutes.length;
+                                
+                                for (const candle of post15Minutes) {
+                                    if (candle.high > maxHigh) {
+                                        maxHigh = candle.high;
+                                        maxAt = candle.timestamp;
+                                    }
+                                }
+                            } catch (err) {
+                                logger.debug(`GeckoTerminal minute candles (:15 to ${endBoundary === next30Timestamp ? ':30' : 'hour'}) failed for ${sig.mint}: ${err}`);
+                            }
+                        }
+                        
+                        // If we stopped at :30, continue with minute candles from :30 to hour
+                        if (endBoundary === next30Timestamp && nowTimestamp > next30Timestamp && nextHourTimestamp > next30Timestamp) {
+                            const minutesToHour = Math.ceil((nextHourTimestamp - next30Timestamp) / (60 * 1000));
+                            const minuteLimit = Math.min(1000, minutesToHour + 2);
+                            
+                            try {
+                                const minuteCandles = await geckoTerminal.getOHLCV(sig.mint, 'minute', minuteLimit);
+                                // CRITICAL: Only include candles that start AT OR AFTER :30 boundary
+                                const post30Minutes = minuteCandles.filter((c) => c.timestamp >= next30Timestamp && c.timestamp < nextHourTimestamp);
+                                ohlcvCandlesFound += post30Minutes.length;
+                                
+                                for (const candle of post30Minutes) {
+                                    if (candle.high > maxHigh) {
+                                        maxHigh = candle.high;
+                                        maxAt = candle.timestamp;
+                                    }
+                                }
+                            } catch (err) {
+                                logger.debug(`GeckoTerminal minute candles (:30 to hour) failed for ${sig.mint}: ${err}`);
+                            }
+                        }
+                    }
+                    
+                    // PHASE 4: Hourly candles from next hour boundary onwards
                     if (nowTimestamp > nextHourTimestamp && ageHours > 0) {
                         let hourlyEndTimestamp = nowTimestamp;
                         if (nowTimestamp > nextDayTimestamp) {
@@ -1431,6 +1589,7 @@ export const handleLiveSignals = async (ctx: BotContext) => {
                         
                         try {
                             const hourlyCandles = await geckoTerminal.getOHLCV(sig.mint, 'hour', hourLimit);
+                            // CRITICAL: Only include candles that start AT OR AFTER hour boundary
                             const hourlyInRange = hourlyCandles.filter((c) => c.timestamp >= nextHourTimestamp && c.timestamp < hourlyEndTimestamp);
                             ohlcvCandlesFound += hourlyInRange.length;
                             
@@ -1444,13 +1603,14 @@ export const handleLiveSignals = async (ctx: BotContext) => {
                             logger.debug(`GeckoTerminal hourly candles failed for ${sig.mint}: ${err}`);
                         }
                         
-                        // Fetch daily candles if trade spans days
+                        // PHASE 5: Daily candles if trade spans days
                         if (nowTimestamp > nextDayTimestamp && ageDays > 0) {
-                            const daysFromNextDay = Math.ceil((nowTimestamp - nextDayTimestamp) / (24 * 60 * 60 * 1000));
-                            const dayLimit = Math.min(1000, daysFromNextDay + 1);
+                            const daysNeeded = Math.ceil((nowTimestamp - nextDayTimestamp) / (24 * 60 * 60 * 1000));
+                            const dayLimit = Math.min(1000, daysNeeded + 1);
                             
                             try {
                                 const dailyCandles = await geckoTerminal.getOHLCV(sig.mint, 'day', dayLimit);
+                                // CRITICAL: Only include candles that start AT OR AFTER day boundary
                                 const dailyInRange = dailyCandles.filter((c) => c.timestamp >= nextDayTimestamp && c.timestamp <= nowTimestamp);
                                 ohlcvCandlesFound += dailyInRange.length;
                                 
@@ -1464,11 +1624,12 @@ export const handleLiveSignals = async (ctx: BotContext) => {
                                 logger.debug(`GeckoTerminal daily candles failed for ${sig.mint}: ${err}`);
                             }
                         }
-                    } else if (ageHours === 0 && ageMinutes > 0) {
-                        // Very recent trade (< 1 hour) - just use minute candles
+                    } else if (ageHours === 0 && ageMinutes > 0 && nowTimestamp <= next05Timestamp) {
+                        // Very recent trade (< 1 hour and hasn't reached :05 yet) - just use minute candles
                         const minuteLimit = Math.min(1000, ageMinutes + 10);
                         try {
                             const minuteCandles = await geckoTerminal.getOHLCV(sig.mint, 'minute', minuteLimit);
+                            // CRITICAL: Only include candles that start AT OR AFTER entry timestamp
                             const postEntryMinutes = minuteCandles.filter((c) => c.timestamp >= entryTimestamp);
                             ohlcvCandlesFound += postEntryMinutes.length;
                             
@@ -1509,42 +1670,116 @@ export const handleLiveSignals = async (ctx: BotContext) => {
                     }
                     
                     // STEP 3: If still no candles, try Bitquery as fallback
+                    // Use same progressive strategy as GeckoTerminal
                     if (maxHigh === 0 || ohlcvCandlesFound === 0) {
                         ohlcvMethodsTried.push('Bitquery');
-                        logger.debug(`GeckoTerminal found no candles for ${sig.mint}, trying Bitquery...`);
+                        logger.debug(`GeckoTerminal found no candles for ${sig.mint}, trying Bitquery with progressive strategy...`);
                         
                         try {
                             const { bitquery } = await import('../../providers/bitquery');
                             if (bitquery) {
-                                // Try minute candles first
-                                const bitqueryMinutes = await bitquery.getOHLCV(sig.mint, 'minute', 1000);
-                                const postEntryBitquery = bitqueryMinutes.filter((c) => c.timestamp >= entryTimestamp);
-                                ohlcvCandlesFound += postEntryBitquery.length;
-                                
-                                for (const candle of postEntryBitquery) {
-                                    if (candle.high > maxHigh) {
-                                        maxHigh = candle.high;
-                                        maxAt = candle.timestamp;
+                                // PHASE 1: Minute candles from entry until :05
+                                if (nowTimestamp > entryTimestamp && next05Timestamp > entryTimestamp) {
+                                    const minutesTo05 = Math.ceil((next05Timestamp - entryTimestamp) / (60 * 1000));
+                                    const minuteLimit = Math.min(1000, minutesTo05 + 2);
+                                    try {
+                                        const bitqueryMinutes = await bitquery.getOHLCV(sig.mint, 'minute', minuteLimit);
+                                        const postEntryBitquery = bitqueryMinutes.filter((c) => c.timestamp >= entryTimestamp && c.timestamp < next05Timestamp);
+                                        ohlcvCandlesFound += postEntryBitquery.length;
+                                        for (const candle of postEntryBitquery) {
+                                            if (candle.high > maxHigh) {
+                                                maxHigh = candle.high;
+                                                maxAt = candle.timestamp;
+                                            }
+                                        }
+                                    } catch (err) {
+                                        logger.debug(`Bitquery minute candles (entry to :05) failed for ${sig.mint}: ${err}`);
                                     }
                                 }
                                 
-                                if (postEntryBitquery.length > 0) {
-                                    logger.debug(`Bitquery found ${postEntryBitquery.length} minute candles for ${sig.mint}`);
-                                } else if (ageHours > 0) {
-                                    // Try hourly if minute didn't work
-                                    const bitqueryHours = await bitquery.getOHLCV(sig.mint, 'hour', 1000);
-                                    const postEntryBitqueryHours = bitqueryHours.filter((c) => c.timestamp >= entryTimestamp);
-                                    ohlcvCandlesFound += postEntryBitqueryHours.length;
+                                // PHASE 2: Minute candles from :05 to :15
+                                if (nowTimestamp > next05Timestamp && next15Timestamp > next05Timestamp) {
+                                    const minutesTo15 = Math.ceil((next15Timestamp - next05Timestamp) / (60 * 1000));
+                                    const minuteLimit = Math.min(1000, minutesTo15 + 2);
+                                    try {
+                                        const bitqueryMinutes = await bitquery.getOHLCV(sig.mint, 'minute', minuteLimit);
+                                        const post05Bitquery = bitqueryMinutes.filter((c) => c.timestamp >= next05Timestamp && c.timestamp < next15Timestamp);
+                                        ohlcvCandlesFound += post05Bitquery.length;
+                                        for (const candle of post05Bitquery) {
+                                            if (candle.high > maxHigh) {
+                                                maxHigh = candle.high;
+                                                maxAt = candle.timestamp;
+                                            }
+                                        }
+                                    } catch (err) {
+                                        logger.debug(`Bitquery minute candles (:05 to :15) failed for ${sig.mint}: ${err}`);
+                                    }
+                                }
+                                
+                                // PHASE 3: Minute candles from :15 to hour (or :30 if closer)
+                                if (nowTimestamp > next15Timestamp) {
+                                    const endBoundary = next30Timestamp < nextHourTimestamp && next30Timestamp > next15Timestamp 
+                                        ? next30Timestamp 
+                                        : nextHourTimestamp;
                                     
-                                    for (const candle of postEntryBitqueryHours) {
-                                        if (candle.high > maxHigh) {
-                                            maxHigh = candle.high;
-                                            maxAt = candle.timestamp;
+                                    if (endBoundary > next15Timestamp) {
+                                        const minutesToEnd = Math.ceil((endBoundary - next15Timestamp) / (60 * 1000));
+                                        const minuteLimit = Math.min(1000, minutesToEnd + 2);
+                                        try {
+                                            const bitqueryMinutes = await bitquery.getOHLCV(sig.mint, 'minute', minuteLimit);
+                                            const post15Bitquery = bitqueryMinutes.filter((c) => c.timestamp >= next15Timestamp && c.timestamp < endBoundary);
+                                            ohlcvCandlesFound += post15Bitquery.length;
+                                            for (const candle of post15Bitquery) {
+                                                if (candle.high > maxHigh) {
+                                                    maxHigh = candle.high;
+                                                    maxAt = candle.timestamp;
+                                                }
+                                            }
+                                        } catch (err) {
+                                            logger.debug(`Bitquery minute candles (:15 to ${endBoundary === next30Timestamp ? ':30' : 'hour'}) failed for ${sig.mint}: ${err}`);
                                         }
                                     }
                                     
-                                    if (postEntryBitqueryHours.length > 0) {
-                                        logger.debug(`Bitquery found ${postEntryBitqueryHours.length} hourly candles for ${sig.mint}`);
+                                    // If stopped at :30, continue to hour
+                                    if (endBoundary === next30Timestamp && nowTimestamp > next30Timestamp && nextHourTimestamp > next30Timestamp) {
+                                        const minutesToHour = Math.ceil((nextHourTimestamp - next30Timestamp) / (60 * 1000));
+                                        const minuteLimit = Math.min(1000, minutesToHour + 2);
+                                        try {
+                                            const bitqueryMinutes = await bitquery.getOHLCV(sig.mint, 'minute', minuteLimit);
+                                            const post30Bitquery = bitqueryMinutes.filter((c) => c.timestamp >= next30Timestamp && c.timestamp < nextHourTimestamp);
+                                            ohlcvCandlesFound += post30Bitquery.length;
+                                            for (const candle of post30Bitquery) {
+                                                if (candle.high > maxHigh) {
+                                                    maxHigh = candle.high;
+                                                    maxAt = candle.timestamp;
+                                                }
+                                            }
+                                        } catch (err) {
+                                            logger.debug(`Bitquery minute candles (:30 to hour) failed for ${sig.mint}: ${err}`);
+                                        }
+                                    }
+                                }
+                                
+                                // PHASE 4: Hourly candles from hour boundary
+                                if (nowTimestamp > nextHourTimestamp && ageHours > 0) {
+                                    const hoursNeeded = Math.ceil((nowTimestamp - nextHourTimestamp) / (60 * 60 * 1000));
+                                    const hourLimit = Math.min(1000, hoursNeeded + 1);
+                                    try {
+                                        const bitqueryHours = await bitquery.getOHLCV(sig.mint, 'hour', hourLimit);
+                                        // CRITICAL: Only include candles that start AT OR AFTER hour boundary
+                                        const postHourBitquery = bitqueryHours.filter((c) => c.timestamp >= nextHourTimestamp);
+                                        ohlcvCandlesFound += postHourBitquery.length;
+                                        for (const candle of postHourBitquery) {
+                                            if (candle.high > maxHigh) {
+                                                maxHigh = candle.high;
+                                                maxAt = candle.timestamp;
+                                            }
+                                        }
+                                        if (postHourBitquery.length > 0) {
+                                            logger.debug(`Bitquery found ${postHourBitquery.length} hourly candles for ${sig.mint}`);
+                                        }
+                                    } catch (err) {
+                                        logger.debug(`Bitquery hourly candles failed for ${sig.mint}: ${err}`);
                                     }
                                 }
                             }
@@ -2097,10 +2332,30 @@ export const handleDistributions = async (ctx: Context, view: string = 'mcap') =
     // Moonshot Probability
     else if (view === 'moonshot') {
         message = UIHelper.header('MOONSHOT PROBABILITY', '🚀');
-        message += `>2x: ${(stats.totalSignals ? (stats.moonshotCounts.gt2x / stats.totalSignals) * 100 : 0).toFixed(1)}% (${stats.moonshotCounts.gt2x})\n`;
-        message += `>5x: ${(stats.totalSignals ? (stats.moonshotCounts.gt5x / stats.totalSignals) * 100 : 0).toFixed(1)}% (${stats.moonshotCounts.gt5x})\n`;
-        message += `>10x: ${(stats.totalSignals ? (stats.moonshotCounts.gt10x / stats.totalSignals) * 100 : 0).toFixed(1)}% (${stats.moonshotCounts.gt10x})\n\n`;
-        message += `⏱️ Avg Time to 2x/5x/10x: ${UIHelper.formatDurationMinutes(stats.moonshotTimes.timeTo2x)} / ${UIHelper.formatDurationMinutes(stats.moonshotTimes.timeTo5x)} / ${UIHelper.formatDurationMinutes(stats.moonshotTimes.timeTo10x)}\n`;
+        message += `\`Multiple | Count  | %\`\n`;
+        message += `\`─────────┼────────┼─────\`\n`;
+        
+        const buckets = [
+            { label: '>2x', count: stats.moonshotCounts.gt2x },
+            { label: '>3x', count: stats.moonshotCounts.gt3x },
+            { label: '>4x', count: stats.moonshotCounts.gt4x },
+            { label: '>5x', count: stats.moonshotCounts.gt5x },
+            { label: '>10x', count: stats.moonshotCounts.gt10x },
+            { label: '>15x', count: stats.moonshotCounts.gt15x },
+            { label: '>20x', count: stats.moonshotCounts.gt20x },
+            { label: '>50x', count: stats.moonshotCounts.gt50x },
+            { label: '>100x', count: stats.moonshotCounts.gt100x },
+        ];
+        
+        for (const bucket of buckets) {
+            const pct = stats.totalSignals ? (bucket.count / stats.totalSignals) * 100 : 0;
+            const label = bucket.label.padEnd(7, ' ');
+            const countStr = `${bucket.count}`.padStart(6, ' ');
+            const pctStr = `${pct.toFixed(1)}%`.padStart(4, ' ');
+            message += `\`${label} | ${countStr} | ${pctStr}\`\n`;
+        }
+        
+        message += `\n⏱️ Avg Time to 2x/5x/10x: ${UIHelper.formatDurationMinutes(stats.moonshotTimes.timeTo2x)} / ${UIHelper.formatDurationMinutes(stats.moonshotTimes.timeTo5x)} / ${UIHelper.formatDurationMinutes(stats.moonshotTimes.timeTo10x)}\n`;
         keyboard = [[{ text: '🔙 MCap View', callback_data: 'dist_view:mcap' }, { text: '❌ Close', callback_data: 'delete_msg' }]];
     }
     // Streak Analysis
@@ -2369,7 +2624,7 @@ export const handleRecentCalls = async (ctx: Context, window: string = '7D') => 
                     
     } catch (err) {
                     logger.debug(`Real-time ATH calc failed for ${sig.mint}:`, err);
-                }
+    }
             } catch (err) {
                 logger.debug(`Error recalculating ATH for ${sig.mint}:`, err);
             }
