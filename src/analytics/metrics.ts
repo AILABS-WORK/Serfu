@@ -5,7 +5,9 @@ import { geckoTerminal } from '../providers/geckoTerminal';
 
 const THRESHOLDS = [2, 3, 4, 5, 10];
 
-const OHLCV_CHECK_MIN_MS = 5 * 60 * 1000;
+// OPTIMIZED: Check OHLCV more frequently for active signals (every 2 min instead of 5 min)
+// This ensures ATH calculations are more accurate and up-to-date
+const OHLCV_CHECK_MIN_MS = 2 * 60 * 1000; // 2 minutes - more frequent for accuracy
 const lastOhlcvCheck = new Map<number, number>();
 
 // OPTIMIZED: Progressive timeframe strategy matching live signals implementation

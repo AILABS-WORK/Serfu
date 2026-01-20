@@ -168,10 +168,45 @@ const calculateStats = (signals: SignalWithMetrics[]): EntityStats => {
   }
 
   for (const s of signals) {
-    if (!s.metrics) continue;
+    // OPTIMIZED: Calculate ATH from price samples if metrics missing or incomplete
+    let mult = 0;
+    let dd = 0;
+    let athAt: Date | null = null;
     
-    // Multiple
-    const mult = s.metrics.athMultiple || 0;
+    if (s.metrics) {
+      // Use cached metrics if available
+      mult = s.metrics.athMultiple || 0;
+      dd = s.metrics.maxDrawdown || 0;
+      athAt = s.metrics.athAt || null;
+    } else if (s.priceSamples && s.priceSamples.length > 0 && s.entryMarketCap) {
+      // Calculate from price samples (fallback for missing metrics)
+      const entryMc = s.entryMarketCap || 0;
+      let maxMc = entryMc;
+      let maxMcAt: Date | null = null;
+      
+      for (const sample of s.priceSamples) {
+        if (sample.marketCap && sample.marketCap > maxMc) {
+          maxMc = sample.marketCap;
+          maxMcAt = sample.sampledAt;
+        }
+      }
+      
+      if (maxMc > entryMc && entryMc > 0) {
+        mult = maxMc / entryMc;
+        athAt = maxMcAt || s.detectedAt;
+      } else {
+        mult = 1; // No gain from entry
+      }
+      
+      // Estimate drawdown from price samples (rough approximation)
+      const latestSample = s.priceSamples[s.priceSamples.length - 1];
+      if (latestSample?.marketCap && maxMc > 0) {
+        dd = (latestSample.marketCap - maxMc) / maxMc;
+      }
+    } else {
+      // No metrics and no samples - skip for accuracy
+      continue;
+    }
     multiples.push(mult);
     totalMult += mult;
     if (mult >= WIN_MULTIPLE) wins++;
@@ -183,56 +218,52 @@ const calculateStats = (signals: SignalWithMetrics[]): EntityStats => {
     }
 
     // Rug Rate: ATH < 0.5 OR Drawdown < -0.9
-    const dd = s.metrics.maxDrawdown || 0;
     if (mult < 0.5 || dd < -0.9) rugCount++;
 
     // Drawdown (stored as negative decimal e.g. -0.4)
     totalDrawdown += dd;
 
-    // Time to ATH
-    if (s.metrics.athAt && s.detectedAt) {
-      const diffMs = new Date(s.metrics.athAt).getTime() - new Date(s.detectedAt).getTime();
+    // Time to ATH (use calculated athAt if available)
+    if (athAt && s.detectedAt) {
+      const diffMs = new Date(athAt).getTime() - new Date(s.detectedAt).getTime();
       if (diffMs > 0) {
         totalTime += diffMs / (1000 * 60); // minutes
         timeCount++;
       }
     }
     
-    // V2 Time Metrics (from new schema fields or fallback)
-    const time2x = s.metrics.timeTo2x;
+    // V2 Time Metrics (from metrics if available, otherwise skip for accuracy)
+    const time2x = s.metrics?.timeTo2x;
     if (time2x) {
         timeTo2xSum += time2x / (1000 * 60);
         timeTo2xCount++;
-    } else if (mult > 2 && s.metrics.athAt && s.detectedAt) {
-        // Fallback: Use ATH time if > 2x (Approximate)
-        // Better: Don't guess. 
     }
 
-    const time3x = s.metrics.timeTo3x;
+    const time3x = s.metrics?.timeTo3x;
     if (time3x) {
         timeTo3xSum += time3x / (1000 * 60);
         timeTo3xCount++;
     }
 
-    const time5x = s.metrics.timeTo5x;
+    const time5x = s.metrics?.timeTo5x;
     if (time5x) {
         timeTo5xSum += time5x / (1000 * 60);
         timeTo5xCount++;
     }
 
-    const time10x = s.metrics.timeTo10x;
+    const time10x = s.metrics?.timeTo10x;
     if (time10x) {
         timeTo10xSum += time10x / (1000 * 60);
         timeTo10xCount++;
     }
 
     // Stagnation Time and Drawdown Duration (from new schema fields)
-    if (s.metrics.stagnationTime) {
+    if (s.metrics?.stagnationTime) {
         stagnationTimeSum += s.metrics.stagnationTime / (1000 * 60);
         stagnationTimeCount++;
     }
-    
-    if (s.metrics.drawdownDuration) {
+
+    if (s.metrics?.drawdownDuration) {
         drawdownDurationSum += s.metrics.drawdownDuration / (1000 * 60);
         drawdownDurationCount++;
     }
@@ -264,7 +295,8 @@ const calculateStats = (signals: SignalWithMetrics[]): EntityStats => {
       (s.entryMarketCap && s.entryPrice ? s.entryMarketCap / s.entryPrice : null);
     const athMcap =
       s.metrics?.athMarketCap ||
-      (s.metrics?.athPrice && supply ? s.metrics.athPrice * supply : null);
+      (s.metrics?.athPrice && supply ? s.metrics.athPrice * supply : null) ||
+      (mult > 0 && s.entryMarketCap ? s.entryMarketCap * mult : null); // Use calculated ATH if metrics missing
     if (athMcap) {
         totalAthMcap += athMcap;
         athMcapCount++;
@@ -430,18 +462,31 @@ export const getGroupStats = async (groupId: number, timeframe: TimeFrame): Prom
   const since = getDateFilter(timeframe);
   
   // 3. Fetch Signals from ALL related groups
-  // CRITICAL FIX: Do NOT filter by userId. Channels have userId=null.
-  // We strictly look for signals linked to these group IDs.
+  // OPTIMIZED: Include signals even if metrics missing (will use real-time calculation)
+  // But prefer cached metrics when available (< 5 min old)
+  const now = Date.now();
   const signals = await prisma.signal.findMany({
     where: {
       groupId: { in: groupIds },
-      detectedAt: { gte: since },
-      metrics: { isNot: null }
+      detectedAt: { gte: since }
     },
-    include: { metrics: true, priceSamples: { orderBy: { sampledAt: 'asc' }, take: 1 } }
+    include: { 
+      metrics: true, 
+      priceSamples: { orderBy: { sampledAt: 'asc' }, take: 1 } 
+    }
   });
 
-  const stats = calculateStats(signals);
+  // Filter out signals with very stale metrics (older than 10 minutes) for aggregate stats
+  // But keep them for calculation - they'll use price samples or real-time calc
+  const validSignals = signals.filter(s => {
+    if (!s.metrics) return true; // No metrics = keep (will calculate from samples)
+    const metricsAge = now - s.metrics.updatedAt.getTime();
+    // For aggregate stats, only exclude if metrics are very stale (>10 min) AND we can't recalculate
+    // Actually, let's keep all signals - calculateStats can handle missing metrics
+    return true;
+  });
+
+  const stats = calculateStats(validSignals);
   stats.id = group.id;
   stats.name = group.name || `Group ${group.chatId}`;
   
@@ -453,11 +498,11 @@ export const getUserStats = async (userId: number, timeframe: TimeFrame): Promis
   if (!user) return null;
 
   const since = getDateFilter(timeframe);
+  // OPTIMIZED: Include signals even if metrics missing (will use real-time calculation)
   const signals = await prisma.signal.findMany({
     where: {
       userId,
-      detectedAt: { gte: since },
-      metrics: { isNot: null }
+      detectedAt: { gte: since }
     },
     include: { metrics: true, priceSamples: { orderBy: { sampledAt: 'asc' }, take: 1 } }
   });
@@ -477,21 +522,28 @@ export const getLeaderboard = async (
 ): Promise<EntityStats[]> => {
   const since = getDateFilter(timeframe);
   
-  // 1. Fetch all signals in window with metrics
+  // 1. Fetch all signals in window (include those without metrics - will calculate from samples)
+  // OPTIMIZED: Prefer signals with recent metrics, but include all for accuracy
   const signals = await prisma.signal.findMany({
     where: {
-      detectedAt: { gte: since },
-      metrics: { isNot: null }
+      detectedAt: { gte: since }
     },
     include: { metrics: true, group: true, user: true, priceSamples: { orderBy: { sampledAt: 'asc' }, take: 1 } }
   });
+  
+  // Filter: Only use signals with metrics OR sufficient price samples for accurate calculation
+  const validSignals = signals.filter(s => {
+    if (s.metrics) return true; // Has metrics = good
+    if (s.priceSamples && s.priceSamples.length > 0) return true; // Has samples = can calculate
+    return false; // No metrics and no samples = skip (inaccurate)
+  });
 
   // 2. Group by Entity (Deduplicating Groups by ChatId)
-  const entityMap = new Map<string, typeof signals>();
+  const entityMap = new Map<string, typeof validSignals>();
   const idMap = new Map<string, number>(); // Map Key -> Representative ID
   const nameMap = new Map<string, string>();
 
-  for (const s of signals) {
+  for (const s of validSignals) {
     let key: string;
     let numericId: number;
     let name: string;
@@ -553,10 +605,14 @@ export const getSignalLeaderboard = async (
 }>> => {
   const since = getDateFilter(timeframe);
   
+  // OPTIMIZED: Include signals with metrics (preferred) or with price samples (can calculate)
   const signals = await prisma.signal.findMany({
     where: {
       detectedAt: { gte: since },
-      metrics: { isNot: null }
+      OR: [
+        { metrics: { isNot: null } },
+        { priceSamples: { some: {} } } // Has at least one price sample
+      ]
     },
     include: { 
       metrics: true, 
@@ -565,17 +621,71 @@ export const getSignalLeaderboard = async (
       priceSamples: { orderBy: { sampledAt: 'asc' }, take: 1 } // Add for entryMarketCap fallback
     },
     orderBy: {
-        metrics: { athMultiple: 'desc' }
+        metrics: { athMultiple: 'desc' } // Will sort nulls last, which is fine
     },
-    take: limit
+    take: limit * 2 // Get more to filter and sort properly
   });
+  
+  // Calculate ATH for signals missing metrics or with stale metrics
+  const now = Date.now();
+  const signalsToEnrich = signals.filter(s => {
+    if (!s.metrics) return true; // No metrics = needs calculation
+    const metricsAge = now - s.metrics.updatedAt.getTime();
+    return metricsAge > 5 * 60 * 1000; // > 5 minutes old = recalculate
+  });
+  
+  // Enrich with real-time ATH calculations
+  if (signalsToEnrich.length > 0) {
+    const { geckoTerminal } = await import('../providers/geckoTerminal');
+    await Promise.allSettled(signalsToEnrich.map(async (sig) => {
+      try {
+        if (!sig.detectedAt || !sig.entrySupply || !sig.entryPrice) return;
+        
+        const entryTimestamp = sig.detectedAt.getTime();
+        const ageHours = Math.ceil((now - entryTimestamp) / (60 * 60 * 1000));
+        
+        let maxHigh = sig.entryPrice;
+        
+        // Quick ATH calculation using appropriate timeframe
+        const ohlcvTimeframe = ageHours <= 16 ? 'minute' : ageHours <= 720 ? 'hour' : 'day';
+        const candles = await geckoTerminal.getOHLCV(sig.mint, ohlcvTimeframe, 1000);
+        const postEntry = candles.filter(c => c.timestamp >= entryTimestamp);
+        
+        for (const candle of postEntry) {
+          if (candle.high > maxHigh) maxHigh = candle.high;
+        }
+        
+        // Update in-memory for sorting
+        if (!sig.metrics) {
+          sig.metrics = {} as any;
+        }
+        // TypeScript assertion: we just checked/created metrics above
+        const metrics = sig.metrics!;
+        metrics.athMultiple = maxHigh / sig.entryPrice;
+        metrics.athMarketCap = maxHigh * sig.entrySupply;
+        metrics.athPrice = maxHigh;
+      } catch (err) {
+        logger.debug(`ATH enrichment failed for ${sig.mint}:`, err);
+      }
+    }));
+  }
+  
+  // Re-sort by ATH after enrichment
+  signals.sort((a, b) => {
+    const aAth = a.metrics?.athMultiple || 0;
+    const bAth = b.metrics?.athMultiple || 0;
+    return bAth - aAth;
+  });
+  
+  // Take top limit after sorting
+  const topSignals = signals.slice(0, limit);
 
   // Get current market caps for all signals
   const { getMultipleTokenPrices } = await import('../providers/jupiter');
-  const mints = signals.map(s => s.mint);
+  const mints = topSignals.map(s => s.mint);
   const prices = await getMultipleTokenPrices(mints);
 
-  return signals.map(s => {
+  return topSignals.map(s => {
     const currentPrice = prices[s.mint] || null;
     const supply = s.entrySupply;
     const currentMc =

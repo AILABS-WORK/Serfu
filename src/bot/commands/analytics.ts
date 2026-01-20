@@ -1016,15 +1016,15 @@ export const handleLiveSignals = async (ctx: BotContext) => {
             // Only try fallback for a small subset to avoid timeout
             if (i < CONCURRENCY_LIMIT) { // Only try fallback for first batch
               try {
-                const metaPromise = provider.getTokenMeta(mint);
-                const timeoutPromise = new Promise((_, reject) => 
+            const metaPromise = provider.getTokenMeta(mint);
+            const timeoutPromise = new Promise((_, reject) => 
                   setTimeout(() => reject(new Error('Metadata fetch timeout')), 2000)
-                );
-                const meta = await Promise.race([metaPromise, timeoutPromise]) as any;
-                const freshMc = meta?.liveMarketCap || meta?.marketCap;
-                if (freshMc) {
-                  marketCaps.set(mint, freshMc);
-                }
+            );
+            const meta = await Promise.race([metaPromise, timeoutPromise]) as any;
+            const freshMc = meta?.liveMarketCap || meta?.marketCap;
+            if (freshMc) {
+              marketCaps.set(mint, freshMc);
+            }
               } catch (metaErr) {
                 // If both fail, leave as 0 (will use price fallback in PnL calculation)
               }
@@ -1268,41 +1268,41 @@ export const handleLiveSignals = async (ctx: BotContext) => {
         top10.push(...newTop10);
     } else {
         // For non-PnL sorting, only fetch metadata for top 10 (optimization)
-        await Promise.all(top10.map(async (row) => {
-            try {
-                const meta = await provider.getTokenMeta(row.mint);
-                metaMap.set(row.mint, meta);
-                
-                // Update market cap with fresh data
-                const freshMc = meta.liveMarketCap || meta.marketCap;
-                if (freshMc) {
-                    marketCaps.set(row.mint, freshMc);
-                    (row as any).currentMarketCap = freshMc;
-                } else if (meta.supply) {
-                    // Try to get price from market cap if available
-                    const currentMc = marketCaps.get(row.mint);
-                    if (currentMc && meta.supply > 0) {
-                        const calculatedPrice = currentMc / meta.supply;
-                        prices.set(row.mint, calculatedPrice);
-                    } else if (meta.livePrice) {
-                        const calculatedMc = meta.livePrice * meta.supply;
-                        marketCaps.set(row.mint, calculatedMc);
-                        (row as any).currentMarketCap = calculatedMc;
-                        prices.set(row.mint, meta.livePrice);
-                    }
+    await Promise.all(top10.map(async (row) => {
+        try {
+            const meta = await provider.getTokenMeta(row.mint);
+            metaMap.set(row.mint, meta);
+            
+            // Update market cap with fresh data
+            const freshMc = meta.liveMarketCap || meta.marketCap;
+            if (freshMc) {
+                marketCaps.set(row.mint, freshMc);
+                (row as any).currentMarketCap = freshMc;
+            } else if (meta.supply) {
+                // Try to get price from market cap if available
+                const currentMc = marketCaps.get(row.mint);
+                if (currentMc && meta.supply > 0) {
+                    const calculatedPrice = currentMc / meta.supply;
+                    prices.set(row.mint, calculatedPrice);
+                } else if (meta.livePrice) {
+                    const calculatedMc = meta.livePrice * meta.supply;
+                    marketCaps.set(row.mint, calculatedMc);
+                    (row as any).currentMarketCap = calculatedMc;
+                    prices.set(row.mint, meta.livePrice);
                 }
-                
+            }
+            
                 // Recalculate PnL after updating market cap with fresh metadata
-                const sig = signals.find(s => s.id === (row as any).earliestSignalId) || signals.find(s => s.mint === row.mint);
-                if (sig) {
-                    const entryMc = (row as any).entryMarketCap || sig.entryMarketCap || sig.priceSamples?.[0]?.marketCap || 0;
-                    const currentMc = (row as any).currentMarketCap || 0;
-                    if (currentMc > 0 && entryMc > 0) {
-                        row.pnl = ((currentMc - entryMc) / entryMc) * 100;
-                    }
+            const sig = signals.find(s => s.id === (row as any).earliestSignalId) || signals.find(s => s.mint === row.mint);
+            if (sig) {
+                const entryMc = (row as any).entryMarketCap || sig.entryMarketCap || sig.priceSamples?.[0]?.marketCap || 0;
+                const currentMc = (row as any).currentMarketCap || 0;
+                if (currentMc > 0 && entryMc > 0) {
+                    row.pnl = ((currentMc - entryMc) / entryMc) * 100;
                 }
-            } catch {}
-        }));
+            }
+        } catch {}
+    }));
     }
     
     // CRITICAL FIX: Calculate ATH for top 10 AFTER filtering/sorting and metadata fetch
@@ -1625,9 +1625,8 @@ export const handleLiveSignals = async (ctx: BotContext) => {
                     }
                 }
             }
-            } catch (err) {
-                logger.error(`General error during ATH calculation for ${sig.mint}: ${err}`);
-            }
+        } catch (err) {
+            logger.error(`General error during ATH calculation for ${sig.mint}: ${err}`);
         }
         
         // Store calculated ATH for display
@@ -1668,7 +1667,7 @@ export const handleLiveSignals = async (ctx: BotContext) => {
     
     // CRITICAL: All ATH calculations are now complete
     // Do not proceed to display until this point
-    
+
     // 6. Construct Message
     let message = UIHelper.header('Live Signals (Active)');
     
@@ -2128,6 +2127,23 @@ export const handleRecentCalls = async (ctx: Context, window: string = '7D') => 
     const storedWindow = (ctx as any).session.recent.timeframe;
     const effectiveWindow = window || storedWindow || '7D';
     (ctx as any).session.recent.timeframe = effectiveWindow;
+
+    // Show loading message
+    let loadingMsg: any = null;
+    if (ctx.callbackQuery && ctx.callbackQuery.message) {
+      // Edit existing message instead of creating new one
+      loadingMsg = ctx.callbackQuery.message;
+      try {
+        await ctx.telegram.editMessageText(
+          loadingMsg.chat.id,
+          loadingMsg.message_id,
+          undefined,
+          '⏳ Loading recent calls...'
+        );
+      } catch {}
+    } else {
+      loadingMsg = await ctx.reply('⏳ Loading recent calls...');
+    }
     const since = resolveSince(effectiveWindow);
 
     // 2. Fetch Signals (Fetch more to allow for deduplication)
@@ -2171,24 +2187,118 @@ export const handleRecentCalls = async (ctx: Context, window: string = '7D') => 
         if (uniqueSignals.length >= 10) break;
     }
 
-    // 4. OPTIMIZED: Use cached metrics directly, only update if stale (>5 min old)
-    // This avoids slow synchronous updates that block the UI
+    // 4. ENSURE ACCURACY: Use cached metrics if recent (<2 min), otherwise calculate in real-time
+    // Balance: Use cache when fresh (fast), calculate when stale (accurate)
     const signals = uniqueSignals;
-    
-    // Check if any metrics are stale and trigger async update
     const now = Date.now();
-    const staleSignals = signals.filter(s => {
-        if (!s.metrics) return true; // No metrics = needs update
+    const STALE_THRESHOLD_MS = 2 * 60 * 1000; // 2 minutes - if older, recalculate in real-time
+    
+    // Calculate ATH in real-time for stale or missing metrics
+    const signalsToRecalc = signals.filter(s => {
+        if (!s.metrics) return true; // No metrics = needs real-time calc
         const metricsAge = now - s.metrics.updatedAt.getTime();
-        return metricsAge > 5 * 60 * 1000; // > 5 minutes old
+        return metricsAge > STALE_THRESHOLD_MS; // > 2 minutes old = recalculate
     });
     
-    // Trigger async update for stale signals (non-blocking)
-    if (staleSignals.length > 0) {
-        updateHistoricalMetrics(staleSignals.map(s => s.id)).catch(err => {
-            logger.debug('Background metric update failed:', err);
-        });
+    // Calculate ATH in real-time for stale signals (ensures accuracy)
+    if (signalsToRecalc.length > 0) {
+        const { geckoTerminal } = await import('../../providers/geckoTerminal');
+        await Promise.allSettled(signalsToRecalc.map(async (sig) => {
+            try {
+                const entryDate = sig.detectedAt;
+                const entrySupply = sig.entrySupply || (sig.priceSamples?.[0]?.marketCap && sig.entryPrice ? sig.priceSamples[0].marketCap / sig.entryPrice : null);
+                const entryPrice = sig.entryPrice || sig.priceSamples?.[0]?.price || null;
+                
+                if (!entrySupply || entrySupply <= 0 || !entryDate || !entryPrice) return;
+                
+                const entryTimestamp = entryDate.getTime();
+                const entryMc = sig.entryMarketCap || sig.priceSamples?.[0]?.marketCap || 0;
+                const entryPriceValue = entryPrice || (entryMc > 0 && entrySupply > 0 ? entryMc / entrySupply : 0);
+                
+                if (entryPriceValue <= 0) return;
+                
+                // Use progressive timeframe strategy (same as live signals)
+                const ageMs = now - entryTimestamp;
+                const ageHours = Math.ceil(ageMs / (60 * 60 * 1000));
+                const ageDays = Math.ceil(ageMs / (24 * 60 * 60 * 1000));
+                
+                let maxHigh = 0;
+                
+                try {
+                    // Try minute candles first for recent signals
+                    if (ageHours <= 16) {
+                        const minuteCandles = await geckoTerminal.getOHLCV(sig.mint, 'minute', 1000);
+                        const postEntry = minuteCandles.filter(c => c.timestamp >= entryTimestamp);
+                        for (const candle of postEntry) {
+                            if (candle.high > maxHigh) maxHigh = candle.high;
+                        }
+                    }
+                    
+                    // Try hourly if minute didn't work or for older signals
+                    if (maxHigh === 0 || ageHours > 16) {
+                        const hourlyCandles = await geckoTerminal.getOHLCV(sig.mint, 'hour', 1000);
+                        const postEntry = hourlyCandles.filter(c => c.timestamp >= entryTimestamp);
+                        for (const candle of postEntry) {
+                            if (candle.high > maxHigh) maxHigh = candle.high;
+                        }
+                    }
+                    
+                    // Try daily for very old signals
+                    if (maxHigh === 0 || ageDays > 30) {
+                        const dailyCandles = await geckoTerminal.getOHLCV(sig.mint, 'day', 1000);
+                        const postEntry = dailyCandles.filter(c => c.timestamp >= entryTimestamp);
+                        for (const candle of postEntry) {
+                            if (candle.high > maxHigh) maxHigh = candle.high;
+                        }
+                    }
+                    
+                    // Ensure ATH is at least entry price
+                    if (maxHigh < entryPriceValue) maxHigh = entryPriceValue;
+                    
+                    // Update signal's metrics in-memory for display (don't wait for DB update)
+                    if (!sig.metrics) {
+                        sig.metrics = {} as any;
+                    }
+                    // TypeScript assertion: we just checked/created metrics above
+                    const metrics = sig.metrics!;
+                    metrics.athMultiple = maxHigh / entryPriceValue;
+                    metrics.athMarketCap = maxHigh * entrySupply;
+                    metrics.athPrice = maxHigh;
+                    
+                    // Update DB async (non-blocking)
+                    prisma.signalMetric.upsert({
+                        where: { signalId: sig.id },
+                        create: {
+                            signalId: sig.id,
+                            currentPrice: sig.entryPrice || 0,
+                            currentMultiple: 1,
+                            athPrice: maxHigh,
+                            athMultiple: maxHigh / entryPriceValue,
+                            athMarketCap: maxHigh * entrySupply,
+                            athAt: new Date(),
+                            updatedAt: new Date()
+                        },
+                        update: {
+                            athPrice: maxHigh,
+                            athMultiple: maxHigh / entryPriceValue,
+                            athMarketCap: maxHigh * entrySupply,
+                            updatedAt: new Date()
+                        }
+                    }).catch(() => {});
+                    
+    } catch (err) {
+                    logger.debug(`Real-time ATH calc failed for ${sig.mint}:`, err);
+                }
+            } catch (err) {
+                logger.debug(`Error recalculating ATH for ${sig.mint}:`, err);
+            }
+        }));
     }
+    
+    // Trigger async update for all signals to keep cache fresh (non-blocking)
+    updateHistoricalMetrics(uniqueSignals.map(s => s.id)).catch(err => {
+        logger.debug('Background metric update failed:', err);
+    });
 
     const windowLabel = ['1D','3D','7D','30D','ALL'].includes(String(effectiveWindow)) ? String(effectiveWindow) : `Custom ${effectiveWindow}`;
     let message = UIHelper.header(`RECENT ACTIVITY LOG (${windowLabel})`, '📜');
