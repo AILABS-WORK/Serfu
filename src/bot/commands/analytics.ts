@@ -1200,7 +1200,299 @@ export const handleLiveSignals = async (ctx: BotContext) => {
     const top10 = filteredCandidates.slice(0, 10);
     const metaMap = new Map<string, any>();
     
-    // FIX: Calculate ATH for top 10 using OHLCV (fastest and most accurate method)
+    // CRITICAL FIX: ATH calculation is moved AFTER metadata fetch and re-sorting
+    // This ensures ATH is calculated for the final top 10 that will be displayed
+    // It will be calculated after we fetch metadata and update PnL (see below)
+        const metricsUpdated = sig.metrics?.updatedAt;
+        const metricsAge = metricsUpdated ? Date.now() - metricsUpdated.getTime() : Infinity;
+        let athMultiple = 0;
+        let athMarketCap = null;
+        
+        if (sig.metrics?.athMultiple && sig.metrics.athMultiple > 0 && metricsAge < 60 * 60 * 1000) {
+            // Use cached ATH if it's recent (< 1 hour old)
+            athMultiple = sig.metrics.athMultiple;
+            athMarketCap = sig.metrics.athMarketCap;
+        } else {
+            // Calculate ATH from OHLCV for accurate, real-time data
+            try {
+                const entryDate = sig.detectedAt;
+                const entrySupply = sig.entrySupply || (sig.priceSamples?.[0]?.marketCap && sig.entryPrice ? sig.priceSamples[0].marketCap / sig.entryPrice : null);
+                const entryPrice = sig.entryPrice || sig.priceSamples?.[0]?.price || null;
+                
+                if (entrySupply && entrySupply > 0 && entryDate) {
+                    // OPTIMIZED PROGRESSIVE TIMEFRAME STRATEGY:
+                    // Use minute candles from entry until next hour/day boundary, then use larger timeframes
+                    // This ensures accurate entry price while minimizing API calls
+                    // Example: Entry at 10:34 -> use minute until 11:00, then hourly until next day, then daily
+                    const entryTimestamp = entryDate.getTime();
+                    const nowTimestamp = Date.now();
+                    const entryDateObj = new Date(entryTimestamp);
+                    
+                    // Get entry price for baseline
+                    const entryMc = (row as any).entryMarketCap || sig.entryMarketCap || 0;
+                    const entryPriceValue = entryPrice || (entryMc > 0 && entrySupply > 0 ? entryMc / entrySupply : 0);
+                    
+                    let maxHigh = entryPriceValue || 0;
+                    let maxAt = entryTimestamp;
+                    
+                    // Calculate boundaries
+                    const entryMinutes = entryDateObj.getMinutes();
+                    const entryHours = entryDateObj.getHours();
+                    
+                    // Next hour boundary (e.g., 10:34 -> 11:00)
+                    const nextHourBoundary = new Date(entryDateObj);
+                    nextHourBoundary.setMinutes(0, 0, 0);
+                    nextHourBoundary.setHours(entryHours + 1);
+                    const nextHourTimestamp = nextHourBoundary.getTime();
+                    
+                    // Next day boundary (00:00 of next day)
+                    const nextDayBoundary = new Date(entryDateObj);
+                    nextDayBoundary.setHours(0, 0, 0, 0);
+                    nextDayBoundary.setDate(nextDayBoundary.getDate() + 1);
+                    const nextDayTimestamp = nextDayBoundary.getTime();
+                    
+                    const ageMs = nowTimestamp - entryTimestamp;
+                    const ageMinutes = Math.ceil(ageMs / (60 * 1000));
+                    const ageHours = Math.ceil(ageMs / (60 * 60 * 1000));
+                    const ageDays = Math.ceil(ageMs / (24 * 60 * 60 * 1000));
+                    
+                    try {
+                        // STEP 1: Fetch minute candles from entry until next hour boundary (accurate entry period)
+                        // This ensures we capture accurate prices from entry point without pre-entry contamination
+                        if (nowTimestamp > entryTimestamp && nextHourTimestamp > entryTimestamp) {
+                            const minutesToNextHour = Math.ceil((nextHourTimestamp - entryTimestamp) / (60 * 1000));
+                            const minuteLimit = Math.min(1000, minutesToNextHour + 5); // Add small buffer
+                            
+                            const minuteCandles = await geckoTerminal.getOHLCV(sig.mint, 'minute', minuteLimit);
+                            
+                            // Only use minute candles that start at or after entry
+                            const postEntryMinutes = minuteCandles.filter((c) => c.timestamp >= entryTimestamp && c.timestamp < nextHourTimestamp);
+                            
+                            for (const candle of postEntryMinutes) {
+                                if (candle.high > maxHigh) {
+                                    maxHigh = candle.high;
+                                    maxAt = candle.timestamp;
+                                }
+                            }
+                        }
+                        
+                        // STEP 2: Fetch hourly candles from next hour boundary onwards
+                        // If trade spans days, use hourly until next day boundary, then switch to daily
+                        // If trade is < 24h, use hourly until now
+                        if (nowTimestamp > nextHourTimestamp && ageHours > 0) {
+                            let hourlyEndTimestamp = nowTimestamp;
+                            
+                            // If trade spans days, use hourly until next day, then switch to daily
+                            if (nowTimestamp > nextDayTimestamp) {
+                                hourlyEndTimestamp = nextDayTimestamp; // Use hourly until next day
+                            }
+                            
+                            // Calculate hours needed from next hour until end
+                            const hoursNeeded = Math.ceil((hourlyEndTimestamp - nextHourTimestamp) / (60 * 60 * 1000));
+                            const hourLimit = Math.min(1000, hoursNeeded + 1);
+                            
+                            const hourlyCandles = await geckoTerminal.getOHLCV(sig.mint, 'hour', hourLimit);
+                            
+                            // Only use hourly candles between next hour and end timestamp
+                            const hourlyInRange = hourlyCandles.filter((c) => c.timestamp >= nextHourTimestamp && c.timestamp < hourlyEndTimestamp);
+                            
+                            for (const candle of hourlyInRange) {
+                                if (candle.high > maxHigh) {
+                                    maxHigh = candle.high;
+                                    maxAt = candle.timestamp;
+                                }
+                            }
+                            
+                            // STEP 3: Fetch daily candles from next day boundary until now (if trade spans days)
+                            // Only fetch if trade is still active after next day
+                            if (nowTimestamp > nextDayTimestamp && ageDays > 0) {
+                                const daysFromNextDay = Math.ceil((nowTimestamp - nextDayTimestamp) / (24 * 60 * 60 * 1000));
+                                const dayLimit = Math.min(1000, daysFromNextDay + 1);
+                                
+                                const dailyCandles = await geckoTerminal.getOHLCV(sig.mint, 'day', dayLimit);
+                                
+                                // Only use daily candles from next day onwards
+                                const dailyInRange = dailyCandles.filter((c) => c.timestamp >= nextDayTimestamp && c.timestamp <= nowTimestamp);
+                                
+                                for (const candle of dailyInRange) {
+                                    if (candle.high > maxHigh) {
+                                        maxHigh = candle.high;
+                                        maxAt = candle.timestamp;
+                                    }
+                                }
+                            }
+                        } else if (ageHours === 0 && ageMinutes > 0) {
+                            // STEP 4: Handle case where entry is very recent (< 1 hour) - just use minute candles
+                            // Trade is less than 1 hour old - minute candles are sufficient
+                            const minuteLimit = Math.min(1000, ageMinutes + 10);
+                            const minuteCandles = await geckoTerminal.getOHLCV(sig.mint, 'minute', minuteLimit);
+                            
+                            const postEntryMinutes = minuteCandles.filter((c) => c.timestamp >= entryTimestamp);
+                            
+                            for (const candle of postEntryMinutes) {
+                                if (candle.high > maxHigh) {
+                                    maxHigh = candle.high;
+                                    maxAt = candle.timestamp;
+                                }
+                            }
+                        }
+                        
+                        // Ensure maxHigh is at least entry price (ATH can't be lower than entry)
+                        if (entryPriceValue > 0 && maxHigh < entryPriceValue) {
+                            maxHigh = entryPriceValue;
+                            maxAt = entryTimestamp;
+                        }
+                        
+                        // Calculate ATH multiple and market cap
+                        if (entryPriceValue > 0 && maxHigh > 0) {
+                            athMultiple = maxHigh / entryPriceValue;
+                            athMarketCap = maxHigh * entrySupply;
+                        }
+                    } catch (ohlcvErr) {
+                        // If OHLCV fails, fallback to price samples
+                        logger.debug(`OHLCV ATH calculation failed for ${sig.mint}, using price samples fallback`);
+                    }
+                }
+            } catch (err) {
+                // If OHLCV fails, fallback to price samples (already fast)
+                const samples = await prisma.priceSample.findMany({
+                    where: { signalId: sig.id },
+                    orderBy: { sampledAt: 'asc' },
+                    select: { marketCap: true, price: true, sampledAt: true }
+                }).catch(() => []);
+                
+                if (samples.length > 0) {
+                    const entryMc = (row as any).entryMarketCap || sig.entryMarketCap || 0;
+                    const entryPrice = sig.entryPrice || 0;
+                    
+                    let maxMc = entryMc;
+                    let maxPrice = entryPrice;
+                    
+                    for (const sample of samples) {
+                        if (sample.marketCap && sample.marketCap > maxMc) {
+                            maxMc = sample.marketCap;
+                        }
+                        if (sample.price && sample.price > maxPrice) {
+                            maxPrice = sample.price;
+                        }
+                    }
+                    
+                    if (entryMc > 0 && maxMc > entryMc) {
+                        athMultiple = maxMc / entryMc;
+                        athMarketCap = maxMc;
+                    } else if (entryPrice > 0 && maxPrice > entryPrice) {
+                        athMultiple = maxPrice / entryPrice;
+                        if (sig.entrySupply && sig.entrySupply > 0) {
+                            athMarketCap = maxPrice * sig.entrySupply;
+                        }
+                    }
+                }
+            }
+        }
+        
+    // FIX: When sorting by PnL, ensure ALL filtered candidates have accurate PnL before selecting top 10
+    // The issue: Some signals may have missing/inaccurate MC initially, causing wrong sort order
+    // Solution: Fetch metadata for top N candidates (not just 10) to ensure accurate PnL for sorting
+    if (sortBy === 'pnl') {
+        // For PnL sorting, we need to ensure accurate PnL for enough candidates to get correct top 10
+        // Fetch metadata for top 20-30 candidates to ensure we have accurate PnL for the real top performers
+        const candidatesToFetch = Math.min(30, filteredCandidates.length);
+        const candidatesForMetadata = filteredCandidates.slice(0, candidatesToFetch);
+        
+        await Promise.all(candidatesForMetadata.map(async (row) => {
+            try {
+                const meta = await provider.getTokenMeta(row.mint);
+                metaMap.set(row.mint, meta);
+                
+                // Update market cap with fresh data
+                const freshMc = meta.liveMarketCap || meta.marketCap;
+                if (freshMc) {
+                    marketCaps.set(row.mint, freshMc);
+                    (row as any).currentMarketCap = freshMc;
+                } else if (meta.supply) {
+                    // Try to get price from market cap if available
+                    const currentMc = marketCaps.get(row.mint);
+                    if (currentMc && meta.supply > 0) {
+                        const calculatedPrice = currentMc / meta.supply;
+                        prices.set(row.mint, calculatedPrice);
+                    } else if (meta.livePrice) {
+                        const calculatedMc = meta.livePrice * meta.supply;
+                        marketCaps.set(row.mint, calculatedMc);
+                        (row as any).currentMarketCap = calculatedMc;
+                        prices.set(row.mint, meta.livePrice);
+                    }
+                }
+                
+                // Recalculate PnL with fresh market cap
+                const sig = signals.find(s => s.id === (row as any).earliestSignalId) || signals.find(s => s.mint === row.mint);
+                if (sig) {
+                    const entryMc = (row as any).entryMarketCap || sig.entryMarketCap || sig.priceSamples?.[0]?.marketCap || 0;
+                    const currentMc = (row as any).currentMarketCap || 0;
+                    if (currentMc > 0 && entryMc > 0) {
+                        const newPnl = ((currentMc - entryMc) / entryMc) * 100;
+                        row.pnl = newPnl;
+                        (row as any)._calculatedPnl = newPnl;
+                    }
+                }
+            } catch {}
+        }));
+        
+        // Re-sort ALL filtered candidates with updated PnL values
+        filteredCandidates.sort((a, b) => {
+            const aPnl = (a as any)._calculatedPnl !== undefined && (a as any)._calculatedPnl !== null 
+                ? (a as any)._calculatedPnl 
+                : (a.pnl || 0);
+            const bPnl = (b as any)._calculatedPnl !== undefined && (b as any)._calculatedPnl !== null 
+                ? (b as any)._calculatedPnl 
+                : (b.pnl || 0);
+            return bPnl - aPnl; // Highest first
+        });
+        
+        // Update top10 with correct order after re-sorting
+        const newTop10 = filteredCandidates.slice(0, 10);
+        top10.length = 0;
+        top10.push(...newTop10);
+    } else {
+        // For non-PnL sorting, only fetch metadata for top 10 (optimization)
+        await Promise.all(top10.map(async (row) => {
+            try {
+                const meta = await provider.getTokenMeta(row.mint);
+                metaMap.set(row.mint, meta);
+                
+                // Update market cap with fresh data
+                const freshMc = meta.liveMarketCap || meta.marketCap;
+                if (freshMc) {
+                    marketCaps.set(row.mint, freshMc);
+                    (row as any).currentMarketCap = freshMc;
+                } else if (meta.supply) {
+                    // Try to get price from market cap if available
+                    const currentMc = marketCaps.get(row.mint);
+                    if (currentMc && meta.supply > 0) {
+                        const calculatedPrice = currentMc / meta.supply;
+                        prices.set(row.mint, calculatedPrice);
+                    } else if (meta.livePrice) {
+                        const calculatedMc = meta.livePrice * meta.supply;
+                        marketCaps.set(row.mint, calculatedMc);
+                        (row as any).currentMarketCap = calculatedMc;
+                        prices.set(row.mint, meta.livePrice);
+                    }
+                }
+                
+                // Recalculate PnL after updating market cap with fresh metadata
+                const sig = signals.find(s => s.id === (row as any).earliestSignalId) || signals.find(s => s.mint === row.mint);
+                if (sig) {
+                    const entryMc = (row as any).entryMarketCap || sig.entryMarketCap || sig.priceSamples?.[0]?.marketCap || 0;
+                    const currentMc = (row as any).currentMarketCap || 0;
+                    if (currentMc > 0 && entryMc > 0) {
+                        row.pnl = ((currentMc - entryMc) / entryMc) * 100;
+                    }
+                }
+            } catch {}
+        }));
+    }
+    
+    // CRITICAL FIX: Calculate ATH for top 10 AFTER filtering/sorting and metadata fetch
+    // This ensures ATH is calculated for the final displayed signals, regardless of sort method
     // Strategy: Only calculate ATH for displayed signals using OHLCV candles
     // This ensures we get the true ATH from entry timestamp to now
     const { geckoTerminal } = await import('../../providers/geckoTerminal');
@@ -1397,112 +1689,11 @@ export const handleLiveSignals = async (ctx: BotContext) => {
             }
         }
         
-        // Store calculated ATH for display
-        (row as any).athMultiple = athMultiple;
-        (row as any).athMarketCap = athMarketCap;
+        // Store calculated ATH for display (always calculate, even if 0)
+        (row as any).athMultiple = athMultiple || 0;
+        (row as any).athMarketCap = athMarketCap || null;
     }));
     
-    // FIX: When sorting by PnL, ensure ALL filtered candidates have accurate PnL before selecting top 10
-    // The issue: Some signals may have missing/inaccurate MC initially, causing wrong sort order
-    // Solution: Fetch metadata for top N candidates (not just 10) to ensure accurate PnL for sorting
-    if (sortBy === 'pnl') {
-        // For PnL sorting, we need to ensure accurate PnL for enough candidates to get correct top 10
-        // Fetch metadata for top 20-30 candidates to ensure we have accurate PnL for the real top performers
-        const candidatesToFetch = Math.min(30, filteredCandidates.length);
-        const candidatesForMetadata = filteredCandidates.slice(0, candidatesToFetch);
-        
-        await Promise.all(candidatesForMetadata.map(async (row) => {
-            try {
-                const meta = await provider.getTokenMeta(row.mint);
-                metaMap.set(row.mint, meta);
-                
-                // Update market cap with fresh data
-                const freshMc = meta.liveMarketCap || meta.marketCap;
-                if (freshMc) {
-                    marketCaps.set(row.mint, freshMc);
-                    (row as any).currentMarketCap = freshMc;
-                } else if (meta.supply) {
-                    // Try to get price from market cap if available
-                    const currentMc = marketCaps.get(row.mint);
-                    if (currentMc && meta.supply > 0) {
-                        const calculatedPrice = currentMc / meta.supply;
-                        prices.set(row.mint, calculatedPrice);
-                    } else if (meta.livePrice) {
-                        const calculatedMc = meta.livePrice * meta.supply;
-                        marketCaps.set(row.mint, calculatedMc);
-                        (row as any).currentMarketCap = calculatedMc;
-                        prices.set(row.mint, meta.livePrice);
-                    }
-                }
-                
-                // Recalculate PnL with fresh market cap
-                const sig = signals.find(s => s.id === (row as any).earliestSignalId) || signals.find(s => s.mint === row.mint);
-                if (sig) {
-                    const entryMc = (row as any).entryMarketCap || sig.entryMarketCap || sig.priceSamples?.[0]?.marketCap || 0;
-                    const currentMc = (row as any).currentMarketCap || 0;
-                    if (currentMc > 0 && entryMc > 0) {
-                        const newPnl = ((currentMc - entryMc) / entryMc) * 100;
-                        row.pnl = newPnl;
-                        (row as any)._calculatedPnl = newPnl;
-                    }
-                }
-            } catch {}
-        }));
-        
-        // Re-sort ALL filtered candidates with updated PnL values
-        filteredCandidates.sort((a, b) => {
-            const aPnl = (a as any)._calculatedPnl !== undefined && (a as any)._calculatedPnl !== null 
-                ? (a as any)._calculatedPnl 
-                : (a.pnl || 0);
-            const bPnl = (b as any)._calculatedPnl !== undefined && (b as any)._calculatedPnl !== null 
-                ? (b as any)._calculatedPnl 
-                : (b.pnl || 0);
-            return bPnl - aPnl; // Highest first
-        });
-        
-        // Update top10 with correct order after re-sorting
-        const newTop10 = filteredCandidates.slice(0, 10);
-        top10.length = 0;
-        top10.push(...newTop10);
-    } else {
-        // For non-PnL sorting, only fetch metadata for top 10 (optimization)
-        await Promise.all(top10.map(async (row) => {
-            try {
-                const meta = await provider.getTokenMeta(row.mint);
-                metaMap.set(row.mint, meta);
-                
-                // Update market cap with fresh data
-                const freshMc = meta.liveMarketCap || meta.marketCap;
-                if (freshMc) {
-                    marketCaps.set(row.mint, freshMc);
-                    (row as any).currentMarketCap = freshMc;
-                } else if (meta.supply) {
-                    // Try to get price from market cap if available
-                    const currentMc = marketCaps.get(row.mint);
-                    if (currentMc && meta.supply > 0) {
-                        const calculatedPrice = currentMc / meta.supply;
-                        prices.set(row.mint, calculatedPrice);
-                    } else if (meta.livePrice) {
-                        const calculatedMc = meta.livePrice * meta.supply;
-                        marketCaps.set(row.mint, calculatedMc);
-                        (row as any).currentMarketCap = calculatedMc;
-                        prices.set(row.mint, meta.livePrice);
-                    }
-                }
-                
-                // Recalculate PnL after updating market cap with fresh metadata
-                const sig = signals.find(s => s.id === (row as any).earliestSignalId) || signals.find(s => s.mint === row.mint);
-                if (sig) {
-                    const entryMc = (row as any).entryMarketCap || sig.entryMarketCap || sig.priceSamples?.[0]?.marketCap || 0;
-                    const currentMc = (row as any).currentMarketCap || 0;
-                    if (currentMc > 0 && entryMc > 0) {
-                        row.pnl = ((currentMc - entryMc) / entryMc) * 100;
-                    }
-                }
-            } catch {}
-        }));
-    }
-
     // 6. Construct Message
     let message = UIHelper.header('Live Signals (Active)');
     
