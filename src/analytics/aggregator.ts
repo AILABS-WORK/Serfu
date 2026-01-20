@@ -1110,14 +1110,21 @@ export const getDistributionStats = async (
               });
               s.metrics.athMultiple = athMultiple;
             } else {
-              // Create new metrics
+              // Create new metrics - need to include all required fields
+              // Calculate current price and multiple from entry data
+              const currentPriceValue = entryPriceValue; // Use entry price as initial current price
+              const currentMultipleValue = 1.0; // Start at 1x (entry multiple)
+              
               const newMetrics = await prisma.signalMetric.create({
                 data: {
                   signalId: s.id,
+                  currentPrice: currentPriceValue,
+                  currentMultiple: currentMultipleValue,
                   athMultiple,
                   athPrice: maxHigh,
                   athMarketCap: maxHigh * entrySupply,
-                  athAt: new Date(maxAt)
+                  athAt: new Date(maxAt),
+                  maxDrawdown: 0 // Default to 0 (no drawdown yet)
                 }
               });
               s.metrics = newMetrics;
