@@ -1322,10 +1322,19 @@ export const handleLiveSignals = async (ctx: BotContext) => {
     // IMPORTANT: Wait for ALL ATH calculations to complete before displaying - no fallbacks until all tried
     const { geckoTerminal } = await import('../../providers/geckoTerminal');
     
-    // CRITICAL: Calculate ATH for all top 10 signals in parallel, but ensure all complete
-    // Use Promise.allSettled to ensure all attempts complete (don't fail early)
-    // IMPORTANT: Wait for ALL ATH calculations before posting - no early returns
-    const athResults = await Promise.allSettled(top10.map(async (row) => {
+    // CRITICAL: Calculate ATH for all top 10 signals with rate limiting and retries
+    // Process in batches to avoid overwhelming the API
+    // IMPORTANT: Wait for ALL ATH calculations before posting - no early returns, no fallbacks
+    const BATCH_SIZE = 3; // Process 3 signals at a time to avoid rate limits
+    const DELAY_BETWEEN_BATCHES = 1000; // 1 second delay between batches
+    const athResults: PromiseSettledResult<void>[] = [];
+    
+    // Process in batches to avoid rate limits
+    for (let i = 0; i < top10.length; i += BATCH_SIZE) {
+        const batch = top10.slice(i, i + BATCH_SIZE);
+        
+        // Process batch in parallel
+        const batchResults = await Promise.allSettled(batch.map(async (row) => {
         const sig = signals.find(s => s.id === (row as any).earliestSignalId) || signals.find(s => s.mint === row.mint);
         if (!sig) return;
         
@@ -1335,8 +1344,10 @@ export const handleLiveSignals = async (ctx: BotContext) => {
         let athMultiple = 0;
         let athMarketCap = null;
         
-        // Get current price for fallback
+        // Get current price and current MC (define before try so available in catch)
         const currentPrice = prices.get(row.mint) ?? 0;
+        const currentMc = (row as any).currentMarketCap || marketCaps.get(row.mint) || 0;
+        const entryMc = (row as any).entryMarketCap || sig.entryMarketCap || 0;
         
         // Calculate ATH from OHLCV for accurate, real-time data
         try {
@@ -1350,7 +1361,6 @@ export const handleLiveSignals = async (ctx: BotContext) => {
                 const entryDateObj = new Date(entryTimestamp);
                 
                 // Get entry price for baseline
-                const entryMc = (row as any).entryMarketCap || sig.entryMarketCap || 0;
                 const entryPriceValue = entryPrice || (entryMc > 0 && entrySupply > 0 ? entryMc / entrySupply : 0);
                 
                 // CRITICAL: Initialize maxHigh to 0, not entryPriceValue
@@ -1544,112 +1554,141 @@ export const handleLiveSignals = async (ctx: BotContext) => {
                     }
                     
                     // STEP 4: After ALL OHLCV methods tried, set minimum ATH
-                    // Use current price if it's higher than entry (prevents showing 1x when current is 14k and entry is 6.4k)
-                    // Only use entry price as absolute minimum if current price is also not available
-                    const effectiveMinPrice = Math.max(
-                        entryPriceValue,
-                        currentPrice > 0 ? currentPrice : 0
-                    );
+                    // CRITICAL: Use current MC-based price if available, as it reflects true current performance
+                    // If current MC is much higher than entry MC, ATH should reflect that even if OHLCV fails
+                    let effectiveMinPrice = entryPriceValue;
+                    let effectiveMinMc = entryMc;
+                    
+                    // Calculate price from current MC if available (more accurate than price API)
+                    if (currentMc > 0 && entrySupply > 0) {
+                        const currentPriceFromMc = currentMc / entrySupply;
+                        if (currentPriceFromMc > entryPriceValue) {
+                            effectiveMinPrice = currentPriceFromMc;
+                            effectiveMinMc = currentMc;
+                        }
+                    } else if (currentPrice > 0 && currentPrice > entryPriceValue) {
+                        // Fallback to price API
+                        effectiveMinPrice = currentPrice;
+                        if (entrySupply > 0) {
+                            effectiveMinMc = currentPrice * entrySupply;
+                        }
+                    }
                     
                     if (effectiveMinPrice > 0 && maxHigh < effectiveMinPrice) {
                         // Only set to entry/current if we truly found no OHLCV data
                         if (ohlcvCandlesFound === 0) {
                             maxHigh = effectiveMinPrice;
-                            maxAt = currentPrice > entryPriceValue ? nowTimestamp : entryTimestamp;
-                            logger.debug(`No OHLCV data found for ${sig.mint}, using ${currentPrice > entryPriceValue ? 'current' : 'entry'} price as ATH`);
+                            maxAt = effectiveMinPrice > entryPriceValue ? nowTimestamp : entryTimestamp;
+                            logger.debug(`No OHLCV data found for ${sig.mint}, using ${effectiveMinPrice > entryPriceValue ? 'current MC-based' : 'entry'} price as ATH`);
                         } else {
-                            // We found some candles but they're all lower than entry/current - this shouldn't happen
-                            // But if it does, use the higher of entry or current
+                            // We found some candles but they're all lower than entry/current - use current MC-based price
                             maxHigh = effectiveMinPrice;
-                            maxAt = currentPrice > entryPriceValue ? nowTimestamp : entryTimestamp;
-                            logger.warn(`OHLCV candles found for ${sig.mint} but all lower than entry/current - using ${currentPrice > entryPriceValue ? 'current' : 'entry'} price`);
+                            maxAt = effectiveMinPrice > entryPriceValue ? nowTimestamp : entryTimestamp;
+                            logger.warn(`OHLCV candles found for ${sig.mint} but all lower than entry/current - using ${effectiveMinPrice > entryPriceValue ? 'current MC-based' : 'entry'} price`);
                         }
                     }
                     
                     // Calculate ATH multiple and market cap
+                    // CRITICAL: Use MC-based calculation when available for accuracy
                     if (entryPriceValue > 0 && maxHigh > 0) {
                         athMultiple = maxHigh / entryPriceValue;
-                        athMarketCap = maxHigh * entrySupply;
+                        // If we have current MC and it's higher, use that for ATH MC
+                        if (effectiveMinMc > entryMc && maxHigh === effectiveMinPrice) {
+                            athMarketCap = effectiveMinMc; // Use current MC directly
+                        } else {
+                            athMarketCap = maxHigh * entrySupply; // Calculate from price
+                        }
+                    }
+                    
+                    // CRITICAL: Verify we actually got valid data - use current MC if OHLCV completely failed
+                    // If OHLCV failed completely (no candles found), use current MC as minimum
+                    if (ohlcvCandlesFound === 0 && maxHigh === 0) {
+                        // Use current MC-based price as last resort only if we have valid current MC
+                        if (currentMc > 0 && entryMc > 0 && currentMc > entryMc) {
+                            const currentPriceFromMc = currentMc / entrySupply;
+                            maxHigh = currentPriceFromMc;
+                            maxAt = nowTimestamp;
+                            logger.warn(`No OHLCV candles found for ${sig.mint}, using current MC-based price as ATH: ${currentPriceFromMc.toFixed(8)}`);
+                            // Recalculate ATH with current MC-based price
+                            athMultiple = maxHigh / entryPriceValue;
+                            athMarketCap = currentMc;
+                        } else {
+                            logger.error(`No OHLCV candles found for ${sig.mint} and no valid current MC (currentMc: ${currentMc}, entryMc: ${entryMc})`);
+                            throw new Error(`No OHLCV data and invalid current MC for ${sig.mint}`);
+                        }
+                    }
+                    
+                    // If we found candles but maxHigh is still 0, that's invalid data - use current MC
+                    if (ohlcvCandlesFound > 0 && maxHigh === 0) {
+                        logger.warn(`Invalid OHLCV data for ${sig.mint}: found ${ohlcvCandlesFound} candles but maxHigh is 0, using current MC`);
+                        if (currentMc > 0 && entryMc > 0 && currentMc > entryMc) {
+                            const currentPriceFromMc = currentMc / entrySupply;
+                            maxHigh = currentPriceFromMc;
+                            maxAt = nowTimestamp;
+                            athMultiple = maxHigh / entryPriceValue;
+                            athMarketCap = currentMc;
+                        } else {
+                            throw new Error(`Invalid OHLCV data for ${sig.mint} and no valid current MC`);
+                        }
                     }
                     
                     // Log comprehensive ATH calculation result
                     logger.debug(`ATH calculation for ${sig.mint}: ${athMultiple.toFixed(2)}x (${athMarketCap ? (athMarketCap / 1000).toFixed(1) + 'K' : 'N/A'}), methods: ${ohlcvMethodsTried.join(', ')}, candles: ${ohlcvCandlesFound}`);
                     
-                } catch (ohlcvErr) {
-                    logger.debug(`All OHLCV methods failed for ${sig.mint}, trying price samples fallback: ${ohlcvErr}`);
-                }
-                
-                // STEP 5: Fallback to price samples if OHLCV completely failed
-                if (athMultiple === 0 || (athMultiple === 1 && currentPrice > entryPriceValue)) {
-                    const samples = await prisma.priceSample.findMany({
-                        where: { signalId: sig.id },
-                        orderBy: { sampledAt: 'asc' },
-                        select: { marketCap: true, price: true, sampledAt: true }
-                    }).catch(() => []);
+                } catch (ohlcvErr: any) {
+                    // OHLCV failed - use current MC if available, otherwise throw
+                    logger.error(`OHLCV fetching failed for ${sig.mint}:`, ohlcvErr.message || ohlcvErr);
                     
-                    if (samples.length > 0) {
-                        const entryMc = (row as any).entryMarketCap || sig.entryMarketCap || 0;
-                        const entryPrice = sig.entryPrice || 0;
-                        
-                        let maxMc = entryMc;
-                        let maxPrice = entryPrice;
-                        
-                        for (const sample of samples) {
-                            if (sample.marketCap && sample.marketCap > maxMc) {
-                                maxMc = sample.marketCap;
-                            }
-                            if (sample.price && sample.price > maxPrice) {
-                                maxPrice = sample.price;
-                            }
-                        }
-                        
-                        // Use current price if it's higher than samples
-                        if (currentPrice > 0 && currentPrice > maxPrice) {
-                            maxPrice = currentPrice;
-                        }
-                        
-                        if (entryMc > 0 && maxMc > entryMc) {
-                            athMultiple = maxMc / entryMc;
-                            athMarketCap = maxMc;
-                        } else if (entryPrice > 0 && maxPrice > entryPrice) {
-                            athMultiple = maxPrice / entryPrice;
-                            if (sig.entrySupply && sig.entrySupply > 0) {
-                                athMarketCap = maxPrice * sig.entrySupply;
-                            }
-                        } else if (currentPrice > 0 && entryPriceValue > 0 && currentPrice > entryPriceValue) {
-                            // Last resort: use current price if it's higher than entry
-                            athMultiple = currentPrice / entryPriceValue;
-                            if (sig.entrySupply && sig.entrySupply > 0) {
-                                athMarketCap = currentPrice * sig.entrySupply;
-                            }
-                        }
-                        
-                        logger.debug(`Price samples fallback for ${sig.mint}: ${athMultiple.toFixed(2)}x from ${samples.length} samples`);
-                    } else if (currentPrice > 0 && entryPriceValue > 0 && currentPrice > entryPriceValue) {
-                        // Absolute last resort: use current price
-                        athMultiple = currentPrice / entryPriceValue;
-                        if (sig.entrySupply && sig.entrySupply > 0) {
-                            athMarketCap = currentPrice * sig.entrySupply;
-                        }
-                        logger.debug(`Using current price as ATH for ${sig.mint}: ${athMultiple.toFixed(2)}x`);
+                    // Last resort: use current MC if available
+                    if (currentMc > 0 && entryMc > 0 && entryPriceValue > 0 && entrySupply > 0) {
+                        const currentPriceFromMc = currentMc / entrySupply;
+                        maxHigh = currentPriceFromMc;
+                        maxAt = nowTimestamp;
+                        athMultiple = maxHigh / entryPriceValue;
+                        athMarketCap = currentMc;
+                        logger.warn(`Using current MC-based ATH for ${sig.mint} due to OHLCV failure: ${athMultiple.toFixed(2)}x`);
+                    } else {
+                        throw ohlcvErr; // Re-throw if no fallback available
                     }
                 }
             }
-        } catch (err) {
-            logger.error(`General error during ATH calculation for ${sig.mint}: ${err}`);
+        } catch (err: any) {
+            logger.error(`General error during ATH calculation for ${sig.mint}:`, err);
+            // Try current MC as absolute last resort
+            const entryPriceForCatch = sig.entryPrice || sig.priceSamples?.[0]?.price || null;
+            const entrySupplyForCatch = sig.entrySupply || (sig.priceSamples?.[0]?.marketCap && entryPriceForCatch ? sig.priceSamples[0].marketCap / entryPriceForCatch : null);
+            const entryPriceValueForCatch = entryPriceForCatch || (entryMc > 0 && entrySupplyForCatch && entrySupplyForCatch > 0 ? entryMc / entrySupplyForCatch : 0);
+            
+            if (currentMc > 0 && entryMc > 0 && entryPriceValueForCatch > 0 && entrySupplyForCatch && entrySupplyForCatch > 0) {
+                const currentPriceFromMc = currentMc / entrySupplyForCatch;
+                athMultiple = currentPriceFromMc / entryPriceValueForCatch;
+                athMarketCap = currentMc;
+                logger.warn(`Using current MC-based ATH for ${sig.mint} due to general error: ${athMultiple.toFixed(2)}x`);
+            } else {
+                throw err; // Re-throw if no fallback
+            }
+        }
+        
+        // CRITICAL: Verify we have valid ATH before storing - NO FALLBACKS
+        if (athMultiple <= 0) {
+            throw new Error(`ATH calculation failed for ${sig.mint} - athMultiple is ${athMultiple}`);
         }
         
         // Store calculated ATH for display
-        (row as any).athMultiple = athMultiple > 0 ? athMultiple : 0;
-        (row as any).athMarketCap = athMarketCap || null;
+        (row as any).athMultiple = athMultiple;
+        (row as any).athMarketCap = athMarketCap;
         
         // Log final ATH result
-        if (athMultiple > 0) {
-            logger.debug(`Final ATH for ${sig.mint}: ${athMultiple.toFixed(2)}x (${athMarketCap ? (athMarketCap / 1000).toFixed(1) + 'K' : 'N/A'})`);
-        } else {
-            logger.warn(`Final ATH calculation returned 0 for ${sig.mint} - all methods failed`);
+        logger.debug(`Final ATH for ${sig.mint}: ${athMultiple.toFixed(2)}x (${athMarketCap ? (athMarketCap / 1000).toFixed(1) + 'K' : 'N/A'})`);
+        }));
+        
+        athResults.push(...batchResults);
+        
+        // Delay between batches to avoid rate limits (except for last batch)
+        if (i + BATCH_SIZE < top10.length) {
+            await new Promise(resolve => setTimeout(resolve, DELAY_BETWEEN_BATCHES));
         }
-    }));
+    }
     
     // CRITICAL: Wait for all ATH calculations to complete and log results
     // Check for any failures or timeouts
