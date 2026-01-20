@@ -870,14 +870,25 @@ export const handleLiveSignals = async (ctx: BotContext) => {
         return ctx.reply('You are not monitoring any groups/channels yet.');
     }
 
-    // 2. Fetch Active Signals
+    // 2. Get Filters FIRST (to filter signals by timeframe)
+    const liveFilters = ctx.session?.liveFilters || {};
+    const timeframeLabel = (liveFilters as any).timeframe || '24H'; // Default 24H
+    const timeframeParsed = UIHelper.parseTimeframeInput(timeframeLabel);
+    const timeframeCutoff =
+      timeframeLabel === 'ALL'
+        ? new Date(0)
+        : (timeframeParsed ? new Date(Date.now() - timeframeParsed.ms) : subDays(new Date(), 1));
+
+    // 3. Fetch Active Signals WITH Timeframe Filter (if not ALL)
     const signals = await prisma.signal.findMany({
       where: {
         trackingStatus: { in: ['ACTIVE', 'ENTRY_PENDING'] },
         OR: [
             { chatId: { in: ownedChatIds } },
             { id: { in: forwardedSignalIds } }
-        ]
+        ],
+        // CRITICAL: Filter by timeframe FIRST - only get signals detected in past 24H (or selected timeframe)
+        ...(timeframeLabel !== 'ALL' ? { detectedAt: { gte: timeframeCutoff } } : {})
       },
       orderBy: { detectedAt: 'asc' }, // Oldest first to find "Earliest Caller"
       include: {
@@ -1034,28 +1045,26 @@ export const handleLiveSignals = async (ctx: BotContext) => {
       }
     }
 
-    // Apply Filters & Calculate PnL (Pre-Sort) - Using Market Cap
-    const liveFilters = ctx.session?.liveFilters || {};
+    // 4. Get remaining filters (timeframe already applied above)
     const minMult = liveFilters.minMult || 0;
     const onlyGainers = liveFilters.onlyGainers || false;
-    // FIX: Default sort should be 'newest', not 'pnl'
+    // FIX: Default sort should be 'newest' (by time, newest first)
     const sortBy = (liveFilters as any).sortBy || 'newest';
-    const timeframeLabel = (liveFilters as any).timeframe || '24H';
-    const timeframeParsed = UIHelper.parseTimeframeInput(timeframeLabel);
-    const timeframeCutoff =
-      timeframeLabel === 'ALL'
-        ? new Date(0)
-        : (timeframeParsed ? new Date(Date.now() - timeframeParsed.ms) : subDays(new Date(), 1));
     const minAth = (liveFilters as any).minAth || 0;
     
     // OPTIMIZATION: Removed expensive priceSample query that was causing timeouts
     // Velocity calculation removed - can be re-added later using cached metrics if needed
     // For now, trending sort will use PnL instead of velocity
     
-    // STEP 1: Calculate PnL and all data for ALL signals FIRST
-    // We already fetched metadata for missing MC above, so we have current MC for all signals
-    // This ensures filters and sorting have accurate PnL values
+    // STEP 1: Calculate PnL and all data for ALL signals in timeframe FIRST
+    // CRITICAL: Calculate current price and PnL for ALL signals BEFORE filtering/sorting
+    // This ensures all signals have accurate data for proper sorting
     const candidates = Array.from(aggregated.values())
+        .filter(row => {
+            // Double-check timeframe filter (should already be filtered in DB query, but verify)
+            if (timeframeLabel !== 'ALL' && row.earliestDate < timeframeCutoff) return false;
+            return true;
+        })
         .map(row => {
              // Find entry market cap from earliest signal
              const sig = signals.find(s => s.id === (row as any).earliestSignalId) || signals.find(s => s.mint === row.mint);
@@ -1128,13 +1137,9 @@ export const handleLiveSignals = async (ctx: BotContext) => {
              return row;
         });
     
-    // STEP 2: Apply filters FIRST (before sorting) to ensure we only sort signals that pass filters
+    // STEP 2: Apply remaining filters (timeframe already filtered above)
     // All data (entry MC, current MC, PnL) has been calculated above, so filters use accurate values
     const filteredCandidates = candidates.filter(row => {
-            // FIX: Timeframe filter should use earliestDate (when CA was first detected), not latestDate
-            // "Signals from last 24H" means "CAs first detected in last 24H"
-            if (timeframeLabel !== 'ALL' && row.earliestDate < timeframeCutoff) return false;
-            
             // Only gainers filter
             if (onlyGainers && (row.pnl || 0) < 0) return false;
             
@@ -1169,68 +1174,47 @@ export const handleLiveSignals = async (ctx: BotContext) => {
             return true;
         });
     
-    // STEP 3: Sort filtered candidates AFTER filtering
-    // This ensures sorting uses accurate PnL values and only includes signals that passed filters
-    if (sortBy === 'trending') {
-        // Use PnL as proxy for trending (high PnL = trending up)
-        filteredCandidates.sort((a, b) => (b.pnl || (b as any)._calculatedPnl || 0) - (a.pnl || (a as any)._calculatedPnl || 0));
-    } else if (sortBy === 'newest') {
-        // FIX: Sort by earliest detection time (when CA was first mentioned) - newest first detections first
-        // This shows the newest CAs that appeared, not the most recently rementioned CAs
-        filteredCandidates.sort((a, b) => b.earliestDate.getTime() - a.earliestDate.getTime());
-    } else if (sortBy === 'pnl') {
-        // FIX: Highest PnL first - use the most accurate PnL value available
-        // Prefer _calculatedPnl if available (calculated when both entryMc and currentMc > 0)
-        filteredCandidates.sort((a, b) => {
-            const aPnl = (a as any)._calculatedPnl !== undefined && (a as any)._calculatedPnl !== null 
-                ? (a as any)._calculatedPnl 
-                : (a.pnl || 0);
-            const bPnl = (b as any)._calculatedPnl !== undefined && (b as any)._calculatedPnl !== null 
-                ? (b as any)._calculatedPnl 
-                : (b.pnl || 0);
-            return bPnl - aPnl; // Highest first
-        });
-    } else {
-        // Fallback to newest if sortBy is unknown (use earliestDate - first detection)
-        filteredCandidates.sort((a, b) => b.earliestDate.getTime() - a.earliestDate.getTime());
-    }
-    
-    // 6. Lazy Load Metadata (Top 10 Only) - Also update market caps with fresh data
-    // Take top 10 AFTER sorting to ensure we get the correct top performers
-    const top10 = filteredCandidates.slice(0, 10);
+    // STEP 3: Initialize metaMap for storing token metadata (used for all sorting methods)
     const metaMap = new Map<string, any>();
     
-    // CRITICAL FIX: ATH calculation is moved AFTER metadata fetch and re-sorting
-    // This ensures ATH is calculated for the final top 10 that will be displayed
-    // It will be calculated after we fetch metadata and update PnL (see below)
-    
-    // FIX: When sorting by PnL, ensure ALL filtered candidates have accurate PnL before selecting top 10
-    // The issue: Some signals may have missing/inaccurate MC initially, causing wrong sort order
-    // Solution: Fetch metadata for top N candidates (not just 10) to ensure accurate PnL for sorting
-    if (sortBy === 'pnl') {
-        // For PnL sorting, we need to ensure accurate PnL for enough candidates to get correct top 10
-        // Fetch metadata for top 20-30 candidates to ensure we have accurate PnL for the real top performers
-        const candidatesToFetch = Math.min(30, filteredCandidates.length);
-        const candidatesForMetadata = filteredCandidates.slice(0, candidatesToFetch);
+    // STEP 4: CRITICAL FIX - Ensure ALL filtered candidates have market cap calculated before sorting
+    // For highest PnL sorting, we need accurate PnL for ALL candidates, not just top 30
+    // This ensures proper sorting when some signals have missing market cap data
+    if (sortBy === 'pnl' || minMult > 0 || onlyGainers) {
+        // For PnL-based sorting/filtering, fetch metadata for ALL candidates to ensure accurate PnL
+        logger.debug(`Fetching metadata for ${filteredCandidates.length} candidates to ensure accurate PnL calculation`);
         
-        await Promise.all(candidatesForMetadata.map(async (row) => {
+        await Promise.all(filteredCandidates.map(async (row) => {
+            // Check if we already have valid market cap (> 0) - if so, just recalculate PnL
+            const existingMc = marketCaps.get(row.mint);
+            if (existingMc && existingMc > 0 && (row as any).currentMarketCap && (row as any).currentMarketCap > 0) {
+                // Recalculate PnL with existing market cap to ensure it's accurate
+                const sig = signals.find(s => s.id === (row as any).earliestSignalId) || signals.find(s => s.mint === row.mint);
+                if (sig) {
+                    const entryMc = (row as any).entryMarketCap || sig.entryMarketCap || sig.priceSamples?.[0]?.marketCap || 0;
+                    const currentMc = (row as any).currentMarketCap || existingMc;
+                    if (currentMc > 0 && entryMc > 0) {
+                        const newPnl = ((currentMc - entryMc) / entryMc) * 100;
+                        row.pnl = newPnl;
+                        (row as any)._calculatedPnl = newPnl;
+                    }
+                }
+                return;
+            }
+            
+            // Fetch metadata if market cap is missing or 0
             try {
                 const meta = await provider.getTokenMeta(row.mint);
                 metaMap.set(row.mint, meta);
                 
                 // Update market cap with fresh data
                 const freshMc = meta.liveMarketCap || meta.marketCap;
-                if (freshMc) {
+                if (freshMc && freshMc > 0) {
                     marketCaps.set(row.mint, freshMc);
                     (row as any).currentMarketCap = freshMc;
-                } else if (meta.supply) {
-                    // Try to get price from market cap if available
-                    const currentMc = marketCaps.get(row.mint);
-                    if (currentMc && meta.supply > 0) {
-                        const calculatedPrice = currentMc / meta.supply;
-                        prices.set(row.mint, calculatedPrice);
-                    } else if (meta.livePrice) {
-                        const calculatedMc = meta.livePrice * meta.supply;
+                } else if (meta.supply && meta.livePrice) {
+                    const calculatedMc = meta.livePrice * meta.supply;
+                    if (calculatedMc > 0) {
                         marketCaps.set(row.mint, calculatedMc);
                         (row as any).currentMarketCap = calculatedMc;
                         prices.set(row.mint, meta.livePrice);
@@ -1248,10 +1232,23 @@ export const handleLiveSignals = async (ctx: BotContext) => {
                         (row as any)._calculatedPnl = newPnl;
                     }
                 }
-            } catch {}
+            } catch (err) {
+                logger.debug(`Failed to fetch metadata for ${row.mint}: ${err}`);
+            }
         }));
-        
-        // Re-sort ALL filtered candidates with updated PnL values
+    }
+    
+    // STEP 5: Sort filtered candidates AFTER ensuring all have PnL calculated (metaMap already initialized above)
+    // Default sort is 'newest' (by time, newest first) as per requirements
+    if (sortBy === 'trending') {
+        // Use PnL as proxy for trending (high PnL = trending up)
+        filteredCandidates.sort((a, b) => (b.pnl || (b as any)._calculatedPnl || 0) - (a.pnl || (a as any)._calculatedPnl || 0));
+    } else if (sortBy === 'newest') {
+        // Default: Sort by earliest detection time (when CA was first mentioned) - newest first
+        // This shows the newest CAs that appeared, not the most recently rementioned CAs
+        filteredCandidates.sort((a, b) => b.earliestDate.getTime() - a.earliestDate.getTime());
+    } else if (sortBy === 'pnl') {
+        // Highest PnL first - use the most accurate PnL value available
         filteredCandidates.sort((a, b) => {
             const aPnl = (a as any)._calculatedPnl !== undefined && (a as any)._calculatedPnl !== null 
                 ? (a as any)._calculatedPnl 
@@ -1261,48 +1258,23 @@ export const handleLiveSignals = async (ctx: BotContext) => {
                 : (b.pnl || 0);
             return bPnl - aPnl; // Highest first
         });
-        
-        // Update top10 with correct order after re-sorting
-        const newTop10 = filteredCandidates.slice(0, 10);
-        top10.length = 0;
-        top10.push(...newTop10);
     } else {
-        // For non-PnL sorting, only fetch metadata for top 10 (optimization)
-    await Promise.all(top10.map(async (row) => {
-        try {
-            const meta = await provider.getTokenMeta(row.mint);
-            metaMap.set(row.mint, meta);
-            
-            // Update market cap with fresh data
-            const freshMc = meta.liveMarketCap || meta.marketCap;
-            if (freshMc) {
-                marketCaps.set(row.mint, freshMc);
-                (row as any).currentMarketCap = freshMc;
-            } else if (meta.supply) {
-                // Try to get price from market cap if available
-                const currentMc = marketCaps.get(row.mint);
-                if (currentMc && meta.supply > 0) {
-                    const calculatedPrice = currentMc / meta.supply;
-                    prices.set(row.mint, calculatedPrice);
-                } else if (meta.livePrice) {
-                    const calculatedMc = meta.livePrice * meta.supply;
-                    marketCaps.set(row.mint, calculatedMc);
-                    (row as any).currentMarketCap = calculatedMc;
-                    prices.set(row.mint, meta.livePrice);
-                }
-            }
-            
-                // Recalculate PnL after updating market cap with fresh metadata
-            const sig = signals.find(s => s.id === (row as any).earliestSignalId) || signals.find(s => s.mint === row.mint);
-            if (sig) {
-                const entryMc = (row as any).entryMarketCap || sig.entryMarketCap || sig.priceSamples?.[0]?.marketCap || 0;
-                const currentMc = (row as any).currentMarketCap || 0;
-                if (currentMc > 0 && entryMc > 0) {
-                    row.pnl = ((currentMc - entryMc) / entryMc) * 100;
-                }
-            }
-        } catch {}
-    }));
+        // Fallback to newest if sortBy is unknown
+        filteredCandidates.sort((a, b) => b.earliestDate.getTime() - a.earliestDate.getTime());
+    }
+    
+    // STEP 6: Take top 10 AFTER sorting
+    const top10 = filteredCandidates.slice(0, 10);
+    
+    // STEP 7: For signals not yet fetched, get metadata for display (top 10 only)
+    // This ensures we have full metadata (DEX, migrations, etc.) for display
+    for (const row of top10) {
+        if (!metaMap.has(row.mint)) {
+            try {
+                const meta = await provider.getTokenMeta(row.mint);
+                metaMap.set(row.mint, meta);
+            } catch {}
+        }
     }
     
     // CRITICAL FIX: Calculate ATH for top 10 AFTER filtering/sorting and metadata fetch
