@@ -845,6 +845,7 @@ export const handleCrossGroupConfirms = async (ctx: Context, view: string = 'lag
 // ----------------------------------------------------------------------
 
 export const handleLiveSignals = async (ctx: BotContext) => {
+  let loadingMsg: any = null;
   try {
     const ownerTelegramId = ctx.from?.id ? BigInt(ctx.from.id) : null;
     if (!ownerTelegramId) return ctx.reply('❌ Unable to identify user.');
@@ -908,7 +909,7 @@ export const handleLiveSignals = async (ctx: BotContext) => {
     }
 
     // Check if we're updating an existing message (from filter/sort action)
-    let loadingMsg: any = null;
+    // loadingMsg declared outside try block now
     if (ctx.callbackQuery && ctx.callbackQuery.message) {
       // Edit existing message instead of creating new one
       loadingMsg = ctx.callbackQuery.message;
