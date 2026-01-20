@@ -2171,23 +2171,24 @@ export const handleRecentCalls = async (ctx: Context, window: string = '7D') => 
         if (uniqueSignals.length >= 10) break;
     }
 
-    // 4. Trigger Metric Updates for displayed signals
-    const loadingMsg = await ctx.reply('⏳ Syncing latest market data...');
-    try {
-        await updateHistoricalMetrics(uniqueSignals.map(s => s.id));
-    } catch (err) {
-        logger.warn('Background metric update failed:', err);
-    }
-
-    // 5. Build "Serfu Prime" Timeline
-    // Re-fetch to get updated metrics? 
-    // Actually updateHistoricalMetrics updates the DB. We should probably re-fetch or trust the update?
-    // For speed, let's re-fetch just these 10 IDs to get the fresh 'metrics' relation.
-    const signals = await prisma.signal.findMany({
-        where: { id: { in: uniqueSignals.map(s => s.id) } },
-        orderBy: { detectedAt: 'desc' },
-        include: { group: true, user: true, metrics: true, priceSamples: { orderBy: { sampledAt: 'asc' }, take: 1 } }
+    // 4. OPTIMIZED: Use cached metrics directly, only update if stale (>5 min old)
+    // This avoids slow synchronous updates that block the UI
+    const signals = uniqueSignals;
+    
+    // Check if any metrics are stale and trigger async update
+    const now = Date.now();
+    const staleSignals = signals.filter(s => {
+        if (!s.metrics) return true; // No metrics = needs update
+        const metricsAge = now - s.metrics.updatedAt.getTime();
+        return metricsAge > 5 * 60 * 1000; // > 5 minutes old
     });
+    
+    // Trigger async update for stale signals (non-blocking)
+    if (staleSignals.length > 0) {
+        updateHistoricalMetrics(staleSignals.map(s => s.id)).catch(err => {
+            logger.debug('Background metric update failed:', err);
+        });
+    }
 
     const windowLabel = ['1D','3D','7D','30D','ALL'].includes(String(effectiveWindow)) ? String(effectiveWindow) : `Custom ${effectiveWindow}`;
     let message = UIHelper.header(`RECENT ACTIVITY LOG (${windowLabel})`, '📜');

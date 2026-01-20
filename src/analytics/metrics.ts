@@ -8,16 +8,25 @@ const THRESHOLDS = [2, 3, 4, 5, 10];
 const OHLCV_CHECK_MIN_MS = 5 * 60 * 1000;
 const lastOhlcvCheck = new Map<number, number>();
 
+// OPTIMIZED: Progressive timeframe strategy matching live signals implementation
 const getOhlcvParams = (entryAt: Date) => {
   const ageMs = Date.now() - entryAt.getTime();
   const ageMinutes = Math.max(1, Math.ceil(ageMs / (60 * 1000)));
-  if (ageMinutes <= 1000) return { timeframe: 'minute' as const, limit: Math.min(1000, ageMinutes + 1), intervalMs: 60 * 1000 };
   const ageHours = Math.ceil(ageMinutes / 60);
-  if (ageHours <= 1000) return { timeframe: 'hour' as const, limit: Math.min(1000, ageHours + 1), intervalMs: 60 * 60 * 1000 };
   const ageDays = Math.ceil(ageHours / 24);
-  return { timeframe: 'day' as const, limit: Math.min(1000, ageDays + 1), intervalMs: 24 * 60 * 60 * 1000 };
+  
+  // Use minute for < 16 hours, hour for < 30 days, day for older
+  if (ageHours <= 16) {
+    return { timeframe: 'minute' as const, limit: Math.min(1000, ageMinutes + 10), intervalMs: 60 * 1000 };
+  } else if (ageDays <= 30) {
+    return { timeframe: 'hour' as const, limit: Math.min(1000, ageHours + 1), intervalMs: 60 * 60 * 1000 };
+  } else {
+    return { timeframe: 'day' as const, limit: Math.min(1000, ageDays + 1), intervalMs: 24 * 60 * 60 * 1000 };
+  }
 };
 
+// OPTIMIZED: Use comprehensive OHLCV fetching matching live signals implementation
+// Only considers candles AFTER entry timestamp (no pre-entry contamination)
 const getAthFromOhlcv = async (
   mint: string,
   entryAt: Date,
@@ -25,31 +34,51 @@ const getAthFromOhlcv = async (
   entryPrice?: number | null
 ) => {
   if (!entrySupply || entrySupply <= 0) return null;
+  const entryTimestamp = entryAt.getTime();
   const { timeframe, limit, intervalMs } = getOhlcvParams(entryAt);
-  const candles = await geckoTerminal.getOHLCV(mint, timeframe, limit);
-  if (!candles.length) return null;
-  let startIndex = candles.findIndex(
-    (c) => entryAt.getTime() >= c.timestamp && entryAt.getTime() < c.timestamp + intervalMs
-  );
-  if (startIndex === -1) {
-    startIndex = candles.findIndex((c) => c.timestamp >= entryAt.getTime());
-  }
-  if (startIndex === -1) startIndex = 0;
-  let maxHigh = 0;
-  let maxAt = candles[startIndex].timestamp;
-  for (let i = startIndex; i < candles.length; i++) {
-    if (candles[i].high > maxHigh) {
-      maxHigh = candles[i].high;
-      maxAt = candles[i].timestamp;
+  
+  try {
+    // Try primary timeframe first
+    let candles = await geckoTerminal.getOHLCV(mint, timeframe, limit);
+    
+    // Filter to only candles AFTER entry timestamp (critical for accuracy)
+    let validCandles = candles.filter(c => c.timestamp >= entryTimestamp);
+    
+    // If no valid candles, try all minute candles as fallback
+    if (validCandles.length === 0 && timeframe !== 'minute') {
+      const minuteCandles = await geckoTerminal.getOHLCV(mint, 'minute', 1000);
+      validCandles = minuteCandles.filter(c => c.timestamp >= entryTimestamp);
     }
+    
+    if (validCandles.length === 0) return null;
+    
+    let maxHigh = 0;
+    let maxAt = entryTimestamp;
+    
+    for (const candle of validCandles) {
+      if (candle.high > maxHigh) {
+        maxHigh = candle.high;
+        maxAt = candle.timestamp;
+      }
+    }
+    
+    // Ensure ATH is at least entry price
+    const entryPriceValue = entryPrice || (validCandles[0]?.open ?? null);
+    if (entryPriceValue && maxHigh < entryPriceValue) {
+      maxHigh = entryPriceValue;
+      maxAt = entryTimestamp;
+    }
+    
+    return {
+      athPrice: maxHigh || null,
+      athMarketCap: maxHigh ? maxHigh * entrySupply : null,
+      athAt: new Date(maxAt),
+      entryPrice: entryPriceValue,
+    };
+  } catch (err) {
+    logger.debug(`OHLCV ATH fetch failed for ${mint}:`, err);
+    return null;
   }
-  const derivedEntryPrice = entryPrice ?? candles[startIndex]?.open ?? null;
-  return {
-    athPrice: maxHigh || null,
-    athMarketCap: maxHigh ? maxHigh * entrySupply : null,
-    athAt: new Date(maxAt),
-    entryPrice: derivedEntryPrice,
-  };
 };
 
 export const updateSignalMetrics = async (signalId: number, currentMarketCap: number | null, currentPrice: number) => {

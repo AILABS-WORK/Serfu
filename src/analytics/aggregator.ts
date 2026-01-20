@@ -736,9 +736,12 @@ export const getDistributionStats = async (
     scopeFilter = { userId: target.id };
   }
 
+  // OPTIMIZED: Filter by metrics existence to ensure we only process signals with cached metrics
+  // This avoids expensive calculations and ensures consistency with other features
   const signals = await prisma.signal.findMany({
     where: {
       detectedAt: { gte: since },
+      metrics: { isNot: null }, // Only signals with metrics (faster, consistent)
       ...scopeFilter
     },
     include: { 

@@ -58,11 +58,11 @@ model Signal {
 
   trackingStatus TrackingStatus @default(ACTIVE) @map("tracking_status")
   trackingEndAt  DateTime?      @map("tracking_end_at")
-  
+
   // Enrichment Flags
-  dexPaid         Boolean   @default(false) @map("dex_paid")
-  migrated        Boolean   @default(false)
-  socials         Json?     // { twitter: boolean, telegram: boolean, website: boolean }
+  dexPaid  Boolean @default(false) @map("dex_paid")
+  migrated Boolean @default(false)
+  socials  Json? // { twitter: boolean, telegram: boolean, website: boolean }
 
   // Relations (using Int foreign keys)
   groupId          Int?              @map("group_id")
@@ -83,6 +83,7 @@ model Signal {
   @@index([senderId])
   @@index([groupId])
   @@index([userId])
+  @@index([detectedAt]) // Optimize time-based queries for live signals, recent calls, leaderboards
   @@map("signals")
 }
 
@@ -126,26 +127,27 @@ model ThresholdEvent {
 }
 
 model SignalMetric {
-  signalId        Int      @id @map("signal_id")
-  currentPrice    Float    @map("current_price")
-  currentMarketCap Float?  @map("current_market_cap") // Current market cap
-  currentMultiple Float    @map("current_multiple") // Based on market cap
-  athPrice        Float    @map("ath_price")
-  athMarketCap    Float?   @map("ath_market_cap") // ATH market cap
-  athMultiple     Float    @map("ath_multiple") // Based on market cap
-  athAt           DateTime @map("ath_at")
-  timeToAth       Int?     @map("time_to_ath") // ms to reach ATH
-  timeTo2x        Int?     @map("time_to_2x") // ms to reach 2x
-  timeTo3x        Int?     @map("time_to_3x") // ms to reach 3x
-  timeTo5x        Int?     @map("time_to_5x") // ms to reach 5x
-  timeTo10x       Int?     @map("time_to_10x") // ms to reach 10x
-  maxDrawdown     Float    @default(0) @map("max_drawdown") // negative % (market cap based)
-  stagnationTime  Int?     @map("stagnation_time") // ms spent < 1.1x before pumping
+  signalId         Int      @id @map("signal_id")
+  currentPrice     Float    @map("current_price")
+  currentMarketCap Float?   @map("current_market_cap") // Current market cap
+  currentMultiple  Float    @map("current_multiple") // Based on market cap
+  athPrice         Float    @map("ath_price")
+  athMarketCap     Float?   @map("ath_market_cap") // ATH market cap
+  athMultiple      Float    @map("ath_multiple") // Based on market cap
+  athAt            DateTime @map("ath_at")
+  timeToAth        Int?     @map("time_to_ath") // ms to reach ATH
+  timeTo2x         Int?     @map("time_to_2x") // ms to reach 2x
+  timeTo3x         Int?     @map("time_to_3x") // ms to reach 3x
+  timeTo5x         Int?     @map("time_to_5x") // ms to reach 5x
+  timeTo10x        Int?     @map("time_to_10x") // ms to reach 10x
+  maxDrawdown      Float    @default(0) @map("max_drawdown") // negative % (market cap based)
+  stagnationTime   Int?     @map("stagnation_time") // ms spent < 1.1x before pumping
   drawdownDuration Int?     @map("drawdown_duration") // ms spent underwater before ATH
-  updatedAt       DateTime @default(now()) @map("updated_at")
+  updatedAt        DateTime @default(now()) @map("updated_at")
 
   signal Signal @relation(fields: [signalId], references: [id])
 
+  @@index([updatedAt]) // Optimize stale metric checks
   @@map("signal_metrics")
 }
 
@@ -168,20 +170,20 @@ model CategoryMetric {
 }
 
 model Group {
-  id        Int      @id @default(autoincrement())
-  chatId    BigInt   @map("chat_id")
-  name      String?
-  type      String? // "source" or "destination"
-  chatType  String?  @map("chat_type") // "group", "supergroup", "channel"
-  isActive  Boolean  @default(true) @map("is_active")
+  id                Int      @id @default(autoincrement())
+  chatId            BigInt   @map("chat_id")
+  name              String?
+  type              String? // "source" or "destination"
+  chatType          String?  @map("chat_type") // "group", "supergroup", "channel"
+  isActive          Boolean  @default(true) @map("is_active")
   autoDeleteSeconds Int?     @map("auto_delete_seconds")
   showHideButton    Boolean  @default(true) @map("show_hide_button")
-  createdAt DateTime @default(now()) @map("created_at")
-  updatedAt DateTime @updatedAt @map("updated_at")
-  
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
   // User ownership - each group belongs to a user (nullable for migration compatibility)
-  ownerId   Int?     @map("owner_id")
-  owner     User?    @relation("OwnedGroups", fields: [ownerId], references: [id])
+  ownerId Int?  @map("owner_id")
+  owner   User? @relation("OwnedGroups", fields: [ownerId], references: [id])
 
   // Relations
   signals      Signal[]
@@ -208,8 +210,8 @@ model User {
   signals              Signal[]
   rawMessages          RawMessage[]
   userMetrics          UserMetric[]
-  ownedGroups          Group[]                    @relation("OwnedGroups") // Groups this user owns/manages
-  notificationSettings UserNotificationSettings?  @relation("NotificationSettings")
+  ownedGroups          Group[]                   @relation("OwnedGroups") // Groups this user owns/manages
+  notificationSettings UserNotificationSettings? @relation("NotificationSettings")
   watchlist            Watchlist[]
   strategyPresets      StrategyPreset[]
 
@@ -224,8 +226,8 @@ model StrategyPreset {
   targetType String   @map("target_type") // OVERALL, GROUP, USER
   targetId   Int?     @map("target_id")
   timeframe  String
-  schedule   Json?    // { days: ['Mon'..], windows: [{start,end}], timezone: 'UTC' }
-  conditions Json?    // { minVolume, minMentions, minMarketCap, maxMarketCap }
+  schedule   Json? // { days: ['Mon'..], windows: [{start,end}], timezone: 'UTC' }
+  conditions Json? // { minVolume, minMentions, minMarketCap, maxMarketCap }
   isActive   Boolean  @default(true) @map("is_active")
   createdAt  DateTime @default(now()) @map("created_at")
   updatedAt  DateTime @updatedAt @map("updated_at")
@@ -321,50 +323,50 @@ model CopyTradingStrategy {
 }
 
 model UserNotificationSettings {
-  id                Int      @id @default(autoincrement())
-  userId            Int      @unique @map("user_id")
-  user              User     @relation("NotificationSettings", fields: [userId], references: [id])
-  
+  id     Int  @id @default(autoincrement())
+  userId Int  @unique @map("user_id")
+  user   User @relation("NotificationSettings", fields: [userId], references: [id])
+
   // Threshold alerts (multiples of entry price/mcap)
-  alert2x            Boolean  @default(true) @map("alert_2x")
-  alert3x            Boolean  @default(true) @map("alert_3x")
-  alert4x            Boolean  @default(true) @map("alert_4x")
-  alert5x            Boolean  @default(true) @map("alert_5x")
-  alert10x           Boolean  @default(true) @map("alert_10x")
-  alert15x           Boolean  @default(false) @map("alert_15x")
-  alert20x           Boolean  @default(false) @map("alert_20x")
-  alert30x           Boolean  @default(false) @map("alert_30x")
-  alert50x           Boolean  @default(false) @map("alert_50x")
-  alert100x          Boolean  @default(false) @map("alert_100x")
-  
+  alert2x   Boolean @default(true) @map("alert_2x")
+  alert3x   Boolean @default(true) @map("alert_3x")
+  alert4x   Boolean @default(true) @map("alert_4x")
+  alert5x   Boolean @default(true) @map("alert_5x")
+  alert10x  Boolean @default(true) @map("alert_10x")
+  alert15x  Boolean @default(false) @map("alert_15x")
+  alert20x  Boolean @default(false) @map("alert_20x")
+  alert30x  Boolean @default(false) @map("alert_30x")
+  alert50x  Boolean @default(false) @map("alert_50x")
+  alert100x Boolean @default(false) @map("alert_100x")
+
   // Event alerts
-  alertDexPayment    Boolean  @default(true) @map("alert_dex_payment")
-  alertBonding       Boolean  @default(true) @map("alert_bonding")
-  alertMigrating      Boolean  @default(true) @map("alert_migrating")
-  alertNewSignal      Boolean  @default(true) @map("alert_new_signal")
+  alertDexPayment Boolean @default(true) @map("alert_dex_payment")
+  alertBonding    Boolean @default(true) @map("alert_bonding")
+  alertMigrating  Boolean @default(true) @map("alert_migrating")
+  alertNewSignal  Boolean @default(true) @map("alert_new_signal")
 
   // MC multiplier alerts
-  alertMc2x           Boolean  @default(true) @map("alert_mc_2x")
-  alertMc3x           Boolean  @default(true) @map("alert_mc_3x")
-  alertMc4x           Boolean  @default(true) @map("alert_mc_4x")
-  alertMc5x           Boolean  @default(true) @map("alert_mc_5x")
-  alertMc10x          Boolean  @default(true) @map("alert_mc_10x")
-  alertMc15x          Boolean  @default(false) @map("alert_mc_15x")
-  alertMc20x          Boolean  @default(false) @map("alert_mc_20x")
-  alertMc30x          Boolean  @default(false) @map("alert_mc_30x")
-  alertMc50x          Boolean  @default(false) @map("alert_mc_50x")
-  alertMc100x         Boolean  @default(false) @map("alert_mc_100x")
-  
+  alertMc2x   Boolean @default(true) @map("alert_mc_2x")
+  alertMc3x   Boolean @default(true) @map("alert_mc_3x")
+  alertMc4x   Boolean @default(true) @map("alert_mc_4x")
+  alertMc5x   Boolean @default(true) @map("alert_mc_5x")
+  alertMc10x  Boolean @default(true) @map("alert_mc_10x")
+  alertMc15x  Boolean @default(false) @map("alert_mc_15x")
+  alertMc20x  Boolean @default(false) @map("alert_mc_20x")
+  alertMc30x  Boolean @default(false) @map("alert_mc_30x")
+  alertMc50x  Boolean @default(false) @map("alert_mc_50x")
+  alertMc100x Boolean @default(false) @map("alert_mc_100x")
+
   // Notification channels
-  notifyInGroup      Boolean  @default(true) @map("notify_in_group")
-  notifyInDM         Boolean  @default(false) @map("notify_in_dm")
-  notifyDestination  Boolean  @default(true) @map("notify_destination")
+  notifyInGroup       Boolean @default(true) @map("notify_in_group")
+  notifyInDM          Boolean @default(false) @map("notify_in_dm")
+  notifyDestination   Boolean @default(true) @map("notify_destination")
   notifyHomeOnFirstCa Boolean @default(true) @map("notify_home_first_ca")
   notifyHomeOnRepost  Boolean @default(true) @map("notify_home_repost")
-  homeChatId         BigInt?  @map("home_chat_id")
-  
-  createdAt          DateTime @default(now()) @map("created_at")
-  updatedAt          DateTime @updatedAt @map("updated_at")
+  homeChatId          BigInt? @map("home_chat_id")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
 
   @@index([userId])
   @@map("user_notification_settings")
@@ -376,23 +378,23 @@ model TokenHolder {
   id        Int      @id @default(autoincrement())
   address   String   @unique
   createdAt DateTime @default(now()) @map("created_at")
-  
+
   // Relations
-  signals   SignalTopHolder[]
+  signals SignalTopHolder[]
 
   @@map("token_holders")
 }
 
 model SignalTopHolder {
-  id        Int      @id @default(autoincrement())
-  signalId  Int      @map("signal_id")
-  holderId  Int      @map("holder_id")
-  rank      Int      // 1-10
-  percentage Float   // Percentage of supply held (0-100)
-  amount    Float    // Raw token amount held
-  
-  signal    Signal      @relation(fields: [signalId], references: [id])
-  holder    TokenHolder @relation(fields: [holderId], references: [id])
+  id         Int   @id @default(autoincrement())
+  signalId   Int   @map("signal_id")
+  holderId   Int   @map("holder_id")
+  rank       Int // 1-10
+  percentage Float // Percentage of supply held (0-100)
+  amount     Float // Raw token amount held
+
+  signal Signal      @relation(fields: [signalId], references: [id])
+  holder TokenHolder @relation(fields: [holderId], references: [id])
 
   @@unique([signalId, holderId]) // A holder appears once per signal
   @@index([holderId]) // Fast lookup: "Which other signals did this holder hold?"
@@ -400,13 +402,13 @@ model SignalTopHolder {
 }
 
 model Watchlist {
-  id        Int      @id @default(autoincrement())
-  userId    Int      @map("user_id")
-  signalId  Int      @map("signal_id")
-  addedAt   DateTime @default(now()) @map("added_at")
+  id       Int      @id @default(autoincrement())
+  userId   Int      @map("user_id")
+  signalId Int      @map("signal_id")
+  addedAt  DateTime @default(now()) @map("added_at")
 
-  user      User     @relation(fields: [userId], references: [id])
-  signal    Signal   @relation(fields: [signalId], references: [id])
+  user   User   @relation(fields: [userId], references: [id])
+  signal Signal @relation(fields: [signalId], references: [id])
 
   @@unique([userId, signalId])
   @@index([userId])

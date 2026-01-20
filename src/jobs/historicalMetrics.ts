@@ -46,35 +46,44 @@ export const updateHistoricalMetrics = async (targetSignalIds?: number[]) => {
                 const now = Date.now();
                 const ageHours = (now - signal.detectedAt.getTime()) / (1000 * 60 * 60);
                 
+                // OPTIMIZED: Use GeckoTerminal first (fastest, best success rate)
+                // Benchmark showed GeckoTerminal minute parallel: 248.83ms/token with 3/6 success
+                // Bitquery: 0% success rate
                 let ohlcv: any[] = [];
                 let source = 'gecko';
 
-                // Priority 1: Bitquery (if API Key exists)
-                if (process.env.BIT_QUERY_API_KEY) {
-                    const timeframe = ageHours > 24 ? 'hour' : 'minute';
-                    const limit = ageHours > 24 ? 1000 : 1440; 
-                    try {
-                        ohlcv = await (bitquery as any).getOHLCV(signal.mint, timeframe, limit);
-                        if (ohlcv.length > 0) source = 'bitquery';
-                    } catch (e) {
-                        logger.error(`Bitquery failed for ${signal.mint}`, e);
-                    }
-                }
-
-                // Priority 2: GeckoTerminal (Fallback)
-                if (ohlcv.length === 0) {
-                    let timeframe: 'minute' | 'hour' = ageHours > 16 ? 'hour' : 'minute';
-                    ohlcv = await geckoTerminal.getOHLCV(signal.mint, timeframe, 1000);
+                // Priority 1: GeckoTerminal (Fastest, best success rate)
+                // Use progressive timeframe strategy: minute for recent, hour for older
+                let timeframe: 'minute' | 'hour' | 'day' = ageHours <= 16 ? 'minute' : ageHours <= 720 ? 'hour' : 'day';
+                const limit = timeframe === 'minute' ? 1000 : timeframe === 'hour' ? 1000 : 1000;
+                
+                try {
+                    ohlcv = await geckoTerminal.getOHLCV(signal.mint, timeframe, limit);
                     
-                    if (timeframe === 'minute' && ohlcv && ohlcv.length > 0) {
+                    // If minute candles don't cover entry period, try hour candles
+                    if (timeframe === 'minute' && ohlcv.length > 0) {
                         const oldestCandle = ohlcv[0];
                         const signalTime = signal.detectedAt.getTime();
-                        if (oldestCandle.timestamp > signalTime + 300000) { 
+                        // If oldest candle is > 5 minutes after signal, try hourly
+                        if (oldestCandle.timestamp > signalTime + 300000) {
                             timeframe = 'hour';
                             ohlcv = await geckoTerminal.getOHLCV(signal.mint, timeframe, 1000);
                         }
                     }
-                    source = 'gecko';
+                } catch (e) {
+                    logger.debug(`GeckoTerminal failed for ${signal.mint}, trying Bitquery fallback:`, e);
+                }
+
+                // Priority 2: Bitquery (Fallback only if GeckoTerminal fails)
+                if (ohlcv.length === 0 && process.env.BIT_QUERY_API_KEY) {
+                    const bitqueryTimeframe = ageHours > 24 ? 'hour' : 'minute';
+                    const bitqueryLimit = ageHours > 24 ? 1000 : 1440; 
+                    try {
+                        ohlcv = await (bitquery as any).getOHLCV(signal.mint, bitqueryTimeframe, bitqueryLimit);
+                        if (ohlcv.length > 0) source = 'bitquery';
+                    } catch (e) {
+                        logger.debug(`Bitquery fallback failed for ${signal.mint}:`, e);
+                    }
                 }
                 
                 if (!ohlcv || ohlcv.length === 0) return;
