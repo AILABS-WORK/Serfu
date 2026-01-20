@@ -1499,9 +1499,13 @@ export const handleLiveSignals = async (ctx: BotContext) => {
     // This ensures ATH is calculated for the final displayed signals, regardless of sort method
     // Strategy: Only calculate ATH for displayed signals using OHLCV candles
     // This ensures we get the true ATH from entry timestamp to now
+    // IMPORTANT: Wait for ALL ATH calculations to complete before displaying - no fallbacks until all tried
     const { geckoTerminal } = await import('../../providers/geckoTerminal');
     
-    await Promise.all(top10.map(async (row) => {
+    // CRITICAL: Calculate ATH for all top 10 signals in parallel, but ensure all complete
+    // Use Promise.allSettled to ensure all attempts complete (don't fail early)
+    // IMPORTANT: Wait for ALL ATH calculations before posting - no early returns
+    const athResults = await Promise.allSettled(top10.map(async (row) => {
         const sig = signals.find(s => s.id === (row as any).earliestSignalId) || signals.find(s => s.mint === row.mint);
         if (!sig) return;
         
@@ -1705,8 +1709,32 @@ export const handleLiveSignals = async (ctx: BotContext) => {
         }
     }));
     
-    // CRITICAL: Wait for all ATH calculations to complete before proceeding
-    // This ensures all displayed signals have accurate ATH values
+    // CRITICAL: Wait for all ATH calculations to complete and log results
+    // Check for any failures or timeouts
+    const failures = athResults.filter(r => r.status === 'rejected');
+    if (failures.length > 0) {
+        logger.warn(`${failures.length} ATH calculations failed or timed out`);
+        failures.forEach((failure, idx) => {
+            if (failure.status === 'rejected') {
+                logger.debug(`ATH calculation failure ${idx + 1}:`, failure.reason);
+            }
+        });
+    }
+    
+    // Ensure all ATH values are set (even if calculation failed, they should have fallback values)
+    const missingAth = top10.filter((row, idx) => {
+        const result = athResults[idx];
+        if (result.status === 'rejected') return true;
+        const ath = (row as any).athMultiple;
+        return !ath || ath === 0;
+    });
+    
+    if (missingAth.length > 0) {
+        logger.warn(`${missingAth.length} signals still missing ATH after all calculations - this should not happen`);
+    }
+    
+    // CRITICAL: All ATH calculations are now complete
+    // Do not proceed to display until this point
     
     // 6. Construct Message
     let message = UIHelper.header('Live Signals (Active)');
