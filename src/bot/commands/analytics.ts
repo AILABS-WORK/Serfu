@@ -1316,10 +1316,10 @@ export const handleLiveSignals = async (ctx: BotContext) => {
     // STEP 6: Take top 10 AFTER sorting
     const top10 = filteredCandidates.slice(0, 10);
     
-    // STEP 7: For signals not yet fetched, get metadata for display (top 10 only)
+    // STEP 7: OPTIMIZED - Parallel metadata fetch for top 10 signals (only if missing)
     // This ensures we have full metadata (DEX, migrations, etc.) for display
     // Also ensure current MC is set for all top 10 signals
-    for (const row of top10) {
+    await Promise.all(top10.map(async (row) => {
         // Get metadata if missing
         if (!metaMap.has(row.mint)) {
             try {
@@ -1363,7 +1363,7 @@ export const handleLiveSignals = async (ctx: BotContext) => {
                 (row as any)._calculatedPnl = newPnl;
             }
         }
-    }
+    }));
     
     // CRITICAL FIX: Calculate ATH for top 10 AFTER filtering/sorting and metadata fetch
     // This ensures ATH is calculated for the final displayed signals, regardless of sort method
@@ -1372,25 +1372,28 @@ export const handleLiveSignals = async (ctx: BotContext) => {
     // IMPORTANT: Wait for ALL ATH calculations to complete before displaying - no fallbacks until all tried
     const { geckoTerminal } = await import('../../providers/geckoTerminal');
     
-    // CRITICAL: Calculate ATH for all top 10 signals with rate limiting and retries
-    // Process in batches to avoid overwhelming the API
-    // IMPORTANT: Wait for ALL ATH calculations before posting - no early returns, no fallbacks
-    const BATCH_SIZE = 3; // Process 3 signals at a time to avoid rate limits
-    const DELAY_BETWEEN_BATCHES = 1000; // 1 second delay between batches
-    const athResults: PromiseSettledResult<void>[] = [];
+    // OPTIMIZED: Calculate ATH for top 10 signals - use cached metrics if recent (< 5 min old)
+    // Only calculate fresh ATH if metrics are missing or stale
+    // Process in parallel with minimal delays for speed
+    const METRICS_STALE_MS = 5 * 60 * 1000; // 5 minutes
+    const now = Date.now();
     
-    // Process in batches to avoid rate limits
-    for (let i = 0; i < top10.length; i += BATCH_SIZE) {
-        const batch = top10.slice(i, i + BATCH_SIZE);
-        
-        // Process batch in parallel
-        const batchResults = await Promise.allSettled(batch.map(async (row) => {
+    const athResults = await Promise.allSettled(top10.map(async (row) => {
         const sig = signals.find(s => s.id === (row as any).earliestSignalId) || signals.find(s => s.mint === row.mint);
         if (!sig) return;
         
-        // CRITICAL: Always calculate ATH from OHLCV for accurate, real-time data
-        // Don't rely on cached metrics as they might be outdated or incorrect
-        // This ensures we always get the true ATH from entry timestamp to now
+        // OPTIMIZATION: Use cached metrics if available and recent (< 5 min old)
+        if (sig.metrics?.athMultiple && sig.metrics.updatedAt) {
+            const metricsAge = now - sig.metrics.updatedAt.getTime();
+            if (metricsAge < METRICS_STALE_MS && sig.metrics.athMultiple > 0) {
+                // Use cached ATH - it's recent enough
+                (row as any).athMultiple = sig.metrics.athMultiple;
+                (row as any).athMarketCap = sig.metrics.athMarketCap;
+                return; // Skip OHLCV calculation
+            }
+        }
+        
+        // Calculate fresh ATH from OHLCV only if metrics are missing or stale
         let athMultiple = 0;
         let athMarketCap = null;
         
@@ -1480,15 +1483,16 @@ export const handleLiveSignals = async (ctx: BotContext) => {
                     // This ensures we never use candles that started before entry time
                     ohlcvMethodsTried.push('GeckoTerminal-progressive');
                     
-                    // PHASE 1: Minute candles from entry until next :05 boundary
-                    if (nowTimestamp > entryTimestamp && next05Timestamp > entryTimestamp) {
-                        const minutesTo05 = Math.ceil((next05Timestamp - entryTimestamp) / (60 * 1000));
-                        const minuteLimit = Math.min(1000, minutesTo05 + 2); // +2 for safety
+                    // OPTIMIZED: Fetch all minute candles from entry to next hour in ONE call
+                    // This reduces API calls from 4-5 per signal to just 1 for the first hour
+                    if (nowTimestamp > entryTimestamp && nextHourTimestamp > entryTimestamp) {
+                        const minutesToHour = Math.ceil((nextHourTimestamp - entryTimestamp) / (60 * 1000));
+                        const minuteLimit = Math.min(1000, minutesToHour + 5); // +5 for safety
                         
                         try {
                             const minuteCandles = await geckoTerminal.getOHLCV(sig.mint, 'minute', minuteLimit);
                             // CRITICAL: Only include candles that start AT OR AFTER entry timestamp
-                            const postEntryMinutes = minuteCandles.filter((c) => c.timestamp >= entryTimestamp && c.timestamp < next05Timestamp);
+                            const postEntryMinutes = minuteCandles.filter((c) => c.timestamp >= entryTimestamp && c.timestamp < nextHourTimestamp);
                             ohlcvCandlesFound += postEntryMinutes.length;
                             
                             for (const candle of postEntryMinutes) {
@@ -1500,80 +1504,23 @@ export const handleLiveSignals = async (ctx: BotContext) => {
                         } catch (err) {
                             logger.debug(`GeckoTerminal minute candles failed for ${sig.mint}: ${err}`);
                         }
-                    }
-                    
-                    // PHASE 2: Minute candles from :05 boundary until next :15 boundary
-                    // Use minute candles but fetch efficiently - only what we need for this range
-                    if (nowTimestamp > next05Timestamp && next15Timestamp > next05Timestamp) {
-                        const minutesTo15 = Math.ceil((next15Timestamp - next05Timestamp) / (60 * 1000));
-                        const minuteLimit = Math.min(1000, minutesTo15 + 2);
-                        
+                    } else if (ageHours === 0 && ageMinutes > 0) {
+                        // Very recent trade (< 1 hour) - fetch all minute candles in one call
+                        const minuteLimit = Math.min(1000, ageMinutes + 10);
                         try {
                             const minuteCandles = await geckoTerminal.getOHLCV(sig.mint, 'minute', minuteLimit);
-                            // CRITICAL: Only include candles that start AT OR AFTER :05 boundary
-                            // Process ALL minute candles in this range (don't filter by alignment)
-                            const post05Minutes = minuteCandles.filter((c) => c.timestamp >= next05Timestamp && c.timestamp < next15Timestamp);
-                            ohlcvCandlesFound += post05Minutes.length;
+                            // CRITICAL: Only include candles that start AT OR AFTER entry timestamp
+                            const postEntryMinutes = minuteCandles.filter((c) => c.timestamp >= entryTimestamp);
+                            ohlcvCandlesFound += postEntryMinutes.length;
                             
-                            for (const candle of post05Minutes) {
+                            for (const candle of postEntryMinutes) {
                                 if (candle.high > maxHigh) {
                                     maxHigh = candle.high;
                                     maxAt = candle.timestamp;
                                 }
                             }
                         } catch (err) {
-                            logger.debug(`GeckoTerminal minute candles (:05 to :15) failed for ${sig.mint}: ${err}`);
-                        }
-                    }
-                    
-                    // PHASE 3: Minute candles from :15 boundary until next hour (or :30 if closer)
-                    // Choose which boundary is closer: :30 or hour, to minimize API calls
-                    if (nowTimestamp > next15Timestamp) {
-                        const endBoundary = next30Timestamp < nextHourTimestamp && next30Timestamp > next15Timestamp 
-                            ? next30Timestamp 
-                            : nextHourTimestamp;
-                        
-                        if (endBoundary > next15Timestamp) {
-                            const minutesToEnd = Math.ceil((endBoundary - next15Timestamp) / (60 * 1000));
-                            const minuteLimit = Math.min(1000, minutesToEnd + 2);
-                            
-                            try {
-                                const minuteCandles = await geckoTerminal.getOHLCV(sig.mint, 'minute', minuteLimit);
-                                // CRITICAL: Only include candles that start AT OR AFTER :15 boundary
-                                const post15Minutes = minuteCandles.filter((c) => c.timestamp >= next15Timestamp && c.timestamp < endBoundary);
-                                ohlcvCandlesFound += post15Minutes.length;
-                                
-                                for (const candle of post15Minutes) {
-                                    if (candle.high > maxHigh) {
-                                        maxHigh = candle.high;
-                                        maxAt = candle.timestamp;
-                                    }
-                                }
-                            } catch (err) {
-                                logger.debug(`GeckoTerminal minute candles (:15 to ${endBoundary === next30Timestamp ? ':30' : 'hour'}) failed for ${sig.mint}: ${err}`);
-                            }
-                        }
-                        
-                        // If we stopped at :30, continue with minute candles from :30 to hour
-                        if (endBoundary === next30Timestamp && nowTimestamp > next30Timestamp && nextHourTimestamp > next30Timestamp) {
-                            const minutesToHour = Math.ceil((nextHourTimestamp - next30Timestamp) / (60 * 1000));
-                            const minuteLimit = Math.min(1000, minutesToHour + 2);
-                            
-                            try {
-                                const minuteCandles = await geckoTerminal.getOHLCV(sig.mint, 'minute', minuteLimit);
-                                // CRITICAL: Only include candles that start AT OR AFTER :30 boundary
-                                const post30Minutes = minuteCandles.filter((c) => c.timestamp >= next30Timestamp && c.timestamp < nextHourTimestamp);
-                                ohlcvCandlesFound += post30Minutes.length;
-                                
-                                for (const candle of post30Minutes) {
-                                    if (candle.high > maxHigh) {
-                                        maxHigh = candle.high;
-                                        maxAt = candle.timestamp;
-                                    }
-                                }
-                            } catch (err) {
-                                logger.debug(`GeckoTerminal minute candles (:30 to hour) failed for ${sig.mint}: ${err}`);
-                            }
+                            logger.debug(`GeckoTerminal minute candles (recent) failed for ${sig.mint}: ${err}`);
                         }
                     }
                     
@@ -1915,15 +1862,7 @@ export const handleLiveSignals = async (ctx: BotContext) => {
         
         // Log final ATH result
         logger.debug(`Final ATH for ${sig.mint}: ${athMultiple.toFixed(2)}x (${athMarketCap ? (athMarketCap / 1000).toFixed(1) + 'K' : 'N/A'})`);
-        }));
-        
-        athResults.push(...batchResults);
-        
-        // Delay between batches to avoid rate limits (except for last batch)
-        if (i + BATCH_SIZE < top10.length) {
-            await new Promise(resolve => setTimeout(resolve, DELAY_BETWEEN_BATCHES));
-        }
-    }
+    }));
     
     // CRITICAL: Wait for all ATH calculations to complete and log results
     // Check for any failures or timeouts
