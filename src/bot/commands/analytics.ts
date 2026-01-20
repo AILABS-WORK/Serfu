@@ -1268,12 +1268,50 @@ export const handleLiveSignals = async (ctx: BotContext) => {
     
     // STEP 7: For signals not yet fetched, get metadata for display (top 10 only)
     // This ensures we have full metadata (DEX, migrations, etc.) for display
+    // Also ensure current MC is set for all top 10 signals
     for (const row of top10) {
+        // Get metadata if missing
         if (!metaMap.has(row.mint)) {
             try {
                 const meta = await provider.getTokenMeta(row.mint);
                 metaMap.set(row.mint, meta);
+                
+                // Update market cap from metadata if missing
+                if (!marketCaps.has(row.mint) || marketCaps.get(row.mint) === 0) {
+                    const freshMc = meta.liveMarketCap || meta.marketCap;
+                    if (freshMc && freshMc > 0) {
+                        marketCaps.set(row.mint, freshMc);
+                        (row as any).currentMarketCap = freshMc;
+                    } else if (meta.supply && meta.livePrice) {
+                        const calculatedMc = meta.livePrice * meta.supply;
+                        if (calculatedMc > 0) {
+                            marketCaps.set(row.mint, calculatedMc);
+                            (row as any).currentMarketCap = calculatedMc;
+                            prices.set(row.mint, meta.livePrice);
+                        }
+                    }
+                }
             } catch {}
+        }
+        
+        // Ensure current MC is set on row object from marketCaps Map
+        if (!(row as any).currentMarketCap || (row as any).currentMarketCap === 0) {
+            const mcFromMap = marketCaps.get(row.mint);
+            if (mcFromMap && mcFromMap > 0) {
+                (row as any).currentMarketCap = mcFromMap;
+            }
+        }
+        
+        // Recalculate PnL if we have current MC
+        const sig = signals.find(s => s.id === (row as any).earliestSignalId) || signals.find(s => s.mint === row.mint);
+        if (sig && (row as any).currentMarketCap && (row as any).currentMarketCap > 0) {
+            const entryMc = (row as any).entryMarketCap || sig.entryMarketCap || sig.priceSamples?.[0]?.marketCap || 0;
+            const currentMc = (row as any).currentMarketCap;
+            if (entryMc > 0 && currentMc > 0) {
+                const newPnl = ((currentMc - entryMc) / entryMc) * 100;
+                row.pnl = newPnl;
+                (row as any)._calculatedPnl = newPnl;
+            }
         }
     }
     
@@ -1665,25 +1703,57 @@ export const handleLiveSignals = async (ctx: BotContext) => {
         // Entry -> Current Market Cap (preferred) or Price (fallback)
         // FIX: Use stored entryMc from mapping phase for consistency, or recalculate if missing
         const entryMc = (row as any).entryMarketCap || sig?.entryMarketCap || sig?.priceSamples?.[0]?.marketCap || null;
-        const currentMc = (row as any).currentMarketCap || sig?.metrics?.currentMarketCap || null;
         
-        // FIX: Recalculate PnL after metadata fetch if currentMc was updated
-        // This ensures PnL reflects fresh market cap from metadata
-        if (currentMc && entryMc && entryMc > 0) {
-            const newPnl = ((currentMc - entryMc) / entryMc) * 100;
-            // Only update if it's different (metadata might have fresher data)
-            if (Math.abs(newPnl - (row.pnl || 0)) > 0.1) {
-                row.pnl = newPnl;
+        // CRITICAL: Get current MC from multiple sources in priority order
+        // 1. From row object (set during calculation phase)
+        // 2. From marketCaps Map (fresh data from API)
+        // 3. From metadata if available
+        // 4. Calculate from price * supply if needed
+        let currentMc = (row as any).currentMarketCap || marketCaps.get(row.mint) || null;
+        
+        // Fallback: try to get from metadata
+        if (!currentMc && meta) {
+            currentMc = meta.liveMarketCap || meta.marketCap || null;
+        }
+        
+        // Fallback: calculate from price * supply
+        if (!currentMc) {
+            const currentPrice = prices.get(row.mint) || row.currentPrice || 0;
+            const supply = sig?.entrySupply || meta?.supply || null;
+            if (currentPrice > 0 && supply && supply > 0) {
+                currentMc = currentPrice * supply;
+                // Store for next time
+                if (currentMc > 0) {
+                    marketCaps.set(row.mint, currentMc);
+                    (row as any).currentMarketCap = currentMc;
+                }
             }
-        } else if ((!row.pnl || row.pnl === 0) && currentMc && entryMc && entryMc > 0) {
-            // Fallback: calculate if PnL is still 0
-            row.pnl = ((currentMc - entryMc) / entryMc) * 100;
+        }
+        
+        // Store current MC on row for consistency
+        if (currentMc && currentMc > 0) {
+            (row as any).currentMarketCap = currentMc;
+        }
+        
+        // CRITICAL: Calculate PnL from current MC and entry MC
+        // Ensure PnL is always calculated and displayed
+        let calculatedPnl = 0;
+        if (currentMc && currentMc > 0 && entryMc && entryMc > 0) {
+            calculatedPnl = ((currentMc - entryMc) / entryMc) * 100;
+            row.pnl = calculatedPnl; // Always update PnL with calculated value
+            (row as any)._calculatedPnl = calculatedPnl;
+        } else if (row.pnl === undefined || row.pnl === null || row.pnl === 0) {
+            // If no MC data available, PnL is 0 or N/A
+            calculatedPnl = 0;
+            row.pnl = 0;
+        } else {
+            calculatedPnl = row.pnl;
         }
         
         // PnL & formatting
         // FIX: Icon should be green if positive compared to entry MC, red if negative
-        const pnlStr = UIHelper.formatPercent(row.pnl || 0);
-        const icon = (row.pnl || 0) >= 0 ? '🟢' : '🔴';
+        const pnlStr = UIHelper.formatPercent(calculatedPnl);
+        const icon = calculatedPnl >= 0 ? '🟢' : '🔴';
         const timeAgo = UIHelper.formatTimeAgo(row.latestDate);
         
         // Use symbol from meta if available
@@ -1693,7 +1763,7 @@ export const handleLiveSignals = async (ctx: BotContext) => {
         message += `\n${icon} *${displaySymbol}* (${row.symbol || 'N/A'})\n`;
         message += `└ \`${row.mint.slice(0, 8)}...${row.mint.slice(-4)}\`\n`;
         const entryStr = entryMc ? UIHelper.formatMarketCap(entryMc) : 'N/A';
-        const currentStr = currentMc ? UIHelper.formatMarketCap(currentMc) : 'N/A';
+        const currentStr = currentMc && currentMc > 0 ? UIHelper.formatMarketCap(currentMc) : 'N/A';
         
         // FIX: Use ATH multiple from calculated value (from price samples or metrics)
         // ATH is calculated from price samples (fast) or from metrics (background jobs with OHLCV)
