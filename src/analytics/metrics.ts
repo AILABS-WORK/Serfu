@@ -1,375 +1,436 @@
 import { prisma } from '../db';
 import { logger } from '../utils/logger';
-import { getBotInstance } from '../bot/instance';
 import { geckoTerminal } from '../providers/geckoTerminal';
+import { Signal, SignalMetric, PriceSample } from '../generated/client';
 
-const THRESHOLDS = [2, 3, 4, 5, 10];
-
-// OPTIMIZED: Check OHLCV more frequently for active signals (every 2 min instead of 5 min)
-// This ensures ATH calculations are more accurate and up-to-date
-const OHLCV_CHECK_MIN_MS = 2 * 60 * 1000; // 2 minutes - more frequent for accuracy
-const lastOhlcvCheck = new Map<number, number>();
-
-// OPTIMIZED: Progressive timeframe strategy matching live signals implementation
-const getOhlcvParams = (entryAt: Date) => {
-  const ageMs = Date.now() - entryAt.getTime();
-  const ageMinutes = Math.max(1, Math.ceil(ageMs / (60 * 1000)));
-  const ageHours = Math.ceil(ageMinutes / 60);
-  const ageDays = Math.ceil(ageHours / 24);
-  
-  // Use minute for < 16 hours, hour for < 30 days, day for older
-  if (ageHours <= 16) {
-    return { timeframe: 'minute' as const, limit: Math.min(1000, ageMinutes + 10), intervalMs: 60 * 1000 };
-  } else if (ageDays <= 30) {
-    return { timeframe: 'hour' as const, limit: Math.min(1000, ageHours + 1), intervalMs: 60 * 60 * 1000 };
-  } else {
-    return { timeframe: 'day' as const, limit: Math.min(1000, ageDays + 1), intervalMs: 24 * 60 * 60 * 1000 };
-  }
+export type SignalWithRelations = Signal & {
+  metrics: SignalMetric | null;
+  priceSamples: PriceSample[];
 };
 
-// OPTIMIZED: Use comprehensive OHLCV fetching matching live signals implementation
-// Only considers candles AFTER entry timestamp (no pre-entry contamination)
-const getAthFromOhlcv = async (
-  mint: string,
-  entryAt: Date,
-  entrySupply: number | null | undefined,
-  entryPrice?: number | null
-) => {
-  if (!entrySupply || entrySupply <= 0) return null;
-  const entryTimestamp = entryAt.getTime();
-  const { timeframe, limit, intervalMs } = getOhlcvParams(entryAt);
+/**
+ * Enriches a signal with current price data from Jupiter.
+ * Updates the in-memory signal object.
+ * @param signals List of signals to enrich
+ */
+export const enrichSignalsWithCurrentPrice = async (signals: SignalWithRelations[]) => {
+  if (signals.length === 0) return;
+
+  const uniqueMints = Array.from(new Set(signals.map(s => s.mint)));
   
+  // Use Jupiter batch API to fetch prices for all mints at once (up to 50 per batch)
+  // We'll process in chunks of 50 to be safe
+  const BATCH_SIZE = 50;
+  const priceMap: Record<string, number | null> = {};
+
   try {
-    // Try primary timeframe first
-    let candles = await geckoTerminal.getOHLCV(mint, timeframe, limit);
+    const { getMultipleTokenPrices } = await import('../providers/jupiter');
     
-    // Filter to only candles AFTER entry timestamp (critical for accuracy)
-    let validCandles = candles.filter(c => c.timestamp >= entryTimestamp);
-    
-    // If no valid candles, try all minute candles as fallback
-    if (validCandles.length === 0 && timeframe !== 'minute') {
-      const minuteCandles = await geckoTerminal.getOHLCV(mint, 'minute', 1000);
-      validCandles = minuteCandles.filter(c => c.timestamp >= entryTimestamp);
+    for (let i = 0; i < uniqueMints.length; i += BATCH_SIZE) {
+        const batch = uniqueMints.slice(i, i + BATCH_SIZE);
+        const batchPrices = await getMultipleTokenPrices(batch);
+        Object.assign(priceMap, batchPrices);
     }
-    
-    if (validCandles.length === 0) return null;
-    
-    let maxHigh = 0;
-    let maxAt = entryTimestamp;
-    
-    for (const candle of validCandles) {
-      if (candle.high > maxHigh) {
-        maxHigh = candle.high;
-        maxAt = candle.timestamp;
-      }
-    }
-    
-    // Ensure ATH is at least entry price
-    const entryPriceValue = entryPrice || (validCandles[0]?.open ?? null);
-    if (entryPriceValue && maxHigh < entryPriceValue) {
-      maxHigh = entryPriceValue;
-      maxAt = entryTimestamp;
-    }
-    
-    return {
-      athPrice: maxHigh || null,
-      athMarketCap: maxHigh ? maxHigh * entrySupply : null,
-      athAt: new Date(maxAt),
-      entryPrice: entryPriceValue,
-    };
-  } catch (err) {
-    logger.debug(`OHLCV ATH fetch failed for ${mint}:`, err);
-    return null;
-  }
-};
 
-export const updateSignalMetrics = async (signalId: number, currentMarketCap: number | null, currentPrice: number) => {
-  const signal = await prisma.signal.findUnique({
-    where: { id: signalId },
-    include: { metrics: true }
-  });
-
-  if (!signal) return;
-
-  // Use market cap for calculations (preferred), fallback to price if market cap not available
-  const entryMarketCap = signal.entryMarketCap;
-  const entryPrice = signal.entryPrice;
-  
-  // Prefer market cap-based calculations
-  let currentMultiple = 0;
-  if (entryMarketCap && currentMarketCap) {
-    currentMultiple = currentMarketCap / entryMarketCap;
-  } else if (entryPrice && currentPrice) {
-    // Fallback to price if market cap not available
-    currentMultiple = currentPrice / entryPrice;
-  } else {
-    return; // Can't calculate without entry data
-  }
-  
-  // Calculate Drawdown using market cap (preferred) or price (fallback)
-  // Query min/max market cap from samples
-  const agg = await prisma.priceSample.aggregate({
-    where: { signalId },
-    _min: { marketCap: true, price: true },
-    _max: { marketCap: true, price: true }
-  });
-  
-  // Use market cap if available, otherwise fallback to price
-  const useMarketCap = entryMarketCap && currentMarketCap && agg._max.marketCap;
-  const minValue = useMarketCap ? (agg._min.marketCap || currentMarketCap) : (agg._min.price || currentPrice);
-  let maxValue = useMarketCap ? (agg._max.marketCap || currentMarketCap) : (agg._max.price || currentPrice);
-  const entryValue = useMarketCap ? entryMarketCap : entryPrice!;
-  
-  const maxDrawdown = (minValue / entryValue) - 1; // negative %
-  const samples = await prisma.priceSample.findMany({
-    where: { signalId },
-    orderBy: { sampledAt: 'asc' }
-  });
-
-  let athValue = maxValue || 0;
-  let athAt = samples.length ? samples[samples.length - 1].sampledAt : new Date();
-
-  const entryAt = signal.entryPriceAt || signal.detectedAt;
-  const shouldCheckOhlcv =
-    !!entryAt &&
-    (Date.now() - (lastOhlcvCheck.get(signalId) || 0) > OHLCV_CHECK_MIN_MS);
-  if (shouldCheckOhlcv) {
-    lastOhlcvCheck.set(signalId, Date.now());
-    try {
-      const ohlcvAth = await getAthFromOhlcv(signal.mint, entryAt!, signal.entrySupply, signal.entryPrice);
-      if (ohlcvAth) {
-        if (useMarketCap && ohlcvAth.athMarketCap && ohlcvAth.athMarketCap > athValue) {
-          athValue = ohlcvAth.athMarketCap;
-          athAt = ohlcvAth.athAt;
-        } else if (!useMarketCap && ohlcvAth.athPrice && ohlcvAth.athPrice > athValue) {
-          athValue = ohlcvAth.athPrice;
-          athAt = ohlcvAth.athAt;
-        }
-      }
-    } catch (err) {
-      logger.debug(`OHLCV ATH fetch failed for ${signal.mint}:`, err);
-    }
-  }
-
-  const athMultiple = entryValue > 0 ? athValue / entryValue : 0;
-  
-  // Find the actual timestamp of ATH from price samples (using market cap if available)
-  const athSample = useMarketCap
-    ? samples.filter(s => s.marketCap !== null).sort((a, b) => (b.marketCap || 0) - (a.marketCap || 0))[0]
-    : samples.sort((a, b) => b.price - a.price)[0];
-  if (athSample?.sampledAt && athSample.sampledAt > athAt) {
-    athAt = athSample.sampledAt;
-  }
-  
-  // Calculate timeToAth if we have detectedAt
-  let timeToAth = null;
-  if (signal.detectedAt && athSample) {
-    timeToAth = athSample.sampledAt.getTime() - signal.detectedAt.getTime();
-  }
-  
-  // Calculate stagnation time and drawdown duration
-  let stagnationTime: number | null = null;
-  let drawdownDuration: number | null = null;
-  
-  if (signal.detectedAt) {
-    // Stagnation: time spent < 1.1x before first pump (>1.1x)
-    let firstPumpTime: Date | null = null;
-    for (const sample of samples) {
-      const sampleValue = useMarketCap ? (sample.marketCap || 0) : sample.price;
-      const sampleMultiple = entryValue > 0 ? sampleValue / entryValue : 0;
-      if (sampleMultiple >= 1.1) {
-        firstPumpTime = sample.sampledAt;
-        break;
-      }
-    }
-    
-    if (firstPumpTime) {
-      stagnationTime = firstPumpTime.getTime() - signal.detectedAt.getTime();
-    }
-    
-    // Drawdown duration: time spent underwater (< entry) before ATH
-    if (athSample) {
-      let underwaterStart: Date | null = null;
-      let underwaterEnd: Date | null = null;
-      let maxUnderwaterDuration = 0;
-      
-      for (const sample of samples) {
-        const sampleValue = useMarketCap ? (sample.marketCap || 0) : sample.price;
-        const sampleMultiple = entryValue > 0 ? sampleValue / entryValue : 0;
-        
-        if (sampleMultiple < 1.0) {
-          if (!underwaterStart) {
-            underwaterStart = sample.sampledAt;
-          }
-          underwaterEnd = sample.sampledAt;
-        } else {
-          if (underwaterStart && underwaterEnd) {
-            const duration = underwaterEnd.getTime() - underwaterStart.getTime();
-            if (duration > maxUnderwaterDuration) {
-              maxUnderwaterDuration = duration;
+    // Update in-memory signals
+    for (const sig of signals) {
+        const currentPrice = priceMap[sig.mint];
+        if (currentPrice !== null && currentPrice !== undefined) {
+            // Ensure metrics object exists
+            if (!sig.metrics) {
+                sig.metrics = {
+                    signalId: sig.id,
+                    currentPrice: 0,
+                    currentMultiple: 0,
+                    athPrice: 0,
+                    athMultiple: 0,
+                    athMarketCap: 0,
+                    athAt: sig.detectedAt,
+                    maxDrawdown: 0,
+                    timeToAth: 0,
+                    timeTo2x: null,
+                    timeTo3x: null,
+                    timeTo5x: null,
+                    timeTo10x: null,
+                    stagnationTime: null,
+                    drawdownDuration: null,
+                    updatedAt: new Date(),
+                    currentMarketCap: 0 // Adding missing property
+                } as any;
             }
-          }
-          underwaterStart = null;
-          underwaterEnd = null;
+
+            const metrics = sig.metrics!;
+            metrics.currentPrice = currentPrice;
+
+            // Calculate current multiple
+            // 1. Try entryPrice directly
+            // 2. Try deriving from entryMarketCap and entrySupply
+            let entryPrice = sig.entryPrice;
+            if (!entryPrice && sig.entryMarketCap && sig.entrySupply) {
+                entryPrice = sig.entryMarketCap / sig.entrySupply;
+            }
+            // 3. Try price samples
+            if (!entryPrice && sig.priceSamples?.[0]?.price) {
+                entryPrice = sig.priceSamples[0].price;
+            }
+
+            if (entryPrice && entryPrice > 0) {
+                metrics.currentMultiple = currentPrice / entryPrice;
+            } else {
+                metrics.currentMultiple = 1.0;
+            }
+
+            // Calculate current Market Cap
+            if (sig.entrySupply) {
+                metrics.currentMarketCap = currentPrice * sig.entrySupply;
+            } else if (metrics.currentMultiple && sig.entryMarketCap) {
+                metrics.currentMarketCap = sig.entryMarketCap * metrics.currentMultiple;
+            }
         }
-      }
-      
-      if (maxUnderwaterDuration > 0) {
-        drawdownDuration = maxUnderwaterDuration;
-      }
     }
-  }
-  
-  // Update Metrics Table
-  const createData: any = {
-    signalId,
-    currentPrice,
-    currentMarketCap: currentMarketCap || null,
-    currentMultiple,
-    athMultiple,
-    athAt,
-    maxDrawdown,
-    timeToAth: timeToAth || null,
-    stagnationTime: stagnationTime || null,
-    drawdownDuration: drawdownDuration || null,
-  };
-  
-  if (useMarketCap) {
-    createData.athMarketCap = athValue || null;
-  } else {
-    createData.athPrice = athValue || 0;
-  }
-
-  const updateData: any = {
-    currentPrice,
-    currentMarketCap: currentMarketCap || null,
-    currentMultiple,
-    athMultiple,
-    athAt,
-    maxDrawdown,
-    timeToAth: timeToAth || null,
-    stagnationTime: stagnationTime || null,
-    drawdownDuration: drawdownDuration || null,
-    updatedAt: new Date(),
-  };
-  
-  if (useMarketCap) {
-    updateData.athMarketCap = athValue || null;
-  } else {
-    updateData.athPrice = athValue || 0;
-  }
-
-  await prisma.signalMetric.upsert({
-    where: { signalId },
-    create: createData,
-    update: updateData
-  });
-
-  // Check Thresholds (using market cap multiple)
-  for (const k of THRESHOLDS) {
-    if (currentMultiple >= k) {
-      // Check if already hit
-      const existing = await prisma.thresholdEvent.findUnique({
-        where: {
-          signalId_multipleThreshold: {
-            signalId,
-            multipleThreshold: k
-          }
-        }
-      });
-
-      if (!existing) {
-        const hitSample = samples.find(sample => {
-          const sampleValue = useMarketCap ? (sample.marketCap || 0) : sample.price;
-          const sampleMultiple = entryValue > 0 ? sampleValue / entryValue : 0;
-          return sampleMultiple >= k;
-        });
-        const hitAt = hitSample?.sampledAt || new Date();
-        
-        // Record Event (with market cap)
-        await prisma.thresholdEvent.create({
-          data: {
-            signalId,
-            multipleThreshold: k,
-            hitPrice: hitSample?.price || currentPrice,
-            hitMarketCap: hitSample?.marketCap || currentMarketCap,
-            hitAt,
-            provider: 'helius'
-          }
-        });
-
-        // Calculate time to threshold (in milliseconds)
-        const timeToThreshold = signal.detectedAt 
-          ? hitAt.getTime() - signal.detectedAt.getTime() 
-          : null;
-
-        // Update time metrics based on threshold
-        const updateData: any = {};
-        if (k === 2 && timeToThreshold !== null) {
-          updateData.timeTo2x = timeToThreshold;
-        } else if (k === 3 && timeToThreshold !== null) {
-          updateData.timeTo3x = timeToThreshold;
-        } else if (k === 5 && timeToThreshold !== null) {
-          updateData.timeTo5x = timeToThreshold;
-        } else if (k === 10 && timeToThreshold !== null) {
-          updateData.timeTo10x = timeToThreshold;
-        }
-
-        // Also update timeToAth if this is a new ATH
-        if (currentMultiple >= athMultiple && signal.detectedAt) {
-          updateData.timeToAth = timeToThreshold;
-        }
-
-        if (Object.keys(updateData).length > 0) {
-          await prisma.signalMetric.update({
-            where: { signalId },
-            data: updateData
-          });
-        }
-
-        // Notify (using market cap multiple in message)
-        await notifyThreshold(signal, k, currentPrice, currentMarketCap, currentMultiple);
-      }
-    }
-  }
-};
-
-const notifyThreshold = async (signal: any, multiple: number, price: number, marketCap: number | null, mcapMultiple: number) => {
-  try {
-    const bot = getBotInstance();
-    const entryMc = signal.entryMarketCap ? `$${(signal.entryMarketCap / 1000).toFixed(1)}k` : 'N/A';
-    const currentMc = marketCap ? `$${(marketCap / 1000).toFixed(1)}k` : 'N/A';
-    const message = `
-🚀 *${multiple}x HIT!* 🚀
-
-*Token:* ${signal.name} (${signal.symbol})
-*Mint:* \`${signal.mint}\`
-*Entry MC:* ${entryMc}
-*Current MC:* ${currentMc} (${mcapMultiple.toFixed(1)}x)
-
-[View on Solscan](https://solscan.io/token/${signal.mint})
-`;
-
-    await bot.telegram.sendMessage(Number(signal.chatId), message, {
-      parse_mode: 'Markdown',
-      reply_markup: {
-        inline_keyboard: [
-          [{ text: '📈 Chart', callback_data: `chart:${signal.id}` }],
-        ]
-      }
-    });
   } catch (err) {
-    logger.error(`Failed to notify threshold for ${signal.id}`, err);
+    logger.error('Error in enrichSignalsWithCurrentPrice:', err);
   }
 };
 
+/**
+ * Enriches a single signal with ATH metrics using robust "progressive boundary" logic.
+ * Fetches candle data from GeckoTerminal and updates the DB.
+ * @param sig Signal to enrich
+ * @param force Force recalculation even if metrics are fresh
+ */
+export const enrichSignalMetrics = async (sig: SignalWithRelations, force: boolean = false): Promise<void> => {
+    const STALE_METRICS_MS = 2 * 60 * 1000; // 2 minutes
+    const now = Date.now();
 
+    // Check if we need to calculate
+    if (!force && sig.metrics?.updatedAt) {
+        const age = now - sig.metrics.updatedAt.getTime();
+        if (age < STALE_METRICS_MS) return; // Metrics are fresh enough
+    }
 
+    try {
+        const entryTimestamp = sig.detectedAt.getTime();
+        
+        // Determine Entry Data (Price & Supply)
+        let entryPrice = sig.entryPrice;
+        let entrySupply = sig.entrySupply;
+        let entryMc = sig.entryMarketCap || 0;
 
+        // Fallback to price samples if entry data missing on signal
+        if ((!entryPrice || !entrySupply) && sig.priceSamples?.length > 0) {
+            const firstSample = sig.priceSamples[0];
+            if (!entryPrice) entryPrice = firstSample.price;
+            if (!entryMc) entryMc = firstSample.marketCap || 0;
+            if (!entrySupply && entryPrice && entryMc) entrySupply = entryMc / entryPrice;
+        }
 
+        if (!entrySupply || entrySupply <= 0 || !entryPrice || entryPrice <= 0) {
+            // Last ditch: derive price if we have MC and Supply, or Supply if we have MC and Price
+            if (entryMc > 0 && entrySupply! > 0) entryPrice = entryMc / entrySupply!;
+            else return; // Can't calculate ATH without baseline
+        }
 
+        // TypeScript guard
+        if (!entryPrice) return; 
 
+        const entryPriceValue = entryPrice; // Valid number now
 
+        const nowTimestamp = Date.now();
+        const entryDateObj = new Date(entryTimestamp);
+        
+        // PROGRESSIVE BOUNDARY CALCULATION
+        const calculateNextBoundary = (date: Date, intervalMinutes: number): Date => {
+            const result = new Date(date);
+            const currentMinutes = result.getMinutes();
+            const remainder = currentMinutes % intervalMinutes;
+            if (remainder === 0) {
+                result.setMinutes(currentMinutes + intervalMinutes);
+            } else {
+                result.setMinutes(currentMinutes + (intervalMinutes - remainder));
+            }
+            result.setSeconds(0);
+            result.setMilliseconds(0);
+            return result;
+        };
+        
+        const next05Boundary = calculateNextBoundary(entryDateObj, 5);
+        const next05Timestamp = next05Boundary.getTime();
+        
+        const next15Boundary = calculateNextBoundary(entryDateObj, 15);
+        const next15Timestamp = next15Boundary.getTime();
+        
+        const next30Boundary = calculateNextBoundary(entryDateObj, 30);
+        const next30Timestamp = next30Boundary.getTime();
+        
+        const nextHourBoundary = new Date(entryDateObj);
+        nextHourBoundary.setMinutes(0, 0, 0);
+        nextHourBoundary.setSeconds(0, 0);
+        nextHourBoundary.setHours(nextHourBoundary.getHours() + 1);
+        const nextHourTimestamp = nextHourBoundary.getTime();
+        
+        const nextDayBoundary = new Date(entryDateObj);
+        nextDayBoundary.setHours(0, 0, 0, 0);
+        nextDayBoundary.setDate(nextDayBoundary.getDate() + 1);
+        const nextDayTimestamp = nextDayBoundary.getTime();
+        
+        const ageMs = nowTimestamp - entryTimestamp;
+        const ageMinutes = Math.ceil(ageMs / (60 * 1000));
+        const ageHours = Math.ceil(ageMs / (60 * 60 * 1000));
+        const ageDays = Math.ceil(ageMs / (24 * 60 * 60 * 1000));
 
+        let maxHigh = 0;
+        let maxAt = entryTimestamp;
 
+        // --- PHASE 1: Minute candles from entry until next :05 boundary ---
+        if (nowTimestamp > entryTimestamp && next05Timestamp > entryTimestamp) {
+            const minutesTo05 = Math.ceil((next05Timestamp - entryTimestamp) / (60 * 1000));
+            const minuteLimit = Math.min(1000, minutesTo05 + 2);
+            try {
+                const minuteCandles = await geckoTerminal.getOHLCV(sig.mint, 'minute', minuteLimit);
+                const postEntryMinutes = minuteCandles.filter((c) => c.timestamp >= entryTimestamp && c.timestamp < next05Timestamp);
+                for (const candle of postEntryMinutes) {
+                    if (candle.high > maxHigh) {
+                        maxHigh = candle.high;
+                        maxAt = candle.timestamp;
+                    }
+                }
+            } catch (err) {
+                logger.debug(`GeckoTerminal minute candles failed for ${sig.mint}: ${err}`);
+            }
+        }
 
+        // --- PHASE 2: Minute candles from :05 boundary until next :15 boundary ---
+        if (nowTimestamp > next05Timestamp && next15Timestamp > next05Timestamp) {
+            const minutesTo15 = Math.ceil((next15Timestamp - next05Timestamp) / (60 * 1000));
+            const minuteLimit = Math.min(1000, minutesTo15 + 2);
+            try {
+                const minuteCandles = await geckoTerminal.getOHLCV(sig.mint, 'minute', minuteLimit);
+                const post05Minutes = minuteCandles.filter((c) => c.timestamp >= next05Timestamp && c.timestamp < next15Timestamp);
+                for (const candle of post05Minutes) {
+                    if (candle.high > maxHigh) {
+                        maxHigh = candle.high;
+                        maxAt = candle.timestamp;
+                    }
+                }
+            } catch (err) {
+                logger.debug(`GeckoTerminal minute candles (:05 to :15) failed for ${sig.mint}: ${err}`);
+            }
+        }
+
+        // --- PHASE 3: Minute candles from :15 boundary until next hour (or :30 if closer) ---
+        if (nowTimestamp > next15Timestamp) {
+            const endBoundary = next30Timestamp < nextHourTimestamp && next30Timestamp > next15Timestamp 
+                ? next30Timestamp 
+                : nextHourTimestamp;
+            
+            if (endBoundary > next15Timestamp) {
+                const minutesToEnd = Math.ceil((endBoundary - next15Timestamp) / (60 * 1000));
+                const minuteLimit = Math.min(1000, minutesToEnd + 2);
+                try {
+                    const minuteCandles = await geckoTerminal.getOHLCV(sig.mint, 'minute', minuteLimit);
+                    const post15Minutes = minuteCandles.filter((c) => c.timestamp >= next15Timestamp && c.timestamp < endBoundary);
+                    for (const candle of post15Minutes) {
+                        if (candle.high > maxHigh) {
+                            maxHigh = candle.high;
+                            maxAt = candle.timestamp;
+                        }
+                    }
+                } catch (err) {
+                    logger.debug(`GeckoTerminal minute candles (:15 to ${endBoundary === next30Timestamp ? ':30' : 'hour'}) failed for ${sig.mint}: ${err}`);
+                }
+            }
+            
+            // If we stopped at :30, continue with minute candles from :30 to hour
+            if (endBoundary === next30Timestamp && nowTimestamp > next30Timestamp && nextHourTimestamp > next30Timestamp) {
+                const minutesToHour = Math.ceil((nextHourTimestamp - next30Timestamp) / (60 * 1000));
+                const minuteLimit = Math.min(1000, minutesToHour + 2);
+                try {
+                    const minuteCandles = await geckoTerminal.getOHLCV(sig.mint, 'minute', minuteLimit);
+                    const post30Minutes = minuteCandles.filter((c) => c.timestamp >= next30Timestamp && c.timestamp < nextHourTimestamp);
+                    for (const candle of post30Minutes) {
+                        if (candle.high > maxHigh) {
+                            maxHigh = candle.high;
+                            maxAt = candle.timestamp;
+                        }
+                    }
+                } catch (err) {
+                    logger.debug(`GeckoTerminal minute candles (:30 to hour) failed for ${sig.mint}: ${err}`);
+                }
+            }
+        }
+
+        // --- PHASE 4: Hourly candles from next hour boundary onwards ---
+        if (nowTimestamp > nextHourTimestamp && ageHours > 0) {
+            let hourlyEndTimestamp = nowTimestamp;
+            if (nowTimestamp > nextDayTimestamp) {
+                hourlyEndTimestamp = nextDayTimestamp;
+            }
+            const hoursNeeded = Math.ceil((hourlyEndTimestamp - nextHourTimestamp) / (60 * 60 * 1000));
+            const hourLimit = Math.min(1000, hoursNeeded + 1);
+            try {
+                const hourlyCandles = await geckoTerminal.getOHLCV(sig.mint, 'hour', hourLimit);
+                const hourlyInRange = hourlyCandles.filter((c) => c.timestamp >= nextHourTimestamp && c.timestamp < hourlyEndTimestamp);
+                for (const candle of hourlyInRange) {
+                    if (candle.high > maxHigh) {
+                        maxHigh = candle.high;
+                        maxAt = candle.timestamp;
+                    }
+                }
+            } catch (err) {
+                logger.debug(`GeckoTerminal hourly candles failed for ${sig.mint}: ${err}`);
+            }
+
+            // --- PHASE 5: Daily candles if trade spans days ---
+            if (nowTimestamp > nextDayTimestamp && ageDays > 0) {
+                const daysNeeded = Math.ceil((nowTimestamp - nextDayTimestamp) / (24 * 60 * 60 * 1000));
+                const dayLimit = Math.min(1000, daysNeeded + 1);
+                try {
+                    const dailyCandles = await geckoTerminal.getOHLCV(sig.mint, 'day', dayLimit);
+                    const dailyInRange = dailyCandles.filter((c) => c.timestamp >= nextDayTimestamp && c.timestamp <= nowTimestamp);
+                    for (const candle of dailyInRange) {
+                        if (candle.high > maxHigh) {
+                            maxHigh = candle.high;
+                            maxAt = candle.timestamp;
+                        }
+                    }
+                } catch (err) {
+                    logger.debug(`GeckoTerminal daily candles failed for ${sig.mint}: ${err}`);
+                }
+            }
+        } else if (ageHours === 0 && ageMinutes > 0 && nowTimestamp <= next05Timestamp) {
+            // Very recent trade (< 1 hour and hasn't reached :05 yet) - just use minute candles
+            const minuteLimit = Math.min(1000, ageMinutes + 10);
+            try {
+                const minuteCandles = await geckoTerminal.getOHLCV(sig.mint, 'minute', minuteLimit);
+                const postEntryMinutes = minuteCandles.filter((c) => c.timestamp >= entryTimestamp);
+                for (const candle of postEntryMinutes) {
+                    if (candle.high > maxHigh) {
+                        maxHigh = candle.high;
+                        maxAt = candle.timestamp;
+                    }
+                }
+            } catch (err) {
+                logger.debug(`GeckoTerminal minute candles (recent) failed for ${sig.mint}: ${err}`);
+            }
+        }
+
+        // Fallback: try all minute candles if maxHigh is still 0
+        if (maxHigh === 0) {
+            try {
+                const allMinuteCandles = await geckoTerminal.getOHLCV(sig.mint, 'minute', 1000);
+                const postEntryAllMinutes = allMinuteCandles.filter((c) => c.timestamp >= entryTimestamp);
+                for (const candle of postEntryAllMinutes) {
+                    if (candle.high > maxHigh) {
+                        maxHigh = candle.high;
+                        maxAt = candle.timestamp;
+                    }
+                }
+            } catch (err) {
+                logger.debug(`GeckoTerminal all-minute fallback failed for ${sig.mint}: ${err}`);
+            }
+        }
+
+        // Calculate ATH multiple
+        if (maxHigh > 0 && entryPriceValue > 0) {
+            const athMultiple = maxHigh / entryPriceValue;
+            
+            // Validate against current price - ATH cannot be lower than current price
+            // (Assuming we have current price from enrichSignalsWithCurrentPrice or elsewhere)
+            if (sig.metrics?.currentPrice && sig.metrics.currentPrice > maxHigh) {
+                maxHigh = sig.metrics.currentPrice;
+                // re-calculate multiple?
+            }
+
+            // Update or create metrics for this signal
+            const athMarketCap = entrySupply ? maxHigh * entrySupply : 0;
+            const timeToAth = maxAt - entryTimestamp;
+
+            if (sig.metrics) {
+                // UPDATE
+                await prisma.signalMetric.update({
+                    where: { signalId: sig.id },
+                    data: {
+                        athMultiple,
+                        athPrice: maxHigh,
+                        athMarketCap,
+                        athAt: new Date(maxAt),
+                        timeToAth,
+                        updatedAt: new Date()
+                    }
+                });
+                // Update in-memory
+                sig.metrics.athMultiple = athMultiple;
+                sig.metrics.athPrice = maxHigh;
+                sig.metrics.athMarketCap = athMarketCap;
+                sig.metrics.athAt = new Date(maxAt);
+                sig.metrics.timeToAth = timeToAth;
+                sig.metrics.updatedAt = new Date();
+            } else {
+                // CREATE
+                const newMetrics = await prisma.signalMetric.create({
+                    data: {
+                        signalId: sig.id,
+                        currentPrice: entryPriceValue, // Placeholder until current price update
+                        currentMultiple: 1.0,
+                        athMultiple,
+                        athPrice: maxHigh,
+                        athMarketCap,
+                        athAt: new Date(maxAt),
+                        timeToAth,
+                        maxDrawdown: 0
+                    }
+                });
+                sig.metrics = newMetrics;
+            }
+        }
+    } catch (err) {
+        logger.debug(`Error enriching signal ${sig.id}: ${err}`);
+    }
+};
+
+/**
+ * Batched enrichment for a list of signals.
+ * Handles parallel processing with rate limiting.
+ */
+export const enrichSignalsBatch = async (signals: SignalWithRelations[], force: boolean = false) => {
+    const BATCH_SIZE = 5;
+    const DELAY_BETWEEN_BATCHES = 500;
+    
+    // Filter out signals that don't need update unless forced
+    const now = Date.now();
+    const STALE_METRICS_MS = 2 * 60 * 1000;
+    
+    const toProcess = signals.filter(s => {
+        if (force) return true;
+        if (!s.metrics) return true;
+        return (now - s.metrics.updatedAt.getTime()) > STALE_METRICS_MS;
+    });
+
+    for (let i = 0; i < toProcess.length; i += BATCH_SIZE) {
+        const batch = toProcess.slice(i, i + BATCH_SIZE);
+        await Promise.allSettled(batch.map(s => enrichSignalMetrics(s, force)));
+        
+        if (i + BATCH_SIZE < toProcess.length) {
+            await new Promise(resolve => setTimeout(resolve, DELAY_BETWEEN_BATCHES));
+        }
+    }
+};
+
+/**
+ * Update metrics for a single signal (Wrapper for enrichSignalMetrics to satisfy existing consumers if any).
+ * @deprecated Use enrichSignalMetrics directly or enrichSignalsBatch
+ */
+export const updateSignalMetrics = async (signalId: number) => {
+    try {
+        const signal = await prisma.signal.findUnique({
+            where: { id: signalId },
+            include: { metrics: true, priceSamples: { orderBy: { sampledAt: 'asc' }, take: 1 } }
+        });
+        if (signal) {
+            await enrichSignalMetrics(signal as any, true);
+        }
+    } catch (err) {
+        logger.error(`Failed to update metrics for signal ${signalId}:`, err);
+    }
+};

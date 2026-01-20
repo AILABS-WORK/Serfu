@@ -216,7 +216,8 @@ export const handleUserStatsCommand = async (ctx: Context, userIdStr?: string, w
 
 export const handleGroupLeaderboardCommand = async (ctx: Context, window: '1D' | '3D' | '7D' | '30D' | 'ALL' | string = '30D') => {
   try {
-    const statsList = await getLeaderboard('GROUP', window, 'SCORE', 10);
+    const ownerTelegramId = ctx.from?.id ? BigInt(ctx.from.id) : undefined;
+    const statsList = await getLeaderboard('GROUP', window, 'SCORE', 10, ownerTelegramId);
     
     if (statsList.length === 0) {
         return ctx.reply(`No group data available for ${window}.`);
@@ -269,7 +270,8 @@ export const handleGroupLeaderboardCommand = async (ctx: Context, window: '1D' |
 
 export const handleUserLeaderboardCommand = async (ctx: Context, window: '1D' | '3D' | '7D' | '30D' | 'ALL' | string = '30D') => {
   try {
-    const statsList = await getLeaderboard('USER', window, 'SCORE', 10);
+    const ownerTelegramId = ctx.from?.id ? BigInt(ctx.from.id) : undefined;
+    const statsList = await getLeaderboard('USER', window, 'SCORE', 10, ownerTelegramId);
     
     if (statsList.length === 0) {
         return ctx.reply(`No user data available for ${window}.`);
@@ -319,8 +321,9 @@ export const handleUserLeaderboardCommand = async (ctx: Context, window: '1D' | 
 
 export const handleSignalLeaderboardCommand = async (ctx: Context, window: '1D' | '3D' | '7D' | '30D' | 'ALL' | string = '30D') => {
   try {
+    const ownerTelegramId = ctx.from?.id ? BigInt(ctx.from.id) : undefined;
     const { getSignalLeaderboard } = await import('../../analytics/aggregator');
-    const signals = await getSignalLeaderboard(window, 10);
+    const signals = await getSignalLeaderboard(window, 10, ownerTelegramId);
     
     if (signals.length === 0) {
         return ctx.reply(`No signal data available for ${window}.`);
@@ -2495,113 +2498,17 @@ export const handleRecentCalls = async (ctx: Context, window: string = '7D') => 
         if (uniqueSignals.length >= 10) break;
     }
 
-    // 4. ENSURE ACCURACY: Use cached metrics if recent (<2 min), otherwise calculate in real-time
-    // Balance: Use cache when fresh (fast), calculate when stale (accurate)
+    // 4. ENSURE ACCURACY: Use centralized enrichment logic
     const signals = uniqueSignals;
-    const now = Date.now();
-    const STALE_THRESHOLD_MS = 2 * 60 * 1000; // 2 minutes - if older, recalculate in real-time
     
-    // Calculate ATH in real-time for stale or missing metrics
-    const signalsToRecalc = signals.filter(s => {
-        if (!s.metrics) return true; // No metrics = needs real-time calc
-        const metricsAge = now - s.metrics.updatedAt.getTime();
-        return metricsAge > STALE_THRESHOLD_MS; // > 2 minutes old = recalculate
-    });
+    // Import centralized enrichment helpers
+    const { enrichSignalsBatch, enrichSignalsWithCurrentPrice } = await import('../../analytics/metrics');
     
-    // Calculate ATH in real-time for stale signals (ensures accuracy)
-    if (signalsToRecalc.length > 0) {
-        const { geckoTerminal } = await import('../../providers/geckoTerminal');
-        await Promise.allSettled(signalsToRecalc.map(async (sig) => {
-            try {
-                const entryDate = sig.detectedAt;
-                const entrySupply = sig.entrySupply || (sig.priceSamples?.[0]?.marketCap && sig.entryPrice ? sig.priceSamples[0].marketCap / sig.entryPrice : null);
-                const entryPrice = sig.entryPrice || sig.priceSamples?.[0]?.price || null;
-                
-                if (!entrySupply || entrySupply <= 0 || !entryDate || !entryPrice) return;
-                
-                const entryTimestamp = entryDate.getTime();
-                const entryMc = sig.entryMarketCap || sig.priceSamples?.[0]?.marketCap || 0;
-                const entryPriceValue = entryPrice || (entryMc > 0 && entrySupply > 0 ? entryMc / entrySupply : 0);
-                
-                if (entryPriceValue <= 0) return;
-                
-                // Use progressive timeframe strategy (same as live signals)
-                const ageMs = now - entryTimestamp;
-                const ageHours = Math.ceil(ageMs / (60 * 60 * 1000));
-                const ageDays = Math.ceil(ageMs / (24 * 60 * 60 * 1000));
-                
-                let maxHigh = 0;
-                
-                try {
-                    // Try minute candles first for recent signals
-                    if (ageHours <= 16) {
-                        const minuteCandles = await geckoTerminal.getOHLCV(sig.mint, 'minute', 1000);
-                        const postEntry = minuteCandles.filter(c => c.timestamp >= entryTimestamp);
-                        for (const candle of postEntry) {
-                            if (candle.high > maxHigh) maxHigh = candle.high;
-                        }
-                    }
-                    
-                    // Try hourly if minute didn't work or for older signals
-                    if (maxHigh === 0 || ageHours > 16) {
-                        const hourlyCandles = await geckoTerminal.getOHLCV(sig.mint, 'hour', 1000);
-                        const postEntry = hourlyCandles.filter(c => c.timestamp >= entryTimestamp);
-                        for (const candle of postEntry) {
-                            if (candle.high > maxHigh) maxHigh = candle.high;
-                        }
-                    }
-                    
-                    // Try daily for very old signals
-                    if (maxHigh === 0 || ageDays > 30) {
-                        const dailyCandles = await geckoTerminal.getOHLCV(sig.mint, 'day', 1000);
-                        const postEntry = dailyCandles.filter(c => c.timestamp >= entryTimestamp);
-                        for (const candle of postEntry) {
-                            if (candle.high > maxHigh) maxHigh = candle.high;
-                        }
-                    }
-                    
-                    // Ensure ATH is at least entry price
-                    if (maxHigh < entryPriceValue) maxHigh = entryPriceValue;
-                    
-                    // Update signal's metrics in-memory for display (don't wait for DB update)
-                    if (!sig.metrics) {
-                        sig.metrics = {} as any;
-                    }
-                    // TypeScript assertion: we just checked/created metrics above
-                    const metrics = sig.metrics!;
-                    metrics.athMultiple = maxHigh / entryPriceValue;
-                    metrics.athMarketCap = maxHigh * entrySupply;
-                    metrics.athPrice = maxHigh;
-                    
-                    // Update DB async (non-blocking)
-                    prisma.signalMetric.upsert({
-                        where: { signalId: sig.id },
-                        create: {
-                            signalId: sig.id,
-                            currentPrice: sig.entryPrice || 0,
-                            currentMultiple: 1,
-                            athPrice: maxHigh,
-                            athMultiple: maxHigh / entryPriceValue,
-                            athMarketCap: maxHigh * entrySupply,
-                            athAt: new Date(),
-                            updatedAt: new Date()
-                        },
-                        update: {
-                            athPrice: maxHigh,
-                            athMultiple: maxHigh / entryPriceValue,
-                            athMarketCap: maxHigh * entrySupply,
-                            updatedAt: new Date()
-                        }
-                    }).catch(() => {});
-                    
-    } catch (err) {
-                    logger.debug(`Real-time ATH calc failed for ${sig.mint}:`, err);
-    }
-            } catch (err) {
-                logger.debug(`Error recalculating ATH for ${sig.mint}:`, err);
-            }
-        }));
-    }
+    // Batch enrich ATH metrics for stale/missing signals
+    await enrichSignalsBatch(signals as any);
+    
+    // Enrich with current price for accurate PnL display
+    await enrichSignalsWithCurrentPrice(signals as any);
     
     // Trigger async update for all signals to keep cache fresh (non-blocking)
     updateHistoricalMetrics(uniqueSignals.map(s => s.id)).catch(err => {
@@ -2611,8 +2518,6 @@ export const handleRecentCalls = async (ctx: Context, window: string = '7D') => 
     const windowLabel = ['1D','3D','7D','30D','ALL'].includes(String(effectiveWindow)) ? String(effectiveWindow) : `Custom ${effectiveWindow}`;
     let message = UIHelper.header(`RECENT ACTIVITY LOG (${windowLabel})`, '📜');
 
-    const { getMultipleTokenPrices } = await import('../../providers/jupiter');
-    const prices = await getMultipleTokenPrices(signals.map(s => s.mint));
     const metaMap = new Map<string, any>();
     await Promise.all(signals.map(async (s) => {
         try {
@@ -2622,22 +2527,22 @@ export const handleRecentCalls = async (ctx: Context, window: string = '7D') => 
     }));
 
     for (const sig of signals) {
-        const currentPrice = prices[sig.mint] || 0;
+        // Use enriched metrics directly
+        const currentPrice = sig.metrics?.currentPrice || 0;
         const entryMc = sig.entryMarketCap || sig.priceSamples?.[0]?.marketCap || 0;
         const meta = metaMap.get(sig.mint);
-        const supply = sig.entrySupply || meta?.supply || null;
-        const currentMc = supply && currentPrice ? currentPrice * supply : (sig.metrics?.currentMarketCap || meta?.marketCap || 0);
+        const currentMc = sig.metrics?.currentMarketCap || (meta?.marketCap || 0);
+        
         const entryStr = entryMc ? UIHelper.formatMarketCap(entryMc) : 'N/A';
         const currStr = currentMc ? UIHelper.formatMarketCap(currentMc) : 'N/A';
         
-        const pnl = entryMc > 0 && currentMc > 0 ? ((currentMc - entryMc) / entryMc) * 100 : 0;
+        const pnl = sig.metrics?.currentMultiple ? (sig.metrics.currentMultiple - 1) * 100 : 0;
         const pnlStr = UIHelper.formatPercent(pnl);
         const icon = UIHelper.getStatusIcon(pnl);
         
         const ath = sig.metrics?.athMultiple || 0;
         const drawdown = sig.metrics?.maxDrawdown ? sig.metrics.maxDrawdown * 100 : 0;
-        const athSupply = sig.entrySupply || (sig.entryMarketCap && sig.entryPrice ? sig.entryMarketCap / sig.entryPrice : null);
-        const athMc = sig.metrics?.athMarketCap || (sig.metrics?.athPrice && athSupply ? sig.metrics.athPrice * athSupply : 0);
+        const athMc = sig.metrics?.athMarketCap || 0;
         const timeTo2x = UIHelper.formatDurationMinutes(sig.metrics?.timeTo2x ? sig.metrics.timeTo2x / (1000 * 60) : null);
         const timeTo5x = UIHelper.formatDurationMinutes(sig.metrics?.timeTo5x ? sig.metrics.timeTo5x / (1000 * 60) : null);
         const timeTo10x = UIHelper.formatDurationMinutes(sig.metrics?.timeTo10x ? sig.metrics.timeTo10x / (1000 * 60) : null);

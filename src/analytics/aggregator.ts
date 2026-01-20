@@ -477,17 +477,17 @@ export const getGroupStats = async (groupId: number, timeframe: TimeFrame): Prom
     }
   });
 
-  // Filter out signals with very stale metrics (older than 10 minutes) for aggregate stats
-  // But keep them for calculation - they'll use price samples or real-time calc
-  const validSignals = signals.filter(s => {
-    if (!s.metrics) return true; // No metrics = keep (will calculate from samples)
-    const metricsAge = now - s.metrics.updatedAt.getTime();
-    // For aggregate stats, only exclude if metrics are very stale (>10 min) AND we can't recalculate
-    // Actually, let's keep all signals - calculateStats can handle missing metrics
-    return true;
-  });
+  // Enrich signals using centralized logic
+  const { enrichSignalsBatch, enrichSignalsWithCurrentPrice } = await import('./metrics');
+  
+  // Batch enrich ATH metrics for stale/missing signals
+  await enrichSignalsBatch(signals as any);
+  
+  // Enrich with current price for accurate Paper Hands / Diamond Hands logic
+  await enrichSignalsWithCurrentPrice(signals as any);
 
-  const stats = calculateStats(validSignals);
+  // Calculate stats using fully enriched signals
+  const stats = calculateStats(signals);
   stats.id = group.id;
   stats.name = group.name || `Group ${group.chatId}`;
   
@@ -508,6 +508,15 @@ export const getUserStats = async (userId: number, timeframe: TimeFrame): Promis
     include: { metrics: true, priceSamples: { orderBy: { sampledAt: 'asc' }, take: 1 } }
   });
 
+  // Enrich signals using centralized logic
+  const { enrichSignalsBatch, enrichSignalsWithCurrentPrice } = await import('./metrics');
+  
+  // Batch enrich ATH metrics for stale/missing signals
+  await enrichSignalsBatch(signals as any);
+  
+  // Enrich with current price for accurate Paper Hands / Diamond Hands logic
+  await enrichSignalsWithCurrentPrice(signals as any);
+
   const stats = calculateStats(signals);
   stats.id = user.id;
   stats.name = user.username || user.firstName || 'Unknown User';
@@ -519,15 +528,41 @@ export const getLeaderboard = async (
   type: 'GROUP' | 'USER', 
   timeframe: TimeFrame, 
   sortBy: 'PNL' | 'WINRATE' | 'SCORE' = 'SCORE',
-  limit = 10
+  limit = 10,
+  ownerTelegramId?: bigint
 ): Promise<EntityStats[]> => {
   const since = getDateFilter(timeframe);
   
+  let scopeFilter: any = {};
+  if (ownerTelegramId) {
+    const userGroups = await prisma.group.findMany({
+        where: { owner: { userId: ownerTelegramId }, isActive: true },
+        select: { id: true, chatId: true, type: true }
+    });
+    const ownedChatIds = userGroups.map(g => g.chatId);
+    const destinationGroupIds = userGroups.filter(g => g.type === 'destination').map(g => g.id);
+    let forwardedSignalIds: number[] = [];
+    if (destinationGroupIds.length > 0) {
+        const forwarded = await prisma.forwardedSignal.findMany({
+            where: { destGroupId: { in: destinationGroupIds.map(id => BigInt(id)) } },
+            select: { signalId: true }
+        });
+        forwardedSignalIds = forwarded.map(f => f.signalId);
+    }
+    scopeFilter = {
+        OR: [
+            { chatId: { in: ownedChatIds } },
+            { id: { in: forwardedSignalIds } }
+        ]
+    };
+  }
+
   // 1. Fetch all signals in window (include those without metrics - will calculate from samples)
   // OPTIMIZED: Prefer signals with recent metrics, but include all for accuracy
   const signals = await prisma.signal.findMany({
     where: {
-      detectedAt: { gte: since }
+      detectedAt: { gte: since },
+      ...scopeFilter
     },
     include: { metrics: true, group: true, user: true, priceSamples: { orderBy: { sampledAt: 'asc' }, take: 1 } }
   });
@@ -543,6 +578,13 @@ export const getLeaderboard = async (
   const entityMap = new Map<string, typeof validSignals>();
   const idMap = new Map<string, number>(); // Map Key -> Representative ID
   const nameMap = new Map<string, string>();
+
+  // Use batch enrichment for all valid signals to ensure accurate scores
+  const { enrichSignalsBatch, enrichSignalsWithCurrentPrice } = await import('./metrics');
+  
+  // Need to cast to any to match SignalWithRelations type which requires metrics (we filtered for it or will calc)
+  await enrichSignalsBatch(validSignals as any);
+  await enrichSignalsWithCurrentPrice(validSignals as any);
 
   for (const s of validSignals) {
     let key: string;
@@ -591,7 +633,8 @@ export const getLeaderboard = async (
 
 export const getSignalLeaderboard = async (
   timeframe: TimeFrame, 
-  limit = 10
+  limit = 10,
+  ownerTelegramId?: bigint
 ): Promise<Array<{
   id: number,
   mint: string,
@@ -606,10 +649,35 @@ export const getSignalLeaderboard = async (
 }>> => {
   const since = getDateFilter(timeframe);
   
+  let scopeFilter: any = {};
+  if (ownerTelegramId) {
+    const userGroups = await prisma.group.findMany({
+        where: { owner: { userId: ownerTelegramId }, isActive: true },
+        select: { id: true, chatId: true, type: true }
+    });
+    const ownedChatIds = userGroups.map(g => g.chatId);
+    const destinationGroupIds = userGroups.filter(g => g.type === 'destination').map(g => g.id);
+    let forwardedSignalIds: number[] = [];
+    if (destinationGroupIds.length > 0) {
+        const forwarded = await prisma.forwardedSignal.findMany({
+            where: { destGroupId: { in: destinationGroupIds.map(id => BigInt(id)) } },
+            select: { signalId: true }
+        });
+        forwardedSignalIds = forwarded.map(f => f.signalId);
+    }
+    scopeFilter = {
+        OR: [
+            { chatId: { in: ownedChatIds } },
+            { id: { in: forwardedSignalIds } }
+        ]
+    };
+  }
+
   // OPTIMIZED: Include signals with metrics (preferred) or with price samples (can calculate)
   const signals = await prisma.signal.findMany({
     where: {
       detectedAt: { gte: since },
+      ...scopeFilter,
       OR: [
         { metrics: { isNot: null } },
         { priceSamples: { some: {} } } // Has at least one price sample
@@ -635,41 +703,11 @@ export const getSignalLeaderboard = async (
     return metricsAge > 5 * 60 * 1000; // > 5 minutes old = recalculate
   });
   
-  // Enrich with real-time ATH calculations
-  if (signalsToEnrich.length > 0) {
-    const { geckoTerminal } = await import('../providers/geckoTerminal');
-    await Promise.allSettled(signalsToEnrich.map(async (sig) => {
-      try {
-        if (!sig.detectedAt || !sig.entrySupply || !sig.entryPrice) return;
-        
-        const entryTimestamp = sig.detectedAt.getTime();
-        const ageHours = Math.ceil((now - entryTimestamp) / (60 * 60 * 1000));
-        
-        let maxHigh = sig.entryPrice;
-        
-        // Quick ATH calculation using appropriate timeframe
-        const ohlcvTimeframe = ageHours <= 16 ? 'minute' : ageHours <= 720 ? 'hour' : 'day';
-        const candles = await geckoTerminal.getOHLCV(sig.mint, ohlcvTimeframe, 1000);
-        const postEntry = candles.filter(c => c.timestamp >= entryTimestamp);
-        
-        for (const candle of postEntry) {
-          if (candle.high > maxHigh) maxHigh = candle.high;
-        }
-        
-        // Update in-memory for sorting
-        if (!sig.metrics) {
-          sig.metrics = {} as any;
-        }
-        // TypeScript assertion: we just checked/created metrics above
-        const metrics = sig.metrics!;
-        metrics.athMultiple = maxHigh / sig.entryPrice;
-        metrics.athMarketCap = maxHigh * sig.entrySupply;
-        metrics.athPrice = maxHigh;
-      } catch (err) {
-        logger.debug(`ATH enrichment failed for ${sig.mint}:`, err);
-      }
-    }));
-  }
+  // Enrich with real-time ATH calculations using centralized logic
+  const { enrichSignalMetrics, enrichSignalsWithCurrentPrice } = await import('./metrics');
+  
+  // Use batch enrichment for ATH
+  await import('./metrics').then(m => m.enrichSignalsBatch(signalsToEnrich as any));
   
   // Re-sort by ATH after enrichment
   signals.sort((a, b) => {
@@ -681,18 +719,14 @@ export const getSignalLeaderboard = async (
   // Take top limit after sorting
   const topSignals = signals.slice(0, limit);
 
-  // Get current market caps for all signals
-  const { getMultipleTokenPrices } = await import('../providers/jupiter');
-  const mints = topSignals.map(s => s.mint);
-  const prices = await getMultipleTokenPrices(mints);
+  // Get current market caps for all signals (using centralized helper)
+  await enrichSignalsWithCurrentPrice(topSignals as any);
 
   return topSignals.map(s => {
-    const currentPrice = prices[s.mint] || null;
-    const supply = s.entrySupply;
-    const currentMc =
-      s.metrics?.currentMarketCap ??
-      (s.entryMarketCap && s.metrics?.currentMultiple ? s.entryMarketCap * s.metrics.currentMultiple : null) ??
-      (currentPrice && supply ? currentPrice * supply : null);
+    // Use enriched metrics
+    const currentMc = s.metrics?.currentMarketCap || null;
+    const currentPrice = s.metrics?.currentPrice || null;
+    const athMarketCap = s.metrics?.athMarketCap || null;
     
     // Calculate time to ATH in minutes (with validation to prevent negative values)
     let timeToAth: number | null = null;
@@ -711,10 +745,6 @@ export const getSignalLeaderboard = async (
         logger.warn(`Negative timeToAth for signal ${s.id}: athAt=${s.metrics.athAt}, detectedAt=${s.detectedAt}`);
       }
     }
-    
-    const athMarketCap =
-      s.metrics?.athMarketCap ??
-      (s.entryMarketCap && s.metrics?.athMultiple ? s.entryMarketCap * s.metrics.athMultiple : null);
     
     // Ensure entryMarketCap has fallback from first priceSample
     const entryMc = s.entryMarketCap || s.priceSamples?.[0]?.marketCap || null;
@@ -864,285 +894,11 @@ export const getDistributionStats = async (
     }
   });
 
-  // Real-time ATH calculation for signals without metrics or with stale metrics (>2 min old)
-  const STALE_METRICS_MS = 2 * 60 * 1000; // 2 minutes
-  const now = Date.now();
-  const signalsNeedingAth = signals.filter(s => {
-    if (!s.metrics) return true; // No metrics at all
-    if (!s.metrics.updatedAt) return true; // No update timestamp
-    const age = now - s.metrics.updatedAt.getTime();
-    return age > STALE_METRICS_MS; // Stale metrics
-  });
-
-  // Calculate ATH for signals that need it (in parallel batches to avoid rate limits)
-  const BATCH_SIZE = 5;
-  const DELAY_BETWEEN_BATCHES = 500;
+  // Enrich signals with current price and ATH metrics using centralized logic
+  const { enrichSignalMetrics } = await import('./metrics');
   
-  for (let i = 0; i < signalsNeedingAth.length; i += BATCH_SIZE) {
-    const batch = signalsNeedingAth.slice(i, i + BATCH_SIZE);
-    await Promise.allSettled(batch.map(async (s) => {
-      try {
-        const entryTimestamp = s.detectedAt.getTime();
-        const entrySupply = s.entrySupply || (s.priceSamples?.[0]?.marketCap && s.entryPrice ? s.priceSamples[0].marketCap / s.entryPrice : null);
-        const entryPrice = s.entryPrice || s.priceSamples?.[0]?.price || null;
-        const entryMc = s.entryMarketCap || s.priceSamples?.[0]?.marketCap || 0;
-        
-        if (!entrySupply || entrySupply <= 0 || !entryPrice || entryPrice <= 0) {
-          return; // Can't calculate ATH without entry data
-        }
-
-        const entryPriceValue = entryPrice || (entryMc > 0 && entrySupply > 0 ? entryMc / entrySupply : 0);
-        if (entryPriceValue <= 0) return;
-
-        const nowTimestamp = Date.now();
-        const entryDateObj = new Date(entryTimestamp);
-        
-        // PROGRESSIVE BOUNDARY CALCULATION: Same as live signals
-        const calculateNextBoundary = (date: Date, intervalMinutes: number): Date => {
-            const result = new Date(date);
-            const currentMinutes = result.getMinutes();
-            const remainder = currentMinutes % intervalMinutes;
-            if (remainder === 0) {
-                result.setMinutes(currentMinutes + intervalMinutes);
-            } else {
-                result.setMinutes(currentMinutes + (intervalMinutes - remainder));
-            }
-            result.setSeconds(0);
-            result.setMilliseconds(0);
-            return result;
-        };
-        
-        const next05Boundary = calculateNextBoundary(entryDateObj, 5);
-        const next05Timestamp = next05Boundary.getTime();
-        
-        const next15Boundary = calculateNextBoundary(entryDateObj, 15);
-        const next15Timestamp = next15Boundary.getTime();
-        
-        const next30Boundary = calculateNextBoundary(entryDateObj, 30);
-        const next30Timestamp = next30Boundary.getTime();
-        
-        const nextHourBoundary = new Date(entryDateObj);
-        nextHourBoundary.setMinutes(0, 0, 0);
-        nextHourBoundary.setSeconds(0, 0);
-        nextHourBoundary.setHours(nextHourBoundary.getHours() + 1);
-        const nextHourTimestamp = nextHourBoundary.getTime();
-        
-        const nextDayBoundary = new Date(entryDateObj);
-        nextDayBoundary.setHours(0, 0, 0, 0);
-        nextDayBoundary.setDate(nextDayBoundary.getDate() + 1);
-        const nextDayTimestamp = nextDayBoundary.getTime();
-        
-        const ageMs = nowTimestamp - entryTimestamp;
-        const ageMinutes = Math.ceil(ageMs / (60 * 1000));
-        const ageHours = Math.ceil(ageMs / (60 * 60 * 1000));
-        const ageDays = Math.ceil(ageMs / (24 * 60 * 60 * 1000));
-
-        let maxHigh = 0;
-        let maxAt = entryTimestamp;
-
-        // Progressive timeframe strategy (same as live signals)
-        try {
-          // PHASE 1: Minute candles from entry until next :05 boundary
-          if (nowTimestamp > entryTimestamp && next05Timestamp > entryTimestamp) {
-            const minutesTo05 = Math.ceil((next05Timestamp - entryTimestamp) / (60 * 1000));
-            const minuteLimit = Math.min(1000, minutesTo05 + 2);
-            try {
-              const minuteCandles = await geckoTerminal.getOHLCV(s.mint, 'minute', minuteLimit);
-              const postEntryMinutes = minuteCandles.filter((c) => c.timestamp >= entryTimestamp && c.timestamp < next05Timestamp);
-              for (const candle of postEntryMinutes) {
-                if (candle.high > maxHigh) {
-                  maxHigh = candle.high;
-                  maxAt = candle.timestamp;
-                }
-              }
-            } catch (err) {
-              logger.debug(`GeckoTerminal minute candles failed for ${s.mint} in distributions: ${err}`);
-            }
-          }
-
-          // PHASE 2: Minute candles from :05 boundary until next :15 boundary
-          if (nowTimestamp > next05Timestamp && next15Timestamp > next05Timestamp) {
-            const minutesTo15 = Math.ceil((next15Timestamp - next05Timestamp) / (60 * 1000));
-            const minuteLimit = Math.min(1000, minutesTo15 + 2);
-            try {
-              const minuteCandles = await geckoTerminal.getOHLCV(s.mint, 'minute', minuteLimit);
-              const post05Minutes = minuteCandles.filter((c) => c.timestamp >= next05Timestamp && c.timestamp < next15Timestamp);
-              for (const candle of post05Minutes) {
-                if (candle.high > maxHigh) {
-                  maxHigh = candle.high;
-                  maxAt = candle.timestamp;
-                }
-              }
-            } catch (err) {
-              logger.debug(`GeckoTerminal minute candles (:05 to :15) failed for ${s.mint} in distributions: ${err}`);
-            }
-          }
-
-          // PHASE 3: Minute candles from :15 boundary until next hour (or :30 if closer)
-          if (nowTimestamp > next15Timestamp) {
-            const endBoundary = next30Timestamp < nextHourTimestamp && next30Timestamp > next15Timestamp 
-              ? next30Timestamp 
-              : nextHourTimestamp;
-            
-            if (endBoundary > next15Timestamp) {
-              const minutesToEnd = Math.ceil((endBoundary - next15Timestamp) / (60 * 1000));
-              const minuteLimit = Math.min(1000, minutesToEnd + 2);
-              try {
-                const minuteCandles = await geckoTerminal.getOHLCV(s.mint, 'minute', minuteLimit);
-                const post15Minutes = minuteCandles.filter((c) => c.timestamp >= next15Timestamp && c.timestamp < endBoundary);
-                for (const candle of post15Minutes) {
-                  if (candle.high > maxHigh) {
-                    maxHigh = candle.high;
-                    maxAt = candle.timestamp;
-                  }
-                }
-              } catch (err) {
-                logger.debug(`GeckoTerminal minute candles (:15 to ${endBoundary === next30Timestamp ? ':30' : 'hour'}) failed for ${s.mint} in distributions: ${err}`);
-              }
-            }
-            
-            // If we stopped at :30, continue with minute candles from :30 to hour
-            if (endBoundary === next30Timestamp && nowTimestamp > next30Timestamp && nextHourTimestamp > next30Timestamp) {
-              const minutesToHour = Math.ceil((nextHourTimestamp - next30Timestamp) / (60 * 1000));
-              const minuteLimit = Math.min(1000, minutesToHour + 2);
-              try {
-                const minuteCandles = await geckoTerminal.getOHLCV(s.mint, 'minute', minuteLimit);
-                const post30Minutes = minuteCandles.filter((c) => c.timestamp >= next30Timestamp && c.timestamp < nextHourTimestamp);
-                for (const candle of post30Minutes) {
-                  if (candle.high > maxHigh) {
-                    maxHigh = candle.high;
-                    maxAt = candle.timestamp;
-                  }
-                }
-              } catch (err) {
-                logger.debug(`GeckoTerminal minute candles (:30 to hour) failed for ${s.mint} in distributions: ${err}`);
-              }
-            }
-          }
-
-          // PHASE 4: Hourly candles from next hour boundary onwards
-          if (nowTimestamp > nextHourTimestamp && ageHours > 0) {
-            let hourlyEndTimestamp = nowTimestamp;
-            if (nowTimestamp > nextDayTimestamp) {
-              hourlyEndTimestamp = nextDayTimestamp;
-            }
-            const hoursNeeded = Math.ceil((hourlyEndTimestamp - nextHourTimestamp) / (60 * 60 * 1000));
-            const hourLimit = Math.min(1000, hoursNeeded + 1);
-            try {
-              const hourlyCandles = await geckoTerminal.getOHLCV(s.mint, 'hour', hourLimit);
-              // CRITICAL: Only include candles that start AT OR AFTER hour boundary
-              const hourlyInRange = hourlyCandles.filter((c) => c.timestamp >= nextHourTimestamp && c.timestamp < hourlyEndTimestamp);
-              for (const candle of hourlyInRange) {
-                if (candle.high > maxHigh) {
-                  maxHigh = candle.high;
-                  maxAt = candle.timestamp;
-                }
-              }
-            } catch (err) {
-              logger.debug(`GeckoTerminal hourly candles failed for ${s.mint} in distributions: ${err}`);
-            }
-
-            // PHASE 5: Daily candles if trade spans days
-            if (nowTimestamp > nextDayTimestamp && ageDays > 0) {
-              const daysNeeded = Math.ceil((nowTimestamp - nextDayTimestamp) / (24 * 60 * 60 * 1000));
-              const dayLimit = Math.min(1000, daysNeeded + 1);
-              try {
-                const dailyCandles = await geckoTerminal.getOHLCV(s.mint, 'day', dayLimit);
-                // CRITICAL: Only include candles that start AT OR AFTER day boundary
-                const dailyInRange = dailyCandles.filter((c) => c.timestamp >= nextDayTimestamp && c.timestamp <= nowTimestamp);
-                for (const candle of dailyInRange) {
-                  if (candle.high > maxHigh) {
-                    maxHigh = candle.high;
-                    maxAt = candle.timestamp;
-                  }
-                }
-              } catch (err) {
-                logger.debug(`GeckoTerminal daily candles failed for ${s.mint} in distributions: ${err}`);
-              }
-            }
-          } else if (ageHours === 0 && ageMinutes > 0 && nowTimestamp <= next05Timestamp) {
-            // Very recent trade (< 1 hour and hasn't reached :05 yet) - just use minute candles
-            const minuteLimit = Math.min(1000, ageMinutes + 10);
-            try {
-              const minuteCandles = await geckoTerminal.getOHLCV(s.mint, 'minute', minuteLimit);
-              const postEntryMinutes = minuteCandles.filter((c) => c.timestamp >= entryTimestamp);
-              for (const candle of postEntryMinutes) {
-                if (candle.high > maxHigh) {
-                  maxHigh = candle.high;
-                  maxAt = candle.timestamp;
-                }
-              }
-            } catch (err) {
-              logger.debug(`GeckoTerminal minute candles (recent) failed for ${s.mint} in distributions: ${err}`);
-            }
-          }
-
-          // Fallback: try all minute candles if maxHigh is still 0
-          if (maxHigh === 0) {
-            try {
-              const allMinuteCandles = await geckoTerminal.getOHLCV(s.mint, 'minute', 1000);
-              const postEntryAllMinutes = allMinuteCandles.filter((c) => c.timestamp >= entryTimestamp);
-              for (const candle of postEntryAllMinutes) {
-                if (candle.high > maxHigh) {
-                  maxHigh = candle.high;
-                  maxAt = candle.timestamp;
-                }
-              }
-            } catch (err) {
-              logger.debug(`GeckoTerminal all-minute fallback failed for ${s.mint} in distributions: ${err}`);
-            }
-          }
-
-          // Calculate ATH multiple
-          if (maxHigh > 0 && entryPriceValue > 0) {
-            const athMultiple = maxHigh / entryPriceValue;
-            // Update or create metrics for this signal
-            if (s.metrics) {
-              await prisma.signalMetric.update({
-                where: { signalId: s.id },
-                data: {
-                  athMultiple,
-                  athPrice: maxHigh,
-                  athMarketCap: maxHigh * entrySupply,
-                  athAt: new Date(maxAt),
-                  updatedAt: new Date()
-                }
-              });
-              s.metrics.athMultiple = athMultiple;
-            } else {
-              // Create new metrics - need to include all required fields
-              // Calculate current price and multiple from entry data
-              const currentPriceValue = entryPriceValue; // Use entry price as initial current price
-              const currentMultipleValue = 1.0; // Start at 1x (entry multiple)
-              
-              const newMetrics = await prisma.signalMetric.create({
-                data: {
-                  signalId: s.id,
-                  currentPrice: currentPriceValue,
-                  currentMultiple: currentMultipleValue,
-                  athMultiple,
-                  athPrice: maxHigh,
-                  athMarketCap: maxHigh * entrySupply,
-                  athAt: new Date(maxAt),
-                  maxDrawdown: 0 // Default to 0 (no drawdown yet)
-                }
-              });
-              s.metrics = newMetrics;
-            }
-          }
-        } catch (err) {
-          logger.debug(`ATH calculation failed for signal ${s.id} in distributions: ${err}`);
-        }
-      } catch (err) {
-        logger.debug(`Error calculating ATH for signal ${s.id} in distributions: ${err}`);
-      }
-    }));
-
-    // Delay between batches to avoid rate limits
-    if (i + BATCH_SIZE < signalsNeedingAth.length) {
-      await new Promise(resolve => setTimeout(resolve, DELAY_BETWEEN_BATCHES));
-    }
-  }
+  // Use batch enrichment for ATH metrics
+  await import('./metrics').then(m => m.enrichSignalsBatch(signals as any));
 
   // 3. Process Distributions - Initialize all stats
   const stats: DistributionStats = {
@@ -1275,13 +1031,14 @@ export const getDistributionStats = async (
     }
 
     // Time of Day Analysis (UTC)
-    const hour = s.detectedAt.getUTCHours();
+    const date = s.detectedAt;
+    const hour = date.getUTCHours();
     stats.timeOfDay[hour].count++;
     if (isWin) stats.timeOfDay[hour].winRate++;
     stats.timeOfDay[hour].avgMult += mult;
 
     // Day of Week Analysis
-    const dayIndex = s.detectedAt.getUTCDay(); // 0=Sun, 1=Mon, etc.
+    const dayIndex = date.getUTCDay(); // 0=Sun, 1=Mon, etc.
     const dayMap = [6, 0, 1, 2, 3, 4, 5]; // Map to our array (Mon=0)
     const mappedDay = dayMap[dayIndex];
     stats.dayOfWeek[mappedDay].count++;
@@ -1335,9 +1092,12 @@ export const getDistributionStats = async (
     }
 
     // Rug Pull Ratio
+    // Rug = ATH < 0.5x (loss > 50%) OR Max Drawdown > 90%
+    // Enriched metrics ensure athMultiple and maxDrawdown are accurate
     if (isRug) stats.rugPullRatio++;
 
     // Moonshot Probability - comprehensive buckets
+    // Enriched metrics ensure athMultiple is accurate (using minute/hour/day candles)
     if (mult > 2) stats.moonshotCounts.gt2x++;
     if (mult > 3) stats.moonshotCounts.gt3x++;
     if (mult > 4) stats.moonshotCounts.gt4x++;

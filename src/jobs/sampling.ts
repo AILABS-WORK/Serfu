@@ -96,7 +96,8 @@ export const runSamplingCycle = async () => {
         }
         
         // Update Metrics & Check Thresholds (use market cap when available)
-        await updateSignalMetrics(signal.id, marketCap ?? null, quote.price);
+        // updateSignalMetrics only takes ID now, enrichment handles fetching/calc
+        await updateSignalMetrics(signal.id);
         
       } catch (error) {
         logger.error(`Failed to sample ${signal.mint}:`, error);
