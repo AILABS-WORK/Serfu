@@ -944,6 +944,20 @@ export const handleLiveSignals = async (ctx: BotContext) => {
         meta?: any; // TokenMeta
     }>();
 
+    // OPTIMIZATION: Enrich signals with ATH metrics before aggregation
+    // This ensures ATH is accurate (fetching historical candles if needed)
+    // We do this BEFORE Jupiter price fetch to start the async work early if possible, 
+    // but enrichSignalsBatch is blocking. 
+    // To avoid blocking the UI too long, we only update STALE metrics.
+    try {
+        const { enrichSignalsBatch } = await import('../../analytics/metrics');
+        // Only enrich signals that are actively being displayed or sorted
+        // Filter out very old signals to speed up? No, use the function's internal stale check.
+        await enrichSignalsBatch(signals as any); 
+    } catch (err) {
+        logger.error('Failed to batch enrich signals in Live Signals:', err);
+    }
+
     for (const sig of signals) {
         if (!aggregated.has(sig.mint)) {
             const caller = sig.user?.username ? `@${sig.user.username}` : (sig.group?.name || 'Unknown');
@@ -1118,9 +1132,13 @@ export const handleLiveSignals = async (ctx: BotContext) => {
              const currentMultiple = entryMc > 0 && currentMc > 0 ? currentMc / entryMc : (sig?.metrics?.currentMultiple || 0);
              (row as any).currentMultiple = currentMultiple;
              
-             // FIX: Use ATH multiple from metrics (real ATH from OHLCV), not current multiple
-             // ATH is the maximum MC from entry to now, calculated by background jobs
-             const athMult = sig?.metrics?.athMultiple || 0;
+             // FIX: Use ATH multiple from metrics (real ATH from OHLCV)
+             // CRITICAL: Ensure ATH is never less than Current Multiple (ATH >= Current)
+             let athMult = sig?.metrics?.athMultiple || 0;
+             if (currentMultiple > athMult) {
+                athMult = currentMultiple;
+                // Optionally trigger background update if discrepancy found?
+             }
              (row as any).athMultiple = athMult;
              
              // Velocity calculation removed to prevent timeout
