@@ -1203,7 +1203,11 @@ export const handleLiveSignals = async (ctx: BotContext) => {
     // CRITICAL FIX: ATH calculation is moved AFTER metadata fetch and re-sorting
     // This ensures ATH is calculated for the final top 10 that will be displayed
     // It will be calculated after we fetch metadata and update PnL (see below)
-        const metricsUpdated = sig.metrics?.updatedAt;
+    
+    // FIX: When sorting by PnL, ensure ALL filtered candidates have accurate PnL before selecting top 10
+    // The issue: Some signals may have missing/inaccurate MC initially, causing wrong sort order
+    // Solution: Fetch metadata for top N candidates (not just 10) to ensure accurate PnL for sorting
+    if (sortBy === 'pnl') {
         const metricsAge = metricsUpdated ? Date.now() - metricsUpdated.getTime() : Infinity;
         let athMultiple = 0;
         let athMarketCap = null;
