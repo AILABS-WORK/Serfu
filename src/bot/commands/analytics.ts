@@ -1513,25 +1513,28 @@ export const handleLiveSignals = async (ctx: BotContext) => {
         
         // Calculate ATH from OHLCV for accurate, real-time data
         try {
-                const entryDate = sig.detectedAt;
-                const entrySupply = sig.entrySupply || (sig.priceSamples?.[0]?.marketCap && sig.entryPrice ? sig.priceSamples[0].marketCap / sig.entryPrice : null);
-                const entryPrice = sig.entryPrice || sig.priceSamples?.[0]?.price || null;
+            const entryDate = sig.detectedAt;
+            const entrySupply = sig.entrySupply || (sig.priceSamples?.[0]?.marketCap && sig.entryPrice ? sig.priceSamples[0].marketCap / sig.entryPrice : null);
+            const entryPrice = sig.entryPrice || sig.priceSamples?.[0]?.price || null;
+            
+            if (entrySupply && entrySupply > 0 && entryDate) {
+                // OPTIMIZED PROGRESSIVE TIMEFRAME STRATEGY:
+                // Use minute candles from entry until next hour/day boundary, then use larger timeframes
+                // This ensures accurate entry price while minimizing API calls
+                // Example: Entry at 10:34 -> use minute until 11:00, then hourly until next day, then daily
+                const entryTimestamp = entryDate.getTime();
+                const nowTimestamp = Date.now();
+                const entryDateObj = new Date(entryTimestamp);
                 
-                if (entrySupply && entrySupply > 0 && entryDate) {
-                    // OPTIMIZED PROGRESSIVE TIMEFRAME STRATEGY:
-                    // Use minute candles from entry until next hour/day boundary, then use larger timeframes
-                    // This ensures accurate entry price while minimizing API calls
-                    // Example: Entry at 10:34 -> use minute until 11:00, then hourly until next day, then daily
-                    const entryTimestamp = entryDate.getTime();
-                    const nowTimestamp = Date.now();
-                    const entryDateObj = new Date(entryTimestamp);
-                    
-                    // Get entry price for baseline
-                    const entryMc = (row as any).entryMarketCap || sig.entryMarketCap || 0;
-                    const entryPriceValue = entryPrice || (entryMc > 0 && entrySupply > 0 ? entryMc / entrySupply : 0);
-                    
-                    let maxHigh = entryPriceValue || 0;
-                    let maxAt = entryTimestamp;
+                // Get entry price for baseline
+                const entryMc = (row as any).entryMarketCap || sig.entryMarketCap || 0;
+                const entryPriceValue = entryPrice || (entryMc > 0 && entrySupply > 0 ? entryMc / entrySupply : 0);
+                
+                // CRITICAL: Initialize maxHigh to 0, not entryPriceValue
+                // This ensures we can detect if OHLCV actually found a higher price
+                // If OHLCV finds nothing, maxHigh will be 0, and we'll use fallbacks
+                let maxHigh = 0;
+                let maxAt = entryTimestamp;
                     
                     // Calculate boundaries
                     const entryMinutes = entryDateObj.getMinutes();
