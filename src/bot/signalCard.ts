@@ -28,7 +28,8 @@ export const checkDuplicateCA = async (
   mint: string,
   ownerId?: number,
   groupId?: number,
-  excludeSignalId?: number
+  excludeSignalId?: number,
+  prioritizeChannels: boolean = true
 ): Promise<{
   isDuplicate: boolean;
   firstSignal?: Signal;
@@ -36,6 +37,7 @@ export const checkDuplicateCA = async (
 }> => {
   // FIX: Workspace-wide duplicate detection - if ownerId provided, check ALL groups owned by that user
   // This ensures "NEW SIGNAL" only appears if it's the FIRST time that CA appears anywhere in the workspace
+  // If prioritizeChannels is true, prioritize source channels (alpha caller channels) over groups
   const whereClause: any = { mint };
   if (ownerId) {
     // Workspace-wide check: look for this mint in ANY group owned by this user
@@ -47,23 +49,75 @@ export const checkDuplicateCA = async (
     return { isDuplicate: false };
   }
 
-  const existingSignals = await prisma.signal.findMany({
-    where: whereClause,
-    orderBy: { detectedAt: 'asc' },
-    take: 1,
-    include: { group: true },
-  });
+  // If prioritizing channels, first check source channels, then fall back to all groups
+  if (prioritizeChannels && ownerId) {
+    // First, check for signals in source channels (alpha caller channels)
+    const channelSignals = await prisma.signal.findMany({
+      where: {
+        mint,
+        group: {
+          ownerId,
+          type: 'source',
+          chatType: 'channel',
+        },
+      },
+      orderBy: { detectedAt: 'asc' },
+      take: 1,
+      include: { group: true },
+    });
 
-  if (existingSignals.length > 0) {
-    const firstSignal = existingSignals[0];
-    if (excludeSignalId && firstSignal.id === excludeSignalId) {
-      return { isDuplicate: false };
+    if (channelSignals.length > 0) {
+      const firstSignal = channelSignals[0];
+      if (excludeSignalId && firstSignal.id === excludeSignalId) {
+        // Continue to check other groups
+      } else {
+        return {
+          isDuplicate: true,
+          firstSignal,
+          firstGroupName: firstSignal.group?.name || 'Unknown Channel',
+        };
+      }
     }
-    return {
-      isDuplicate: true,
-      firstSignal,
-      firstGroupName: firstSignal.group?.name || 'Unknown Group',
-    };
+
+    // If no channel signal found (or excluded), check all source groups
+    const allSignals = await prisma.signal.findMany({
+      where: whereClause,
+      orderBy: { detectedAt: 'asc' },
+      take: 1,
+      include: { group: true },
+    });
+
+    if (allSignals.length > 0) {
+      const firstSignal = allSignals[0];
+      if (excludeSignalId && firstSignal.id === excludeSignalId) {
+        return { isDuplicate: false };
+      }
+      return {
+        isDuplicate: true,
+        firstSignal,
+        firstGroupName: firstSignal.group?.name || 'Unknown Group',
+      };
+    }
+  } else {
+    // Standard check without channel prioritization
+    const existingSignals = await prisma.signal.findMany({
+      where: whereClause,
+      orderBy: { detectedAt: 'asc' },
+      take: 1,
+      include: { group: true },
+    });
+
+    if (existingSignals.length > 0) {
+      const firstSignal = existingSignals[0];
+      if (excludeSignalId && firstSignal.id === excludeSignalId) {
+        return { isDuplicate: false };
+      }
+      return {
+        isDuplicate: true,
+        firstSignal,
+        firstGroupName: firstSignal.group?.name || 'Unknown Group',
+      };
+    }
   }
 
   return { isDuplicate: false };

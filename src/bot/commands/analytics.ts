@@ -1208,196 +1208,6 @@ export const handleLiveSignals = async (ctx: BotContext) => {
     // The issue: Some signals may have missing/inaccurate MC initially, causing wrong sort order
     // Solution: Fetch metadata for top N candidates (not just 10) to ensure accurate PnL for sorting
     if (sortBy === 'pnl') {
-        const metricsAge = metricsUpdated ? Date.now() - metricsUpdated.getTime() : Infinity;
-        let athMultiple = 0;
-        let athMarketCap = null;
-        
-        if (sig.metrics?.athMultiple && sig.metrics.athMultiple > 0 && metricsAge < 60 * 60 * 1000) {
-            // Use cached ATH if it's recent (< 1 hour old)
-            athMultiple = sig.metrics.athMultiple;
-            athMarketCap = sig.metrics.athMarketCap;
-        } else {
-            // Calculate ATH from OHLCV for accurate, real-time data
-            try {
-                const entryDate = sig.detectedAt;
-                const entrySupply = sig.entrySupply || (sig.priceSamples?.[0]?.marketCap && sig.entryPrice ? sig.priceSamples[0].marketCap / sig.entryPrice : null);
-                const entryPrice = sig.entryPrice || sig.priceSamples?.[0]?.price || null;
-                
-                if (entrySupply && entrySupply > 0 && entryDate) {
-                    // OPTIMIZED PROGRESSIVE TIMEFRAME STRATEGY:
-                    // Use minute candles from entry until next hour/day boundary, then use larger timeframes
-                    // This ensures accurate entry price while minimizing API calls
-                    // Example: Entry at 10:34 -> use minute until 11:00, then hourly until next day, then daily
-                    const entryTimestamp = entryDate.getTime();
-                    const nowTimestamp = Date.now();
-                    const entryDateObj = new Date(entryTimestamp);
-                    
-                    // Get entry price for baseline
-                    const entryMc = (row as any).entryMarketCap || sig.entryMarketCap || 0;
-                    const entryPriceValue = entryPrice || (entryMc > 0 && entrySupply > 0 ? entryMc / entrySupply : 0);
-                    
-                    let maxHigh = entryPriceValue || 0;
-                    let maxAt = entryTimestamp;
-                    
-                    // Calculate boundaries
-                    const entryMinutes = entryDateObj.getMinutes();
-                    const entryHours = entryDateObj.getHours();
-                    
-                    // Next hour boundary (e.g., 10:34 -> 11:00)
-                    const nextHourBoundary = new Date(entryDateObj);
-                    nextHourBoundary.setMinutes(0, 0, 0);
-                    nextHourBoundary.setHours(entryHours + 1);
-                    const nextHourTimestamp = nextHourBoundary.getTime();
-                    
-                    // Next day boundary (00:00 of next day)
-                    const nextDayBoundary = new Date(entryDateObj);
-                    nextDayBoundary.setHours(0, 0, 0, 0);
-                    nextDayBoundary.setDate(nextDayBoundary.getDate() + 1);
-                    const nextDayTimestamp = nextDayBoundary.getTime();
-                    
-                    const ageMs = nowTimestamp - entryTimestamp;
-                    const ageMinutes = Math.ceil(ageMs / (60 * 1000));
-                    const ageHours = Math.ceil(ageMs / (60 * 60 * 1000));
-                    const ageDays = Math.ceil(ageMs / (24 * 60 * 60 * 1000));
-                    
-                    try {
-                        // STEP 1: Fetch minute candles from entry until next hour boundary (accurate entry period)
-                        // This ensures we capture accurate prices from entry point without pre-entry contamination
-                        if (nowTimestamp > entryTimestamp && nextHourTimestamp > entryTimestamp) {
-                            const minutesToNextHour = Math.ceil((nextHourTimestamp - entryTimestamp) / (60 * 1000));
-                            const minuteLimit = Math.min(1000, minutesToNextHour + 5); // Add small buffer
-                            
-                            const minuteCandles = await geckoTerminal.getOHLCV(sig.mint, 'minute', minuteLimit);
-                            
-                            // Only use minute candles that start at or after entry
-                            const postEntryMinutes = minuteCandles.filter((c) => c.timestamp >= entryTimestamp && c.timestamp < nextHourTimestamp);
-                            
-                            for (const candle of postEntryMinutes) {
-                                if (candle.high > maxHigh) {
-                                    maxHigh = candle.high;
-                                    maxAt = candle.timestamp;
-                                }
-                            }
-                        }
-                        
-                        // STEP 2: Fetch hourly candles from next hour boundary onwards
-                        // If trade spans days, use hourly until next day boundary, then switch to daily
-                        // If trade is < 24h, use hourly until now
-                        if (nowTimestamp > nextHourTimestamp && ageHours > 0) {
-                            let hourlyEndTimestamp = nowTimestamp;
-                            
-                            // If trade spans days, use hourly until next day, then switch to daily
-                            if (nowTimestamp > nextDayTimestamp) {
-                                hourlyEndTimestamp = nextDayTimestamp; // Use hourly until next day
-                            }
-                            
-                            // Calculate hours needed from next hour until end
-                            const hoursNeeded = Math.ceil((hourlyEndTimestamp - nextHourTimestamp) / (60 * 60 * 1000));
-                            const hourLimit = Math.min(1000, hoursNeeded + 1);
-                            
-                            const hourlyCandles = await geckoTerminal.getOHLCV(sig.mint, 'hour', hourLimit);
-                            
-                            // Only use hourly candles between next hour and end timestamp
-                            const hourlyInRange = hourlyCandles.filter((c) => c.timestamp >= nextHourTimestamp && c.timestamp < hourlyEndTimestamp);
-                            
-                            for (const candle of hourlyInRange) {
-                                if (candle.high > maxHigh) {
-                                    maxHigh = candle.high;
-                                    maxAt = candle.timestamp;
-                                }
-                            }
-                            
-                            // STEP 3: Fetch daily candles from next day boundary until now (if trade spans days)
-                            // Only fetch if trade is still active after next day
-                            if (nowTimestamp > nextDayTimestamp && ageDays > 0) {
-                                const daysFromNextDay = Math.ceil((nowTimestamp - nextDayTimestamp) / (24 * 60 * 60 * 1000));
-                                const dayLimit = Math.min(1000, daysFromNextDay + 1);
-                                
-                                const dailyCandles = await geckoTerminal.getOHLCV(sig.mint, 'day', dayLimit);
-                                
-                                // Only use daily candles from next day onwards
-                                const dailyInRange = dailyCandles.filter((c) => c.timestamp >= nextDayTimestamp && c.timestamp <= nowTimestamp);
-                                
-                                for (const candle of dailyInRange) {
-                                    if (candle.high > maxHigh) {
-                                        maxHigh = candle.high;
-                                        maxAt = candle.timestamp;
-                                    }
-                                }
-                            }
-                        } else if (ageHours === 0 && ageMinutes > 0) {
-                            // STEP 4: Handle case where entry is very recent (< 1 hour) - just use minute candles
-                            // Trade is less than 1 hour old - minute candles are sufficient
-                            const minuteLimit = Math.min(1000, ageMinutes + 10);
-                            const minuteCandles = await geckoTerminal.getOHLCV(sig.mint, 'minute', minuteLimit);
-                            
-                            const postEntryMinutes = minuteCandles.filter((c) => c.timestamp >= entryTimestamp);
-                            
-                            for (const candle of postEntryMinutes) {
-                                if (candle.high > maxHigh) {
-                                    maxHigh = candle.high;
-                                    maxAt = candle.timestamp;
-                                }
-                            }
-                        }
-                        
-                        // Ensure maxHigh is at least entry price (ATH can't be lower than entry)
-                        if (entryPriceValue > 0 && maxHigh < entryPriceValue) {
-                            maxHigh = entryPriceValue;
-                            maxAt = entryTimestamp;
-                        }
-                        
-                        // Calculate ATH multiple and market cap
-                        if (entryPriceValue > 0 && maxHigh > 0) {
-                            athMultiple = maxHigh / entryPriceValue;
-                            athMarketCap = maxHigh * entrySupply;
-                        }
-                    } catch (ohlcvErr) {
-                        // If OHLCV fails, fallback to price samples
-                        logger.debug(`OHLCV ATH calculation failed for ${sig.mint}, using price samples fallback`);
-                    }
-                }
-            } catch (err) {
-                // If OHLCV fails, fallback to price samples (already fast)
-                const samples = await prisma.priceSample.findMany({
-                    where: { signalId: sig.id },
-                    orderBy: { sampledAt: 'asc' },
-                    select: { marketCap: true, price: true, sampledAt: true }
-                }).catch(() => []);
-                
-                if (samples.length > 0) {
-                    const entryMc = (row as any).entryMarketCap || sig.entryMarketCap || 0;
-                    const entryPrice = sig.entryPrice || 0;
-                    
-                    let maxMc = entryMc;
-                    let maxPrice = entryPrice;
-                    
-                    for (const sample of samples) {
-                        if (sample.marketCap && sample.marketCap > maxMc) {
-                            maxMc = sample.marketCap;
-                        }
-                        if (sample.price && sample.price > maxPrice) {
-                            maxPrice = sample.price;
-                        }
-                    }
-                    
-                    if (entryMc > 0 && maxMc > entryMc) {
-                        athMultiple = maxMc / entryMc;
-                        athMarketCap = maxMc;
-                    } else if (entryPrice > 0 && maxPrice > entryPrice) {
-                        athMultiple = maxPrice / entryPrice;
-                        if (sig.entrySupply && sig.entrySupply > 0) {
-                            athMarketCap = maxPrice * sig.entrySupply;
-                        }
-                    }
-                }
-            }
-        }
-        
-    // FIX: When sorting by PnL, ensure ALL filtered candidates have accurate PnL before selecting top 10
-    // The issue: Some signals may have missing/inaccurate MC initially, causing wrong sort order
-    // Solution: Fetch metadata for top N candidates (not just 10) to ensure accurate PnL for sorting
-    if (sortBy === 'pnl') {
         // For PnL sorting, we need to ensure accurate PnL for enough candidates to get correct top 10
         // Fetch metadata for top 20-30 candidates to ensure we have accurate PnL for the real top performers
         const candidatesToFetch = Math.min(30, filteredCandidates.length);
@@ -1515,6 +1325,9 @@ export const handleLiveSignals = async (ctx: BotContext) => {
         let athMultiple = 0;
         let athMarketCap = null;
         
+        // Get current price for fallback
+        const currentPrice = prices.get(row.mint) ?? 0;
+        
         // Calculate ATH from OHLCV for accurate, real-time data
         try {
             const entryDate = sig.detectedAt;
@@ -1522,10 +1335,6 @@ export const handleLiveSignals = async (ctx: BotContext) => {
             const entryPrice = sig.entryPrice || sig.priceSamples?.[0]?.price || null;
             
             if (entrySupply && entrySupply > 0 && entryDate) {
-                // OPTIMIZED PROGRESSIVE TIMEFRAME STRATEGY:
-                // Use minute candles from entry until next hour/day boundary, then use larger timeframes
-                // This ensures accurate entry price while minimizing API calls
-                // Example: Entry at 10:34 -> use minute until 11:00, then hourly until next day, then daily
                 const entryTimestamp = entryDate.getTime();
                 const nowTimestamp = Date.now();
                 const entryDateObj = new Date(entryTimestamp);
@@ -1539,39 +1348,45 @@ export const handleLiveSignals = async (ctx: BotContext) => {
                 // If OHLCV finds nothing, maxHigh will be 0, and we'll use fallbacks
                 let maxHigh = 0;
                 let maxAt = entryTimestamp;
+                let ohlcvMethodsTried: string[] = [];
+                let ohlcvCandlesFound = 0;
+                
+                // Calculate boundaries
+                const entryHours = entryDateObj.getHours();
+                const nextHourBoundary = new Date(entryDateObj);
+                nextHourBoundary.setMinutes(0, 0, 0);
+                nextHourBoundary.setHours(entryHours + 1);
+                const nextHourTimestamp = nextHourBoundary.getTime();
+                
+                const nextDayBoundary = new Date(entryDateObj);
+                nextDayBoundary.setHours(0, 0, 0, 0);
+                nextDayBoundary.setDate(nextDayBoundary.getDate() + 1);
+                const nextDayTimestamp = nextDayBoundary.getTime();
+                
+                const ageMs = nowTimestamp - entryTimestamp;
+                const ageMinutes = Math.ceil(ageMs / (60 * 1000));
+                const ageHours = Math.ceil(ageMs / (60 * 60 * 1000));
+                const ageDays = Math.ceil(ageMs / (24 * 60 * 60 * 1000));
+                
+                // COMPREHENSIVE OHLCV FETCHING STRATEGY:
+                // Try progressive timeframe strategy first (GeckoTerminal)
+                // If that fails or returns no candles, try all minute candles
+                // If that fails, try Bitquery as fallback
+                // Only use entry price as absolute minimum after ALL methods tried
+                
+                try {
+                    // STEP 1: Progressive timeframe strategy with GeckoTerminal
+                    ohlcvMethodsTried.push('GeckoTerminal-progressive');
                     
-                    // Calculate boundaries
-                    const entryMinutes = entryDateObj.getMinutes();
-                    const entryHours = entryDateObj.getHours();
-                    
-                    // Next hour boundary (e.g., 10:34 -> 11:00)
-                    const nextHourBoundary = new Date(entryDateObj);
-                    nextHourBoundary.setMinutes(0, 0, 0);
-                    nextHourBoundary.setHours(entryHours + 1);
-                    const nextHourTimestamp = nextHourBoundary.getTime();
-                    
-                    // Next day boundary (00:00 of next day)
-                    const nextDayBoundary = new Date(entryDateObj);
-                    nextDayBoundary.setHours(0, 0, 0, 0);
-                    nextDayBoundary.setDate(nextDayBoundary.getDate() + 1);
-                    const nextDayTimestamp = nextDayBoundary.getTime();
-                    
-                    const ageMs = nowTimestamp - entryTimestamp;
-                    const ageMinutes = Math.ceil(ageMs / (60 * 1000));
-                    const ageHours = Math.ceil(ageMs / (60 * 60 * 1000));
-                    const ageDays = Math.ceil(ageMs / (24 * 60 * 60 * 1000));
-                    
-                    try {
-                        // STEP 1: Fetch minute candles from entry until next hour boundary (accurate entry period)
-                        // This ensures we capture accurate prices from entry point without pre-entry contamination
-                        if (nowTimestamp > entryTimestamp && nextHourTimestamp > entryTimestamp) {
-                            const minutesToNextHour = Math.ceil((nextHourTimestamp - entryTimestamp) / (60 * 1000));
-                            const minuteLimit = Math.min(1000, minutesToNextHour + 5); // Add small buffer
-                            
+                    // Fetch minute candles from entry until next hour boundary
+                    if (nowTimestamp > entryTimestamp && nextHourTimestamp > entryTimestamp) {
+                        const minutesToNextHour = Math.ceil((nextHourTimestamp - entryTimestamp) / (60 * 1000));
+                        const minuteLimit = Math.min(1000, minutesToNextHour + 5);
+                        
+                        try {
                             const minuteCandles = await geckoTerminal.getOHLCV(sig.mint, 'minute', minuteLimit);
-                            
-                            // Only use minute candles that start at or after entry
                             const postEntryMinutes = minuteCandles.filter((c) => c.timestamp >= entryTimestamp && c.timestamp < nextHourTimestamp);
+                            ohlcvCandlesFound += postEntryMinutes.length;
                             
                             for (const candle of postEntryMinutes) {
                                 if (candle.high > maxHigh) {
@@ -1579,27 +1394,25 @@ export const handleLiveSignals = async (ctx: BotContext) => {
                                     maxAt = candle.timestamp;
                                 }
                             }
+                        } catch (err) {
+                            logger.debug(`GeckoTerminal minute candles failed for ${sig.mint}: ${err}`);
+                        }
+                    }
+                    
+                    // Fetch hourly candles from next hour boundary onwards
+                    if (nowTimestamp > nextHourTimestamp && ageHours > 0) {
+                        let hourlyEndTimestamp = nowTimestamp;
+                        if (nowTimestamp > nextDayTimestamp) {
+                            hourlyEndTimestamp = nextDayTimestamp;
                         }
                         
-                        // STEP 2: Fetch hourly candles from next hour boundary onwards
-                        // If trade spans days, use hourly until next day boundary, then switch to daily
-                        // If trade is < 24h, use hourly until now
-                        if (nowTimestamp > nextHourTimestamp && ageHours > 0) {
-                            let hourlyEndTimestamp = nowTimestamp;
-                            
-                            // If trade spans days, use hourly until next day, then switch to daily
-                            if (nowTimestamp > nextDayTimestamp) {
-                                hourlyEndTimestamp = nextDayTimestamp; // Use hourly until next day
-                            }
-                            
-                            // Calculate hours needed from next hour until end
-                            const hoursNeeded = Math.ceil((hourlyEndTimestamp - nextHourTimestamp) / (60 * 60 * 1000));
-                            const hourLimit = Math.min(1000, hoursNeeded + 1);
-                            
+                        const hoursNeeded = Math.ceil((hourlyEndTimestamp - nextHourTimestamp) / (60 * 60 * 1000));
+                        const hourLimit = Math.min(1000, hoursNeeded + 1);
+                        
+                        try {
                             const hourlyCandles = await geckoTerminal.getOHLCV(sig.mint, 'hour', hourLimit);
-                            
-                            // Only use hourly candles between next hour and end timestamp
                             const hourlyInRange = hourlyCandles.filter((c) => c.timestamp >= nextHourTimestamp && c.timestamp < hourlyEndTimestamp);
+                            ohlcvCandlesFound += hourlyInRange.length;
                             
                             for (const candle of hourlyInRange) {
                                 if (candle.high > maxHigh) {
@@ -1607,17 +1420,19 @@ export const handleLiveSignals = async (ctx: BotContext) => {
                                     maxAt = candle.timestamp;
                                 }
                             }
+                        } catch (err) {
+                            logger.debug(`GeckoTerminal hourly candles failed for ${sig.mint}: ${err}`);
+                        }
+                        
+                        // Fetch daily candles if trade spans days
+                        if (nowTimestamp > nextDayTimestamp && ageDays > 0) {
+                            const daysFromNextDay = Math.ceil((nowTimestamp - nextDayTimestamp) / (24 * 60 * 60 * 1000));
+                            const dayLimit = Math.min(1000, daysFromNextDay + 1);
                             
-                            // STEP 3: Fetch daily candles from next day boundary until now (if trade spans days)
-                            // Only fetch if trade is still active after next day
-                            if (nowTimestamp > nextDayTimestamp && ageDays > 0) {
-                                const daysFromNextDay = Math.ceil((nowTimestamp - nextDayTimestamp) / (24 * 60 * 60 * 1000));
-                                const dayLimit = Math.min(1000, daysFromNextDay + 1);
-                                
+                            try {
                                 const dailyCandles = await geckoTerminal.getOHLCV(sig.mint, 'day', dayLimit);
-                                
-                                // Only use daily candles from next day onwards
                                 const dailyInRange = dailyCandles.filter((c) => c.timestamp >= nextDayTimestamp && c.timestamp <= nowTimestamp);
+                                ohlcvCandlesFound += dailyInRange.length;
                                 
                                 for (const candle of dailyInRange) {
                                     if (candle.high > maxHigh) {
@@ -1625,14 +1440,17 @@ export const handleLiveSignals = async (ctx: BotContext) => {
                                         maxAt = candle.timestamp;
                                     }
                                 }
+                            } catch (err) {
+                                logger.debug(`GeckoTerminal daily candles failed for ${sig.mint}: ${err}`);
                             }
-                        } else if (ageHours === 0 && ageMinutes > 0) {
-                            // STEP 4: Handle case where entry is very recent (< 1 hour) - just use minute candles
-                            // Trade is less than 1 hour old - minute candles are sufficient
-                            const minuteLimit = Math.min(1000, ageMinutes + 10);
+                        }
+                    } else if (ageHours === 0 && ageMinutes > 0) {
+                        // Very recent trade (< 1 hour) - just use minute candles
+                        const minuteLimit = Math.min(1000, ageMinutes + 10);
+                        try {
                             const minuteCandles = await geckoTerminal.getOHLCV(sig.mint, 'minute', minuteLimit);
-                            
                             const postEntryMinutes = minuteCandles.filter((c) => c.timestamp >= entryTimestamp);
+                            ohlcvCandlesFound += postEntryMinutes.length;
                             
                             for (const candle of postEntryMinutes) {
                                 if (candle.high > maxHigh) {
@@ -1640,72 +1458,187 @@ export const handleLiveSignals = async (ctx: BotContext) => {
                                     maxAt = candle.timestamp;
                                 }
                             }
+                        } catch (err) {
+                            logger.debug(`GeckoTerminal minute candles (recent) failed for ${sig.mint}: ${err}`);
                         }
-                        
-                        // Ensure maxHigh is at least entry price (ATH can't be lower than entry)
-                        if (entryPriceValue > 0 && maxHigh < entryPriceValue) {
-                            maxHigh = entryPriceValue;
-                            maxAt = entryTimestamp;
-                        }
-                        
-                        // Calculate ATH multiple and market cap
-                        if (entryPriceValue > 0 && maxHigh > 0) {
-                            athMultiple = maxHigh / entryPriceValue;
-                            athMarketCap = maxHigh * entrySupply;
-                        }
-                    } catch (ohlcvErr) {
-                        // If OHLCV fails, fallback to price samples
-                        logger.debug(`OHLCV ATH calculation failed for ${sig.mint}, using price samples fallback`);
                     }
+                    
+                    // STEP 2: If progressive strategy found no candles or maxHigh is still 0, try ALL minute candles
+                    if (maxHigh === 0 || ohlcvCandlesFound === 0) {
+                        ohlcvMethodsTried.push('GeckoTerminal-all-minutes');
+                        logger.debug(`Progressive strategy found ${ohlcvCandlesFound} candles for ${sig.mint}, trying all minute candles...`);
+                        
+                        try {
+                            const allMinuteCandles = await geckoTerminal.getOHLCV(sig.mint, 'minute', 1000);
+                            const postEntryAllMinutes = allMinuteCandles.filter((c) => c.timestamp >= entryTimestamp);
+                            ohlcvCandlesFound += postEntryAllMinutes.length;
+                            
+                            for (const candle of postEntryAllMinutes) {
+                                if (candle.high > maxHigh) {
+                                    maxHigh = candle.high;
+                                    maxAt = candle.timestamp;
+                                }
+                            }
+                            
+                            if (postEntryAllMinutes.length > 0) {
+                                logger.debug(`All-minute fallback found ${postEntryAllMinutes.length} candles for ${sig.mint}`);
+                            }
+                        } catch (err) {
+                            logger.debug(`GeckoTerminal all-minute fallback failed for ${sig.mint}: ${err}`);
+                        }
+                    }
+                    
+                    // STEP 3: If still no candles, try Bitquery as fallback
+                    if (maxHigh === 0 || ohlcvCandlesFound === 0) {
+                        ohlcvMethodsTried.push('Bitquery');
+                        logger.debug(`GeckoTerminal found no candles for ${sig.mint}, trying Bitquery...`);
+                        
+                        try {
+                            const { bitquery } = await import('../../providers/bitquery');
+                            if (bitquery) {
+                                // Try minute candles first
+                                const bitqueryMinutes = await bitquery.getOHLCV(sig.mint, 'minute', 1000);
+                                const postEntryBitquery = bitqueryMinutes.filter((c) => c.timestamp >= entryTimestamp);
+                                ohlcvCandlesFound += postEntryBitquery.length;
+                                
+                                for (const candle of postEntryBitquery) {
+                                    if (candle.high > maxHigh) {
+                                        maxHigh = candle.high;
+                                        maxAt = candle.timestamp;
+                                    }
+                                }
+                                
+                                if (postEntryBitquery.length > 0) {
+                                    logger.debug(`Bitquery found ${postEntryBitquery.length} minute candles for ${sig.mint}`);
+                                } else if (ageHours > 0) {
+                                    // Try hourly if minute didn't work
+                                    const bitqueryHours = await bitquery.getOHLCV(sig.mint, 'hour', 1000);
+                                    const postEntryBitqueryHours = bitqueryHours.filter((c) => c.timestamp >= entryTimestamp);
+                                    ohlcvCandlesFound += postEntryBitqueryHours.length;
+                                    
+                                    for (const candle of postEntryBitqueryHours) {
+                                        if (candle.high > maxHigh) {
+                                            maxHigh = candle.high;
+                                            maxAt = candle.timestamp;
+                                        }
+                                    }
+                                    
+                                    if (postEntryBitqueryHours.length > 0) {
+                                        logger.debug(`Bitquery found ${postEntryBitqueryHours.length} hourly candles for ${sig.mint}`);
+                                    }
+                                }
+                            }
+                        } catch (err) {
+                            logger.debug(`Bitquery fallback failed for ${sig.mint}: ${err}`);
+                        }
+                    }
+                    
+                    // STEP 4: After ALL OHLCV methods tried, set minimum ATH
+                    // Use current price if it's higher than entry (prevents showing 1x when current is 14k and entry is 6.4k)
+                    // Only use entry price as absolute minimum if current price is also not available
+                    const effectiveMinPrice = Math.max(
+                        entryPriceValue,
+                        currentPrice > 0 ? currentPrice : 0
+                    );
+                    
+                    if (effectiveMinPrice > 0 && maxHigh < effectiveMinPrice) {
+                        // Only set to entry/current if we truly found no OHLCV data
+                        if (ohlcvCandlesFound === 0) {
+                            maxHigh = effectiveMinPrice;
+                            maxAt = currentPrice > entryPriceValue ? nowTimestamp : entryTimestamp;
+                            logger.debug(`No OHLCV data found for ${sig.mint}, using ${currentPrice > entryPriceValue ? 'current' : 'entry'} price as ATH`);
+                        } else {
+                            // We found some candles but they're all lower than entry/current - this shouldn't happen
+                            // But if it does, use the higher of entry or current
+                            maxHigh = effectiveMinPrice;
+                            maxAt = currentPrice > entryPriceValue ? nowTimestamp : entryTimestamp;
+                            logger.warn(`OHLCV candles found for ${sig.mint} but all lower than entry/current - using ${currentPrice > entryPriceValue ? 'current' : 'entry'} price`);
+                        }
+                    }
+                    
+                    // Calculate ATH multiple and market cap
+                    if (entryPriceValue > 0 && maxHigh > 0) {
+                        athMultiple = maxHigh / entryPriceValue;
+                        athMarketCap = maxHigh * entrySupply;
+                    }
+                    
+                    // Log comprehensive ATH calculation result
+                    logger.debug(`ATH calculation for ${sig.mint}: ${athMultiple.toFixed(2)}x (${athMarketCap ? (athMarketCap / 1000).toFixed(1) + 'K' : 'N/A'}), methods: ${ohlcvMethodsTried.join(', ')}, candles: ${ohlcvCandlesFound}`);
+                    
+                } catch (ohlcvErr) {
+                    logger.debug(`All OHLCV methods failed for ${sig.mint}, trying price samples fallback: ${ohlcvErr}`);
                 }
-            } catch (err) {
-                // If OHLCV fails, fallback to price samples (already fast)
-                const samples = await prisma.priceSample.findMany({
-                    where: { signalId: sig.id },
-                    orderBy: { sampledAt: 'asc' },
-                    select: { marketCap: true, price: true, sampledAt: true }
-                }).catch(() => []);
                 
-                if (samples.length > 0) {
-                    const entryMc = (row as any).entryMarketCap || sig.entryMarketCap || 0;
-                    const entryPrice = sig.entryPrice || 0;
+                // STEP 5: Fallback to price samples if OHLCV completely failed
+                if (athMultiple === 0 || (athMultiple === 1 && currentPrice > entryPriceValue)) {
+                    const samples = await prisma.priceSample.findMany({
+                        where: { signalId: sig.id },
+                        orderBy: { sampledAt: 'asc' },
+                        select: { marketCap: true, price: true, sampledAt: true }
+                    }).catch(() => []);
                     
-                    let maxMc = entryMc;
-                    let maxPrice = entryPrice;
-                    
-                    for (const sample of samples) {
-                        if (sample.marketCap && sample.marketCap > maxMc) {
-                            maxMc = sample.marketCap;
+                    if (samples.length > 0) {
+                        const entryMc = (row as any).entryMarketCap || sig.entryMarketCap || 0;
+                        const entryPrice = sig.entryPrice || 0;
+                        
+                        let maxMc = entryMc;
+                        let maxPrice = entryPrice;
+                        
+                        for (const sample of samples) {
+                            if (sample.marketCap && sample.marketCap > maxMc) {
+                                maxMc = sample.marketCap;
+                            }
+                            if (sample.price && sample.price > maxPrice) {
+                                maxPrice = sample.price;
+                            }
                         }
-                        if (sample.price && sample.price > maxPrice) {
-                            maxPrice = sample.price;
+                        
+                        // Use current price if it's higher than samples
+                        if (currentPrice > 0 && currentPrice > maxPrice) {
+                            maxPrice = currentPrice;
                         }
-                    }
-                    
-                    if (entryMc > 0 && maxMc > entryMc) {
-                        athMultiple = maxMc / entryMc;
-                        athMarketCap = maxMc;
-                    } else if (entryPrice > 0 && maxPrice > entryPrice) {
-                        athMultiple = maxPrice / entryPrice;
+                        
+                        if (entryMc > 0 && maxMc > entryMc) {
+                            athMultiple = maxMc / entryMc;
+                            athMarketCap = maxMc;
+                        } else if (entryPrice > 0 && maxPrice > entryPrice) {
+                            athMultiple = maxPrice / entryPrice;
+                            if (sig.entrySupply && sig.entrySupply > 0) {
+                                athMarketCap = maxPrice * sig.entrySupply;
+                            }
+                        } else if (currentPrice > 0 && entryPriceValue > 0 && currentPrice > entryPriceValue) {
+                            // Last resort: use current price if it's higher than entry
+                            athMultiple = currentPrice / entryPriceValue;
+                            if (sig.entrySupply && sig.entrySupply > 0) {
+                                athMarketCap = currentPrice * sig.entrySupply;
+                            }
+                        }
+                        
+                        logger.debug(`Price samples fallback for ${sig.mint}: ${athMultiple.toFixed(2)}x from ${samples.length} samples`);
+                    } else if (currentPrice > 0 && entryPriceValue > 0 && currentPrice > entryPriceValue) {
+                        // Absolute last resort: use current price
+                        athMultiple = currentPrice / entryPriceValue;
                         if (sig.entrySupply && sig.entrySupply > 0) {
-                            athMarketCap = maxPrice * sig.entrySupply;
+                            athMarketCap = currentPrice * sig.entrySupply;
                         }
+                        logger.debug(`Using current price as ATH for ${sig.mint}: ${athMultiple.toFixed(2)}x`);
                     }
                 }
+            }
+            } catch (err) {
+                logger.error(`General error during ATH calculation for ${sig.mint}: ${err}`);
             }
         }
         
         // Store calculated ATH for display
-        // If ATH is 0 or missing, it means we couldn't calculate it (shouldn't happen with fallbacks)
-        // But if it's 1x, that means ATH equals entry (no gain from entry)
         (row as any).athMultiple = athMultiple > 0 ? athMultiple : 0;
         (row as any).athMarketCap = athMarketCap || null;
         
-        // Log ATH result for debugging
+        // Log final ATH result
         if (athMultiple > 0) {
-            logger.debug(`ATH calculated for ${sig.mint}: ${athMultiple.toFixed(2)}x (${athMarketCap ? (athMarketCap / 1000).toFixed(1) + 'K' : 'N/A'})`);
+            logger.debug(`Final ATH for ${sig.mint}: ${athMultiple.toFixed(2)}x (${athMarketCap ? (athMarketCap / 1000).toFixed(1) + 'K' : 'N/A'})`);
         } else {
-            logger.debug(`ATH calculation returned 0 for ${sig.mint} - might need investigation`);
+            logger.warn(`Final ATH calculation returned 0 for ${sig.mint} - all methods failed`);
         }
     }));
     

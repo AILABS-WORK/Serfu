@@ -9,7 +9,9 @@ import { bitquery } from '../src/providers/bitquery';
 import { logger } from '../src/utils/logger';
 
 // Test tokens - use some real tokens that likely have OHLCV data
+// Include token "g" from user's example
 const TEST_MINTS = [
+  '8CKUs3cXFVMaZQTeyqW6v1Lno1iS755tiWzJfbBgpump', // Token "g" from user's example (called at 11:43 PM Lisbon time at 6.4k)
   'So11111111111111111111111111111111111111112', // SOL
   'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', // USDC
   'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB', // USDT
@@ -231,8 +233,14 @@ async function runBenchmarks() {
     );
   });
 
-  // Find fastest method
-  const fastest = results.reduce((prev, curr) => 
+  // Find fastest method with at least one success
+  const successfulResults = results.filter(r => r.success > 0);
+  if (successfulResults.length === 0) {
+    console.log('\n⚠️ No successful results found - all methods failed');
+    return;
+  }
+  
+  const fastest = successfulResults.reduce((prev, curr) => 
     curr.avgTimePerToken < prev.avgTimePerToken ? curr : prev
   );
 
