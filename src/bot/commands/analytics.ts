@@ -1505,19 +1505,14 @@ export const handleLiveSignals = async (ctx: BotContext) => {
         const sig = signals.find(s => s.id === (row as any).earliestSignalId) || signals.find(s => s.mint === row.mint);
         if (!sig) return;
         
-        // Use stored ATH from metrics if available and recent (within last hour)
-        const metricsUpdated = sig.metrics?.updatedAt;
-        const metricsAge = metricsUpdated ? Date.now() - metricsUpdated.getTime() : Infinity;
+        // CRITICAL: Always calculate ATH from OHLCV for accurate, real-time data
+        // Don't rely on cached metrics as they might be outdated or incorrect
+        // This ensures we always get the true ATH from entry timestamp to now
         let athMultiple = 0;
         let athMarketCap = null;
         
-        if (sig.metrics?.athMultiple && sig.metrics.athMultiple > 0 && metricsAge < 60 * 60 * 1000) {
-            // Use cached ATH if it's recent (< 1 hour old)
-            athMultiple = sig.metrics.athMultiple;
-            athMarketCap = sig.metrics.athMarketCap;
-        } else {
-            // Calculate ATH from OHLCV for accurate, real-time data
-            try {
+        // Calculate ATH from OHLCV for accurate, real-time data
+        try {
                 const entryDate = sig.detectedAt;
                 const entrySupply = sig.entrySupply || (sig.priceSamples?.[0]?.marketCap && sig.entryPrice ? sig.priceSamples[0].marketCap / sig.entryPrice : null);
                 const entryPrice = sig.entryPrice || sig.priceSamples?.[0]?.price || null;
@@ -1693,10 +1688,22 @@ export const handleLiveSignals = async (ctx: BotContext) => {
             }
         }
         
-        // Store calculated ATH for display (always calculate, even if 0)
-        (row as any).athMultiple = athMultiple || 0;
+        // Store calculated ATH for display
+        // If ATH is 0 or missing, it means we couldn't calculate it (shouldn't happen with fallbacks)
+        // But if it's 1x, that means ATH equals entry (no gain from entry)
+        (row as any).athMultiple = athMultiple > 0 ? athMultiple : 0;
         (row as any).athMarketCap = athMarketCap || null;
+        
+        // Log ATH result for debugging
+        if (athMultiple > 0) {
+            logger.debug(`ATH calculated for ${sig.mint}: ${athMultiple.toFixed(2)}x (${athMarketCap ? (athMarketCap / 1000).toFixed(1) + 'K' : 'N/A'})`);
+        } else {
+            logger.debug(`ATH calculation returned 0 for ${sig.mint} - might need investigation`);
+        }
     }));
+    
+    // CRITICAL: Wait for all ATH calculations to complete before proceeding
+    // This ensures all displayed signals have accurate ATH values
     
     // 6. Construct Message
     let message = UIHelper.header('Live Signals (Active)');
