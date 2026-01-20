@@ -1059,12 +1059,8 @@ export const handleLiveSignals = async (ctx: BotContext) => {
     // STEP 1: Calculate PnL and all data for ALL signals in timeframe FIRST
     // CRITICAL: Calculate current price and PnL for ALL signals BEFORE filtering/sorting
     // This ensures all signals have accurate data for proper sorting
+    // NOTE: Timeframe filtering is already done in DB query, so all aggregated signals are within timeframe
     const candidates = Array.from(aggregated.values())
-        .filter(row => {
-            // Double-check timeframe filter (should already be filtered in DB query, but verify)
-            if (timeframeLabel !== 'ALL' && row.earliestDate < timeframeCutoff) return false;
-            return true;
-        })
         .map(row => {
              // Find entry market cap from earliest signal
              const sig = signals.find(s => s.id === (row as any).earliestSignalId) || signals.find(s => s.mint === row.mint);
@@ -2046,15 +2042,51 @@ export const handleLiveSignals = async (ctx: BotContext) => {
         ]
     ];
 
-    // Edit the loading message
-    await ctx.telegram.editMessageText(loadingMsg.chat.id, loadingMsg.message_id, undefined, message, { 
-        parse_mode: 'Markdown',
-        reply_markup: { inline_keyboard: filters }
-    });
+    // Edit the loading message - ensure we have valid loadingMsg before editing
+    if (loadingMsg && loadingMsg.chat && loadingMsg.message_id) {
+        try {
+            await ctx.telegram.editMessageText(loadingMsg.chat.id, loadingMsg.message_id, undefined, message, { 
+                parse_mode: 'Markdown',
+                reply_markup: { inline_keyboard: filters }
+            });
+        } catch (editError: any) {
+            // If edit fails (e.g., message was deleted), try to send a new message
+            logger.debug(`Failed to edit message, sending new one: ${editError.message}`);
+            try {
+                await ctx.reply(message, { 
+                    parse_mode: 'Markdown',
+                    reply_markup: { inline_keyboard: filters }
+                });
+            } catch (replyError) {
+                logger.error('Failed to send live signals message:', replyError);
+            }
+        }
+    } else {
+        // No loading message, just send the result
+        await ctx.reply(message, { 
+            parse_mode: 'Markdown',
+            reply_markup: { inline_keyboard: filters }
+        });
+    }
 
   } catch (error) {
     logger.error('Error loading live signals:', error);
-    try { await ctx.reply('Error loading live signals.'); } catch {}
+    // Try to update loading message with error, or send new error message
+    if (loadingMsg && loadingMsg.chat && loadingMsg.message_id) {
+        try {
+            await ctx.telegram.editMessageText(
+                loadingMsg.chat.id,
+                loadingMsg.message_id,
+                undefined,
+                '❌ Error loading live signals. Please try again.',
+                { parse_mode: 'Markdown' }
+            );
+        } catch {
+            try { await ctx.reply('❌ Error loading live signals. Please try again.'); } catch {}
+        }
+    } else {
+        try { await ctx.reply('❌ Error loading live signals. Please try again.'); } catch {}
+    }
   }
 };
 
