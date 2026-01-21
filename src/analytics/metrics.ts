@@ -159,7 +159,7 @@ export const enrichSignalMetrics = async (
         let maxHigh = 0;
         let maxAt = entryTimestamp;
 
-        const currentPrice = currentPriceOverride ?? sig.metrics?.currentPrice || 0;
+        const currentPrice = currentPriceOverride ?? sig.metrics?.currentPrice ?? 0;
 
         // Simplified OHLCV strategy:
         // < 1 hour: minute candles (single call)
