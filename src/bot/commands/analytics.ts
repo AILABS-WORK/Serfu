@@ -847,6 +847,52 @@ export const handleCrossGroupConfirms = async (ctx: Context, view: string = 'lag
 // LIVE SIGNALS HANDLER (Aggregated + Filters + UIHelper)
 // ----------------------------------------------------------------------
 
+const resolveEntrySnapshot = (sig: any) => {
+  const firstSample = sig.priceSamples?.[0];
+  let entryPrice = sig?.entryPrice || firstSample?.price || 0;
+  let entryMarketCap = sig?.entryMarketCap || firstSample?.marketCap || 0;
+  let entrySupply = sig?.entrySupply || 0;
+
+  if (!entrySupply && entryPrice > 0 && entryMarketCap > 0) {
+    entrySupply = entryMarketCap / entryPrice;
+  }
+
+  if (!entryMarketCap && entryPrice > 0 && entrySupply > 0) {
+    entryMarketCap = entryPrice * entrySupply;
+  }
+
+  return { entryPrice, entryMarketCap, entrySupply };
+};
+
+const calculatePnlPercent = (params: {
+  currentMc: number;
+  entryMc: number;
+  currentPrice: number;
+  entryPrice: number;
+}) => {
+  const { currentMc, entryMc, currentPrice, entryPrice } = params;
+  if (currentMc > 0 && entryMc > 0) {
+    return ((currentMc - entryMc) / entryMc) * 100;
+  }
+  if (currentPrice > 0 && entryPrice > 0) {
+    return ((currentPrice - entryPrice) / entryPrice) * 100;
+  }
+  return 0;
+};
+
+const resolveCurrentMultiple = (params: {
+  currentMc: number;
+  entryMc: number;
+  currentPrice: number;
+  entryPrice: number;
+  fallbackMultiple: number;
+}) => {
+  const { currentMc, entryMc, currentPrice, entryPrice, fallbackMultiple } = params;
+  if (currentMc > 0 && entryMc > 0) return currentMc / entryMc;
+  if (currentPrice > 0 && entryPrice > 0) return currentPrice / entryPrice;
+  return fallbackMultiple;
+};
+
 export const handleLiveSignals = async (ctx: BotContext) => {
   let loadingMsg: any = null;
   try {
@@ -1032,41 +1078,33 @@ export const handleLiveSignals = async (ctx: BotContext) => {
              const currentPrice = prices.get(row.mint) ?? 0;
              row.currentPrice = currentPrice;
              
-             // FIX: Entry MC - try multiple sources and backfill if missing
-             let entryMc = sig?.entryMarketCap || 0;
-             if (!entryMc && sig.priceSamples && sig.priceSamples.length > 0) {
-                 // Use first priceSample marketCap as fallback
-                 entryMc = sig.priceSamples[0]?.marketCap || 0;
-                 // Backfill entryMarketCap if missing
-                 if (entryMc > 0 && !sig.entryMarketCap) {
-                     prisma.signal.update({
-                         where: { id: sig.id },
-                         data: { entryMarketCap: entryMc }
-                     }).catch(() => {});
-                 }
+             // FIX: Entry MC and price - try multiple sources and backfill if missing
+             const { entryPrice, entryMarketCap: entryMc } = resolveEntrySnapshot(sig);
+             if (entryMc > 0 && !sig.entryMarketCap) {
+                 prisma.signal.update({
+                     where: { id: sig.id },
+                     data: { entryMarketCap: entryMc }
+                 }).catch(() => {});
              }
-             // Fallback: calculate from entryPrice * entrySupply if available
-             if (!entryMc && sig.entryPrice && sig.entrySupply) {
-                 entryMc = sig.entryPrice * sig.entrySupply;
-                 if (entryMc > 0) {
-                     prisma.signal.update({
-                         where: { id: sig.id },
-                         data: { entryMarketCap: entryMc }
-                     }).catch(() => {});
-                 }
-             }
-             
+
              // Calculate PnL - try market cap first, then price fallback
-             if (currentMc > 0 && entryMc > 0) {
-                 row.pnl = ((currentMc - entryMc) / entryMc) * 100;
-             } else if (currentPrice > 0 && sig?.entryPrice && sig.entryPrice > 0) {
-                 // Fallback to price if market cap not available
-                 row.pnl = ((currentPrice - sig.entryPrice) / sig.entryPrice) * 100;
-             }
+             row.pnl = calculatePnlPercent({
+                 currentMc,
+                 entryMc,
+                 currentPrice,
+                 entryPrice
+             });
+             (row as any)._calculatedPnl = row.pnl;
              // If no data, pnl remains 0 (already initialized above)
 
-             // Current multiple (market cap preferred)
-             const currentMultiple = entryMc > 0 && currentMc > 0 ? currentMc / entryMc : (sig?.metrics?.currentMultiple || 0);
+             // Current multiple (market cap preferred, price fallback)
+             const currentMultiple = resolveCurrentMultiple({
+                 currentMc,
+                 entryMc,
+                 currentPrice,
+                 entryPrice,
+                 fallbackMultiple: sig?.metrics?.currentMultiple || 0
+             });
              (row as any).currentMultiple = currentMultiple;
              
              // FIX: Use ATH multiple from metrics (real ATH from OHLCV)
@@ -1083,11 +1121,7 @@ export const handleLiveSignals = async (ctx: BotContext) => {
              (row as any).velocity = row.pnl; // Fallback: use PnL as velocity proxy
              (row as any).currentMarketCap = currentMc;
              (row as any).entryMarketCap = entryMc; // Store for later use
-             
-             // Store calculated PnL separately for backup during filtering
-             if (entryMc > 0 && currentMc > 0) {
-                 (row as any)._calculatedPnl = ((currentMc - entryMc) / entryMc) * 100;
-             }
+             (row as any).entryPrice = entryPrice;
              
              return row;
         });
@@ -1098,8 +1132,12 @@ export const handleLiveSignals = async (ctx: BotContext) => {
     // STEP 3: Apply remaining filters (timeframe already filtered above)
     // All data (entry MC, current MC, PnL) has been calculated above, so filters use accurate values
     const filteredCandidates = candidates.filter(row => {
+            const backupPnl = (row as any)._calculatedPnl;
+            const signalPnl = row.pnl || 0;
+            const effectivePnl = (backupPnl !== undefined && backupPnl !== null) ? backupPnl : signalPnl;
+
             // Only gainers filter
-            if (onlyGainers && (row.pnl || 0) < 0) return false;
+            if (onlyGainers && effectivePnl < 0) return false;
             
             // FIX: > 2x / > 5x filters should use CURRENT PnL (current MC vs entry MC), not ATH
             // 2x = 100% PnL, 5x = 400% PnL (current multiple = 1 + PnL/100)
@@ -1111,13 +1149,6 @@ export const handleLiveSignals = async (ctx: BotContext) => {
               // FIX: Use backup _calculatedPnl if available (calculated when entryMc/currentMc both > 0)
               // If both row.pnl and _calculatedPnl are 0 or undefined, signal has no MC data yet
               // We still filter it out, but the backup ensures we use calculated PnL when available
-              const backupPnl = (row as any)._calculatedPnl;
-              const signalPnl = row.pnl || 0;
-              
-              // Prefer _calculatedPnl if it exists (it was calculated with available data)
-              // Otherwise use row.pnl (which might be 0 if MC data wasn't available)
-              const effectivePnl = (backupPnl !== undefined && backupPnl !== null) ? backupPnl : signalPnl;
-              
               if (effectivePnl < requiredPnl) {
                   return false;
               }
@@ -1206,14 +1237,18 @@ export const handleLiveSignals = async (ctx: BotContext) => {
         
         // Recalculate PnL if we have current MC
         const sig = signals.find(s => s.id === (row as any).earliestSignalId) || signals.find(s => s.mint === row.mint);
-        if (sig && (row as any).currentMarketCap && (row as any).currentMarketCap > 0) {
-            const entryMc = (row as any).entryMarketCap || sig.entryMarketCap || sig.priceSamples?.[0]?.marketCap || 0;
-            const currentMc = (row as any).currentMarketCap;
-            if (entryMc > 0 && currentMc > 0) {
-                const newPnl = ((currentMc - entryMc) / entryMc) * 100;
-                row.pnl = newPnl;
-                (row as any)._calculatedPnl = newPnl;
-            }
+        if (sig) {
+            const { entryPrice, entryMarketCap: entryMc } = resolveEntrySnapshot(sig);
+            const currentMc = (row as any).currentMarketCap || 0;
+            const currentPrice = prices.get(row.mint) ?? row.currentPrice ?? 0;
+            const newPnl = calculatePnlPercent({
+                currentMc,
+                entryMc,
+                currentPrice,
+                entryPrice
+            });
+            row.pnl = newPnl;
+            (row as any)._calculatedPnl = newPnl;
         }
     }));
     
@@ -1261,7 +1296,7 @@ export const handleLiveSignals = async (ctx: BotContext) => {
         
         // Entry -> Current Market Cap (preferred) or Price (fallback)
         // FIX: Use stored entryMc from mapping phase for consistency, or recalculate if missing
-        const entryMc = (row as any).entryMarketCap || sig?.entryMarketCap || sig?.priceSamples?.[0]?.marketCap || null;
+        const { entryPrice, entryMarketCap: entryMc } = resolveEntrySnapshot(sig);
         
         // CRITICAL: Get current MC from multiple sources in priority order
         // 1. From row object (set during calculation phase)
@@ -1296,18 +1331,14 @@ export const handleLiveSignals = async (ctx: BotContext) => {
         
         // CRITICAL: Calculate PnL from current MC and entry MC
         // Ensure PnL is always calculated and displayed
-        let calculatedPnl = 0;
-        if (currentMc && currentMc > 0 && entryMc && entryMc > 0) {
-            calculatedPnl = ((currentMc - entryMc) / entryMc) * 100;
-            row.pnl = calculatedPnl; // Always update PnL with calculated value
-            (row as any)._calculatedPnl = calculatedPnl;
-        } else if (row.pnl === undefined || row.pnl === null || row.pnl === 0) {
-            // If no MC data available, PnL is 0 or N/A
-            calculatedPnl = 0;
-            row.pnl = 0;
-        } else {
-            calculatedPnl = row.pnl;
-        }
+        const calculatedPnl = calculatePnlPercent({
+            currentMc: currentMc || 0,
+            entryMc: entryMc || 0,
+            currentPrice: prices.get(row.mint) || row.currentPrice || 0,
+            entryPrice: entryPrice || 0
+        });
+        row.pnl = calculatedPnl;
+        (row as any)._calculatedPnl = calculatedPnl;
         
         // PnL & formatting
         // FIX: Icon should be green if positive compared to entry MC, red if negative
@@ -1324,9 +1355,12 @@ export const handleLiveSignals = async (ctx: BotContext) => {
         const entryStr = entryMc ? UIHelper.formatMarketCap(entryMc) : 'N/A';
         const currentStr = currentMc && currentMc > 0 ? UIHelper.formatMarketCap(currentMc) : 'N/A';
         
-        // FIX: Use ATH multiple from calculated value (from price samples or metrics)
-        // ATH is calculated from price samples (fast) or from metrics (background jobs with OHLCV)
-        const athMult = (row as any).athMultiple || sig?.metrics?.athMultiple || 0;
+        // FIX: Ensure ATH is never below current multiple or 1x
+        const currentMultiple =
+          (row as any).currentMultiple ||
+          (entryMc && currentMc && currentMc > 0 && entryMc > 0 ? currentMc / entryMc : 0);
+        const rawAthMult = (row as any).athMultiple || sig?.metrics?.athMultiple || 0;
+        const athMult = Math.max(rawAthMult, currentMultiple || 0, 1);
         const athMc = (row as any).athMarketCap || sig?.metrics?.athMarketCap || null;
         const athLabel = athMult > 0
           ? `${athMult.toFixed(1).replace(/\.0$/, '')}x ATH${athMc ? ` (${UIHelper.formatMarketCap(athMc)})` : ''}`
@@ -1446,6 +1480,7 @@ export const handleDistributions = async (ctx: Context, view: string = 'mcap') =
     if (!ownerTelegramId) return ctx.reply('❌ Unable to identify user.');
 
     const { getDistributionStats } = await import('../../analytics/aggregator');
+    let loadingMsg: any = null;
     if (!(ctx as any).session) (ctx as any).session = {};
     const session = (ctx as any).session;
     if (!session.distributions) {
@@ -1470,13 +1505,36 @@ export const handleDistributions = async (ctx: Context, view: string = 'mcap') =
       session.distributions.lastMessageId = (ctx.callbackQuery.message as any).message_id;
     }
 
+    // Show loading message
+    if (ctx.callbackQuery && ctx.callbackQuery.message) {
+      loadingMsg = ctx.callbackQuery.message;
+      try {
+        await ctx.telegram.editMessageText(
+          loadingMsg.chat.id,
+          loadingMsg.message_id,
+          undefined,
+          '⏳ Loading distributions...'
+        );
+      } catch {}
+    } else {
+      loadingMsg = await ctx.reply('⏳ Loading distributions...');
+    }
+
     const stats = await getDistributionStats(ownerTelegramId, timeframe, { type: targetType, id: targetId });
 
     if (stats.totalSignals === 0) {
-        return ctx.reply('No data available for distributions yet.', {
-            reply_markup: {
-                inline_keyboard: [[{ text: '🔙 Back', callback_data: 'analytics' }]]
-            }
+        const emptyMessage = 'No data available for distributions yet.';
+        if (loadingMsg?.chat && loadingMsg?.message_id) {
+          return ctx.telegram.editMessageText(
+            loadingMsg.chat.id,
+            loadingMsg.message_id,
+            undefined,
+            emptyMessage,
+            { reply_markup: { inline_keyboard: [[{ text: '🔙 Back', callback_data: 'analytics' }]] } }
+          );
+        }
+        return ctx.reply(emptyMessage, {
+          reply_markup: { inline_keyboard: [[{ text: '🔙 Back', callback_data: 'analytics' }]] }
         });
     }
 
@@ -1726,14 +1784,23 @@ export const handleDistributions = async (ctx: Context, view: string = 'mcap') =
         keyboard = [[{ text: '🔙 MCap View', callback_data: 'dist_view:mcap' }, { text: '❌ Close', callback_data: 'delete_msg' }]];
     }
 
-    await ctx.reply(message, { 
-        parse_mode: 'Markdown',
-        reply_markup: { inline_keyboard: keyboard }
-    });
+    if (loadingMsg?.chat && loadingMsg?.message_id) {
+        await ctx.telegram.editMessageText(loadingMsg.chat.id, loadingMsg.message_id, undefined, message, {
+            parse_mode: 'Markdown',
+            reply_markup: { inline_keyboard: keyboard }
+        });
+    } else {
+        await ctx.reply(message, {
+            parse_mode: 'Markdown',
+            reply_markup: { inline_keyboard: keyboard }
+        });
+    }
 
   } catch (error) {
     logger.error('Error loading distributions:', error);
-    ctx.reply('Error loading distributions.');
+    try {
+        await ctx.reply('Error loading distributions.');
+    } catch {}
   }
 };
 

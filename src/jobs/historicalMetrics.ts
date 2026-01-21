@@ -29,7 +29,11 @@ export const updateHistoricalMetrics = async (targetSignalIds?: number[]) => {
 
     const signals = await prisma.signal.findMany({
       where: whereClause,
-      orderBy: { detectedAt: 'desc' }
+      orderBy: { detectedAt: 'desc' },
+      include: {
+        metrics: true,
+        priceSamples: { orderBy: { sampledAt: 'desc' }, take: 1 }
+      }
     });
 
     logger.info(`Checking history for ${signals.length} active signals...`);
@@ -40,6 +44,12 @@ export const updateHistoricalMetrics = async (targetSignalIds?: number[]) => {
         const batch = signals.slice(i, i + BATCH_SIZE);
         await Promise.all(batch.map(async (signal) => {
             try {
+                const lastSample = signal.priceSamples?.[0];
+                if (signal.metrics?.updatedAt) {
+                    if (!lastSample || lastSample.sampledAt <= signal.metrics.updatedAt) return;
+                    if ((lastSample.volume ?? 0) <= 0) return;
+                }
+
                 const entryPrice = signal.entryPrice || (signal.entryMarketCap && signal.entrySupply ? signal.entryMarketCap / signal.entrySupply : null);
                 if (!entryPrice || !signal.detectedAt) return;
 

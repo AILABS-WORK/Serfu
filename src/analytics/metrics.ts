@@ -94,7 +94,7 @@ export const enrichSignalsWithCurrentPrice = async (signals: SignalWithRelations
 };
 
 /**
- * Enriches a single signal with ATH metrics using robust "progressive boundary" logic.
+ * Enriches a single signal with ATH metrics using boundary-based OHLCV windows.
  * Fetches candle data from GeckoTerminal and updates the DB.
  * @param sig Signal to enrich
  * @param force Force recalculation even if metrics are fresh
@@ -154,40 +154,88 @@ export const enrichSignalMetrics = async (
         const entryPriceValue = entryPrice; // Valid number now
 
         const nowTimestamp = Date.now();
-        const ageMs = nowTimestamp - entryTimestamp;
-
         let maxHigh = 0;
         let maxAt = entryTimestamp;
 
         const currentPrice = currentPriceOverride ?? sig.metrics?.currentPrice ?? 0;
 
-        // Simplified OHLCV strategy:
-        // < 1 hour: minute candles (single call)
-        // 1 hour - 7 days: hourly candles (single call)
-        // > 7 days: daily candles (single call)
-        let timeframe: 'minute' | 'hour' | 'day' = 'hour';
-        let unitMs = 60 * 60 * 1000;
-        if (ageMs <= 60 * 60 * 1000) {
-            timeframe = 'minute';
-            unitMs = 60 * 1000;
-        } else if (ageMs > 7 * 24 * 60 * 60 * 1000) {
-            timeframe = 'day';
-            unitMs = 24 * 60 * 60 * 1000;
-        }
+        // Boundary-based OHLCV strategy:
+        // - Minute candles from entry to next hour boundary
+        // - Hourly candles from hour boundary to next day boundary
+        // - Daily candles from day boundary to now
+        const entryDate = new Date(entryTimestamp);
+        const hourBoundary = new Date(entryDate);
+        hourBoundary.setMinutes(0, 0, 0);
+        hourBoundary.setHours(hourBoundary.getHours() + 1);
+        const hourBoundaryTs = hourBoundary.getTime();
 
-        const limit = Math.min(1000, Math.ceil(ageMs / unitMs) + 2);
+        const dayBoundary = new Date(entryDate);
+        dayBoundary.setHours(0, 0, 0, 0);
+        dayBoundary.setDate(dayBoundary.getDate() + 1);
+        const dayBoundaryTs = dayBoundary.getTime();
 
-        try {
-            const candles = await geckoTerminal.getOHLCV(sig.mint, timeframe, limit);
-            const postEntry = candles.filter((c) => c.timestamp >= entryTimestamp);
-            for (const candle of postEntry) {
-                if (candle.high > maxHigh) {
-                    maxHigh = candle.high;
-                    maxAt = candle.timestamp;
+        // Minute candles: entry -> hour boundary
+        if (nowTimestamp > entryTimestamp) {
+            const minuteEnd = Math.min(hourBoundaryTs, nowTimestamp);
+            if (minuteEnd > entryTimestamp) {
+                const minutesNeeded = Math.ceil((minuteEnd - entryTimestamp) / (60 * 1000)) + 2;
+                const minuteLimit = Math.min(1000, minutesNeeded);
+                try {
+                    const minuteCandles = await geckoTerminal.getOHLCV(sig.mint, 'minute', minuteLimit);
+                    const postEntryMinutes = minuteCandles.filter(
+                        (c) => c.timestamp >= entryTimestamp && c.timestamp < minuteEnd
+                    );
+                    for (const candle of postEntryMinutes) {
+                        if (candle.high > maxHigh) {
+                            maxHigh = candle.high;
+                            maxAt = candle.timestamp;
+                        }
+                    }
+                } catch (err) {
+                    logger.debug(`GeckoTerminal minute candles failed for ${sig.mint}: ${err}`);
                 }
             }
-        } catch (err) {
-            logger.debug(`GeckoTerminal ${timeframe} candles failed for ${sig.mint}: ${err}`);
+        }
+
+        // Hourly candles: hour boundary -> day boundary
+        if (nowTimestamp > hourBoundaryTs) {
+            const hourEnd = Math.min(dayBoundaryTs, nowTimestamp);
+            if (hourEnd > hourBoundaryTs) {
+                const hoursNeeded = Math.ceil((hourEnd - hourBoundaryTs) / (60 * 60 * 1000)) + 2;
+                const hourLimit = Math.min(1000, hoursNeeded);
+                try {
+                    const hourlyCandles = await geckoTerminal.getOHLCV(sig.mint, 'hour', hourLimit);
+                    const hourlyInRange = hourlyCandles.filter(
+                        (c) => c.timestamp >= hourBoundaryTs && c.timestamp < hourEnd
+                    );
+                    for (const candle of hourlyInRange) {
+                        if (candle.high > maxHigh) {
+                            maxHigh = candle.high;
+                            maxAt = candle.timestamp;
+                        }
+                    }
+                } catch (err) {
+                    logger.debug(`GeckoTerminal hourly candles failed for ${sig.mint}: ${err}`);
+                }
+            }
+        }
+
+        // Daily candles: day boundary -> now
+        if (nowTimestamp > dayBoundaryTs) {
+            const daysNeeded = Math.ceil((nowTimestamp - dayBoundaryTs) / (24 * 60 * 60 * 1000)) + 2;
+            const dayLimit = Math.min(1000, daysNeeded);
+            try {
+                const dailyCandles = await geckoTerminal.getOHLCV(sig.mint, 'day', dayLimit);
+                const dailyInRange = dailyCandles.filter((c) => c.timestamp >= dayBoundaryTs);
+                for (const candle of dailyInRange) {
+                    if (candle.high > maxHigh) {
+                        maxHigh = candle.high;
+                        maxAt = candle.timestamp;
+                    }
+                }
+            } catch (err) {
+                logger.debug(`GeckoTerminal daily candles failed for ${sig.mint}: ${err}`);
+            }
         }
 
         // Ensure ATH is never below current price or entry price
@@ -209,13 +257,6 @@ export const enrichSignalMetrics = async (
         // Calculate ATH multiple
         if (maxHigh > 0 && entryPriceValue > 0) {
             const athMultiple = maxHigh / entryPriceValue;
-            
-            // Validate against current price - ATH cannot be lower than current price
-            // (Assuming we have current price from enrichSignalsWithCurrentPrice or elsewhere)
-            if (sig.metrics?.currentPrice && sig.metrics.currentPrice > maxHigh) {
-                maxHigh = sig.metrics.currentPrice;
-                // re-calculate multiple?
-            }
 
             // Update or create metrics for this signal
             const athMarketCap = entrySupply ? maxHigh * entrySupply : 0;
