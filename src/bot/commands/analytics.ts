@@ -944,20 +944,6 @@ export const handleLiveSignals = async (ctx: BotContext) => {
         meta?: any; // TokenMeta
     }>();
 
-    // OPTIMIZATION: Enrich signals with ATH metrics before aggregation
-    // This ensures ATH is accurate (fetching historical candles if needed)
-    // We do this BEFORE Jupiter price fetch to start the async work early if possible, 
-    // but enrichSignalsBatch is blocking. 
-    // To avoid blocking the UI too long, we only update STALE metrics.
-    try {
-        const { enrichSignalsBatch } = await import('../../analytics/metrics');
-        // Only enrich signals that are actively being displayed or sorted
-        // Filter out very old signals to speed up? No, use the function's internal stale check.
-        await enrichSignalsBatch(signals as any); 
-    } catch (err) {
-        logger.error('Failed to batch enrich signals in Live Signals:', err);
-    }
-
     for (const sig of signals) {
         if (!aggregated.has(sig.mint)) {
             const caller = sig.user?.username ? `@${sig.user.username}` : (sig.group?.name || 'Unknown');
@@ -1010,58 +996,9 @@ export const handleLiveSignals = async (ctx: BotContext) => {
     }
     
     // FIX: Fetch market caps for ALL signals missing MC (not just 20)
-    // This ensures accurate PnL calculation for sorting and filtering
-    // OPTIMIZED: Use Jupiter search API in parallel (20 concurrent) - fastest method per benchmarks
-    // Benchmarks show: 20 concurrent = 2.6ms/token vs 10 concurrent = 11ms/token
-    const missingMcMints = uniqueMints.filter(mint => !marketCaps.has(mint) && priceMap[mint] !== null);
-    if (missingMcMints.length > 0) {
-      // Use Jupiter search API to get mcap directly (fastest method: 20 concurrent = 2.6ms/token)
-      const { getJupiterTokenInfo } = await import('../../providers/jupiter');
-      const CONCURRENCY_LIMIT = 20; // Optimized: 20 concurrent is fastest (2.6ms/token vs 11ms for 10)
-      
-      for (let i = 0; i < missingMcMints.length; i += CONCURRENCY_LIMIT) {
-        const batch = missingMcMints.slice(i, i + CONCURRENCY_LIMIT);
-        await Promise.all(batch.map(async (mint) => {
-          try {
-            // Add timeout wrapper (2 seconds per fetch - faster timeout since we're doing parallel)
-            const jupInfoPromise = getJupiterTokenInfo(mint);
-            const timeoutPromise = new Promise((_, reject) => 
-              setTimeout(() => reject(new Error('Jupiter search timeout')), 2000)
-            );
-            const jupInfo = await Promise.race([jupInfoPromise, timeoutPromise]) as any;
-            
-            // Jupiter search returns mcap directly (fastest path)
-            if (jupInfo?.mcap) {
-              marketCaps.set(mint, jupInfo.mcap);
-            } else if (jupInfo?.usdPrice && jupInfo?.circSupply) {
-              // Fallback: calculate from price * supply
-              const calculatedMc = jupInfo.usdPrice * jupInfo.circSupply;
-              if (calculatedMc > 0) {
-                marketCaps.set(mint, calculatedMc);
-              }
-            }
-          } catch (err) {
-            // If fetch fails or times out, try fallback to full metadata (slower)
-            // Only try fallback for a small subset to avoid timeout
-            if (i < CONCURRENCY_LIMIT) { // Only try fallback for first batch
-              try {
-            const metaPromise = provider.getTokenMeta(mint);
-            const timeoutPromise = new Promise((_, reject) => 
-                  setTimeout(() => reject(new Error('Metadata fetch timeout')), 2000)
-            );
-            const meta = await Promise.race([metaPromise, timeoutPromise]) as any;
-            const freshMc = meta?.liveMarketCap || meta?.marketCap;
-            if (freshMc) {
-              marketCaps.set(mint, freshMc);
-            }
-              } catch (metaErr) {
-                // If both fail, leave as 0 (will use price fallback in PnL calculation)
-              }
-            }
-          }
-        }));
-      }
-    }
+    // REMOVED: Fetching MC for all signals is too slow. 
+    // We rely on Jupiter Batch Prices (fetched above) and fallback to Price-based PnL if MC is missing.
+    // Full metadata is only fetched for the displayed top 10 signals.
 
     // 4. Get remaining filters (timeframe already applied above)
     const minMult = liveFilters.minMult || 0;
@@ -1245,66 +1182,10 @@ export const handleLiveSignals = async (ctx: BotContext) => {
     // STEP 4: Initialize metaMap for storing token metadata (used for all sorting methods)
     const metaMap = new Map<string, any>();
     
-    // STEP 5: CRITICAL FIX - Ensure ALL filtered candidates have market cap calculated before sorting
-    // For highest PnL sorting, we need accurate PnL for ALL candidates, not just top 30
-    // This ensures proper sorting when some signals have missing market cap data
-    if (sortBy === 'pnl') {
-        // For PnL-based sorting/filtering, fetch metadata for ALL candidates to ensure accurate PnL
-        logger.debug(`Fetching metadata for ${filteredCandidates.length} candidates to ensure accurate PnL calculation`);
-        
-        await Promise.all(filteredCandidates.map(async (row) => {
-            // Check if we already have valid market cap (> 0) - if so, just recalculate PnL
-            const existingMc = marketCaps.get(row.mint);
-            if (existingMc && existingMc > 0 && (row as any).currentMarketCap && (row as any).currentMarketCap > 0) {
-                // Recalculate PnL with existing market cap to ensure it's accurate
-                const sig = signals.find(s => s.id === (row as any).earliestSignalId) || signals.find(s => s.mint === row.mint);
-                if (sig) {
-                    const entryMc = (row as any).entryMarketCap || sig.entryMarketCap || sig.priceSamples?.[0]?.marketCap || 0;
-                    const currentMc = (row as any).currentMarketCap || existingMc;
-                    if (currentMc > 0 && entryMc > 0) {
-                        const newPnl = ((currentMc - entryMc) / entryMc) * 100;
-                        row.pnl = newPnl;
-                        (row as any)._calculatedPnl = newPnl;
-                    }
-                }
-                return;
-            }
-            
-            // Fetch metadata if market cap is missing or 0
-        try {
-            const meta = await provider.getTokenMeta(row.mint);
-            metaMap.set(row.mint, meta);
-            
-            // Update market cap with fresh data
-            const freshMc = meta.liveMarketCap || meta.marketCap;
-                if (freshMc && freshMc > 0) {
-                marketCaps.set(row.mint, freshMc);
-                (row as any).currentMarketCap = freshMc;
-                } else if (meta.supply && meta.livePrice) {
-                    const calculatedMc = meta.livePrice * meta.supply;
-                    if (calculatedMc > 0) {
-                    marketCaps.set(row.mint, calculatedMc);
-                    (row as any).currentMarketCap = calculatedMc;
-                    prices.set(row.mint, meta.livePrice);
-                }
-            }
-            
-                // Recalculate PnL with fresh market cap
-            const sig = signals.find(s => s.id === (row as any).earliestSignalId) || signals.find(s => s.mint === row.mint);
-            if (sig) {
-                const entryMc = (row as any).entryMarketCap || sig.entryMarketCap || sig.priceSamples?.[0]?.marketCap || 0;
-                const currentMc = (row as any).currentMarketCap || 0;
-                if (currentMc > 0 && entryMc > 0) {
-                        const newPnl = ((currentMc - entryMc) / entryMc) * 100;
-                        row.pnl = newPnl;
-                        (row as any)._calculatedPnl = newPnl;
-                    }
-                }
-            } catch (err) {
-                logger.debug(`Failed to fetch metadata for ${row.mint}: ${err}`);
-            }
-        }));
-    }
+    // REMOVED: Fetching metadata for ALL candidates when sorting by PnL is too slow.
+    // We rely on the initial PnL calculation using Jupiter Batch Prices (lines 970-1150).
+    // This provides "good enough" accuracy for sorting hundreds of signals instantly.
+    // Precise metadata is fetched only for the displayed Top 10 signals in Step 7.
     
     // STEP 5: Sort filtered candidates AFTER ensuring all have PnL calculated (metaMap already initialized above)
     // Default sort is 'newest' (by time, newest first) as per requirements
