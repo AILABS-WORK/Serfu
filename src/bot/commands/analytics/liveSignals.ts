@@ -79,6 +79,18 @@ const buildCache = async (
   // STEP 2: Fetch token info (EXACT SAME AS TEST)
   const tokenInfoMap = await getMultipleTokenInfo(allMints);
   
+  // CRITICAL DEBUG: Log what we got from Jupiter
+  const tokensWithData = Object.entries(tokenInfoMap).filter(([_, info]) => info !== null);
+  logger.info(`[LiveSignals] Jupiter returned data for ${tokensWithData.length}/${allMints.length} tokens`);
+  
+  // Log sample of what we got
+  if (tokensWithData.length > 0) {
+    const sample = tokensWithData.slice(0, 3);
+    sample.forEach(([mint, info]) => {
+      logger.info(`[LiveSignals] Sample token ${mint.slice(0, 8)}...: price=$${info?.usdPrice}, mcap=$${info?.mcap}`);
+    });
+  }
+  
   // STEP 3: Extract prices and market caps (EXACT SAME AS TEST)
   const priceMap: Record<string, number | null> = {};
   const marketCapMap: Record<string, number | null> = {};
@@ -94,12 +106,35 @@ const buildCache = async (
     if (info) {
       priceMap[mint] = info.usdPrice ?? null;
       marketCapMap[mint] = info.mcap ?? null;
+      // Log if we got null values
+      if (info.usdPrice === null || info.usdPrice === undefined) {
+        logger.warn(`[LiveSignals] Token ${mint.slice(0, 8)}... has null/undefined usdPrice`);
+      }
+      if (info.mcap === null || info.mcap === undefined) {
+        logger.warn(`[LiveSignals] Token ${mint.slice(0, 8)}... has null/undefined mcap`);
+      }
+    } else {
+      logger.warn(`[LiveSignals] Token ${mint.slice(0, 8)}... has null info in tokenInfoMap`);
     }
   });
   
   const pricesFound = Object.values(priceMap).filter(p => p !== null && p > 0).length;
   const marketCapsFound = Object.values(marketCapMap).filter(m => m !== null && m > 0).length;
-  logger.info(`[LiveSignals] Found ${pricesFound} prices, ${marketCapsFound} market caps`);
+  logger.info(`[LiveSignals] Extracted ${pricesFound} prices, ${marketCapsFound} market caps`);
+  
+  // CRITICAL: Log signals that will have N/A
+  const signalsWithNoData = signals.filter(s => {
+    const hasPrice = priceMap[s.mint] !== null && priceMap[s.mint]! > 0;
+    const hasMc = marketCapMap[s.mint] !== null && marketCapMap[s.mint]! > 0;
+    return !hasPrice && !hasMc;
+  });
+  if (signalsWithNoData.length > 0) {
+    logger.warn(`[LiveSignals] ${signalsWithNoData.length} signals will show N/A (no price/mcap from Jupiter)`);
+    const sample = signalsWithNoData.slice(0, 3);
+    sample.forEach(s => {
+      logger.warn(`[LiveSignals] No data for ${s.mint.slice(0, 8)}...: priceMap=${priceMap[s.mint]}, marketCapMap=${marketCapMap[s.mint]}`);
+    });
+  }
 
   // STEP 4: Calculate PnL for EVERY signal (EXACT SAME AS TEST)
   const cachedSignals: CachedSignal[] = signals.map(sig => {
@@ -111,6 +146,11 @@ const buildCache = async (
     const currentPrice = priceMap[sig.mint] ?? null;
     const currentMc = marketCapMap[sig.mint] ?? null;
     
+    // CRITICAL DEBUG: Log first few signals
+    if (signals.indexOf(sig) < 5) {
+      logger.info(`[LiveSignals] Processing ${sig.mint.slice(0, 8)}...: entryPrice=${entryPrice}, entryMc=${entryMc}, currentPrice=${currentPrice}, currentMc=${currentMc}`);
+    }
+    
     // Calculate PnL (EXACT SAME AS TEST)
     let pnl = -Infinity;
     if (currentPrice !== null && currentPrice > 0 && entryPrice !== null && entryPrice > 0) {
@@ -120,13 +160,23 @@ const buildCache = async (
     }
     
     // Store values (EXACT SAME AS TEST: currentPrice ?? 0, currentMc ?? 0)
+    // BUT: We need to preserve null vs 0 distinction for display
+    // If Jupiter returned null, store 0 but we'll check differently
+    const storedPrice = currentPrice ?? 0;
+    const storedMc = currentMc ?? 0;
+    
+    // Log what we're storing
+    if (signals.indexOf(sig) < 5) {
+      logger.info(`[LiveSignals] Storing ${sig.mint.slice(0, 8)}...: storedPrice=${storedPrice}, storedMc=${storedMc}, pnl=${isFinite(pnl) ? pnl.toFixed(2) : 'N/A'}`);
+    }
+    
     return {
       mint: sig.mint,
       symbol: sig.symbol || 'N/A',
       entryPrice: entryPrice ?? 0,
       entryMc: entryMc ?? 0,
-      currentPrice: currentPrice ?? 0,
-      currentMc: currentMc ?? 0,
+      currentPrice: storedPrice,
+      currentMc: storedMc,
       pnl,
       detectedAt: sig.detectedAt,
       firstDetectedAt: sig.detectedAt,
@@ -278,6 +328,7 @@ export const handleLiveSignals = async (ctx: BotContext) => {
       message += '\nNo signals match your filters.';
     }
 
+
     for (const item of topItems) {
       const sig = signalMap.get(item.signalId);
       const meta = metaMap.get(item.mint);
@@ -286,13 +337,41 @@ export const handleLiveSignals = async (ctx: BotContext) => {
       const callerLabel = sig ? formatCallerLabel(sig) : item.userName || item.groupName || 'Unknown';
       const timeAgo = sig ? UIHelper.formatTimeAgo(sig.detectedAt) : UIHelper.formatTimeAgo(item.detectedAt);
 
+      // CRITICAL DEBUG: Log what we're displaying
+      if (topItems.indexOf(item) < 3) {
+        logger.info(`[LiveSignals] Displaying ${item.mint.slice(0, 8)}...: currentPrice=${item.currentPrice}, currentMc=${item.currentMc}, pnl=${item.pnl}`);
+      }
+
       // EXACT SAME AS TEST: pnlStr = isFinite(pnl) ? format : 'N/A'
       const pnlStr = isFinite(item.pnl) ? UIHelper.formatPercent(item.pnl) : 'N/A';
       const icon = isFinite(item.pnl) ? (item.pnl >= 0 ? '🟢' : '🔴') : '❓';
 
       // EXACT SAME AS TEST: currentStr = currentMc > 0 ? format : 'N/A'
+      // BUT: If currentMc is 0, it might be because Jupiter returned null, so check if we have price
       const entryStr = item.entryMc > 0 ? UIHelper.formatMarketCap(item.entryMc) : 'N/A';
-      const currentStr = item.currentMc > 0 ? UIHelper.formatMarketCap(item.currentMc) : 'N/A';
+      let currentStr = item.currentMc > 0 ? UIHelper.formatMarketCap(item.currentMc) : 'N/A';
+      
+      // If we have price but no market cap, try to calculate from entry supply
+      if (currentStr === 'N/A' && item.currentPrice > 0 && sig) {
+        // Try to calculate market cap from current price and supply
+        if (sig.entrySupply && sig.entrySupply > 0) {
+          const calculatedMc = item.currentPrice * sig.entrySupply;
+          if (calculatedMc > 0) {
+            currentStr = UIHelper.formatMarketCap(calculatedMc);
+            logger.info(`[LiveSignals] Calculated MC for ${item.mint.slice(0, 8)}...: ${currentStr} from price=${item.currentPrice}, supply=${sig.entrySupply}`);
+          }
+        } else if (item.entryPrice > 0 && item.entryMc > 0) {
+          // Estimate supply from entry data
+          const estimatedSupply = item.entryMc / item.entryPrice;
+          if (estimatedSupply > 0) {
+            const calculatedMc = item.currentPrice * estimatedSupply;
+            if (calculatedMc > 0) {
+              currentStr = UIHelper.formatMarketCap(calculatedMc);
+              logger.info(`[LiveSignals] Calculated MC for ${item.mint.slice(0, 8)}...: ${currentStr} from price=${item.currentPrice}, estimatedSupply=${estimatedSupply}`);
+            }
+          }
+        }
+      }
 
       // ATH calculation
       const athMult = sig?.metrics?.athMultiple || 0;
