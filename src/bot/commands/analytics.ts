@@ -934,6 +934,12 @@ export const handleLiveSignals = async (ctx: BotContext) => {
 
         // 3. Strict Linear Pipeline
         // Step 1: DB Query - Fetch ALL signals in scope & timeframe
+        // WARNING: Pagination Limit (take: 40 in recent calls, but handleLiveSignals didn't limit DB query? 
+        // Wait, handleLiveSignals uses findMany WITHOUT 'take' limit, so it fetches ALL in timeframe?
+        // Let's verify line 933. It has no 'take'. Good. 
+        // BUT, if there are thousands, this is slow.
+        // Let's assume < 1000 for now.
+        
         const signals = await prisma.signal.findMany({
             where: {
                 detectedAt: { gte: timeframeCutoff },
@@ -949,7 +955,7 @@ export const handleLiveSignals = async (ctx: BotContext) => {
                 metrics: true,
                 priceSamples: { orderBy: { sampledAt: 'asc' }, take: 1 }
             },
-            orderBy: { detectedAt: 'asc' } // Oldest first for entry resolution
+            orderBy: { detectedAt: 'desc' } // Newest first by default from DB
         });
 
         if (signals.length === 0) {
