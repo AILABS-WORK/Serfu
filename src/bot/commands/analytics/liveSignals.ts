@@ -159,11 +159,11 @@ const buildCache = async (
       pnl = ((currentMc - entryMc) / entryMc) * 100;
     }
     
-    // Store values (EXACT SAME AS TEST: currentPrice ?? 0, currentMc ?? 0)
-    // BUT: We need to preserve null vs 0 distinction for display
-    // If Jupiter returned null, store 0 but we'll check differently
-    const storedPrice = currentPrice ?? 0;
-    const storedMc = currentMc ?? 0;
+    // CRITICAL FIX: Store null if Jupiter returned null, NOT 0
+    // We need to distinguish between "Jupiter returned 0" vs "Jupiter returned null"
+    // Store the actual value (null or number), then check properly in display
+    const storedPrice = currentPrice; // Keep null if null, don't convert to 0
+    const storedMc = currentMc; // Keep null if null, don't convert to 0
     
     // Log what we're storing
     if (signals.indexOf(sig) < 5) {
@@ -175,8 +175,11 @@ const buildCache = async (
       symbol: sig.symbol || 'N/A',
       entryPrice: entryPrice ?? 0,
       entryMc: entryMc ?? 0,
-      currentPrice: storedPrice,
-      currentMc: storedMc,
+      currentPrice: storedPrice ?? 0, // Only convert to 0 for storage (type safety)
+      currentMc: storedMc ?? 0, // Only convert to 0 for storage (type safety)
+      // Store original null status in a flag for proper checking
+      hasPrice: currentPrice !== null && currentPrice > 0,
+      hasMc: currentMc !== null && currentMc > 0,
       pnl,
       detectedAt: sig.detectedAt,
       firstDetectedAt: sig.detectedAt,
@@ -346,13 +349,17 @@ export const handleLiveSignals = async (ctx: BotContext) => {
       const pnlStr = isFinite(item.pnl) ? UIHelper.formatPercent(item.pnl) : 'N/A';
       const icon = isFinite(item.pnl) ? (item.pnl >= 0 ? '🟢' : '🔴') : '❓';
 
-      // EXACT SAME AS TEST: currentStr = currentMc > 0 ? format : 'N/A'
-      // BUT: If currentMc is 0, it might be because Jupiter returned null, so check if we have price
+      // CRITICAL FIX: Check if we have valid data from Jupiter
+      // If hasMc is true, use stored value. If false but hasPrice, calculate from price
       const entryStr = item.entryMc > 0 ? UIHelper.formatMarketCap(item.entryMc) : 'N/A';
-      let currentStr = item.currentMc > 0 ? UIHelper.formatMarketCap(item.currentMc) : 'N/A';
+      let currentStr = 'N/A';
       
-      // If we have price but no market cap, try to calculate from entry supply
-      if (currentStr === 'N/A' && item.currentPrice > 0 && sig) {
+      // First, try to use stored market cap if Jupiter returned it
+      if (item.hasMc && item.currentMc > 0) {
+        currentStr = UIHelper.formatMarketCap(item.currentMc);
+      }
+      // If no market cap but we have price, calculate it
+      else if (item.hasPrice && item.currentPrice > 0 && sig) {
         // Try to calculate market cap from current price and supply
         if (sig.entrySupply && sig.entrySupply > 0) {
           const calculatedMc = item.currentPrice * sig.entrySupply;

@@ -13,6 +13,8 @@ export interface CachedSignal {
   userId: number | null;
   userName: string;
   signalId: number;
+  hasPrice?: boolean; // True if Jupiter returned a valid price
+  hasMc?: boolean; // True if Jupiter returned a valid market cap
 }
 
 export interface LiveSignalsCache {
