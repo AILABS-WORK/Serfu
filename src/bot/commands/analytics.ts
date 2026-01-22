@@ -857,6 +857,10 @@ const resolveEntrySnapshot = (sig: any) => {
     entrySupply = entryMarketCap / entryPrice;
   }
 
+  if (!entryPrice && entrySupply > 0 && entryMarketCap > 0) {
+    entryPrice = entryMarketCap / entrySupply;
+  }
+
   if (!entryMarketCap && entryPrice > 0 && entrySupply > 0) {
     entryMarketCap = entryPrice * entrySupply;
   }
@@ -1065,8 +1069,11 @@ export const handleLiveSignals = async (ctx: BotContext) => {
                 // Refine Current MC if available from meta
                 if (meta.liveMarketCap || meta.marketCap) {
                     item.currentMc = meta.liveMarketCap || meta.marketCap || 0;
-                    // Recalculate PnL with better MC if possible? 
-                    // Let's stick to Price PnL if available as it's more direct from Jupiter
+                    
+                    // Recalculate PnL with better MC
+                    if (item.entryMc > 0 && item.currentMc > 0) {
+                        item.pnl = ((item.currentMc - item.entryMc) / item.entryMc) * 100;
+                    }
                 }
             } catch {}
 
