@@ -1059,9 +1059,10 @@ export const handleLiveSignals = async (ctx: BotContext) => {
         if (sortBy === 'pnl' || sortBy === 'trending') {
             filtered.sort((a, b) => {
                 // Handle NaN/Infinity
-                const pnlA = isFinite(a.pnl) ? a.pnl : -Infinity;
-                const pnlB = isFinite(b.pnl) ? b.pnl : -Infinity;
-                return pnlB - pnlA; // Descending
+                // We want Highest PnL first (Descending)
+                const pnlA = (isFinite(a.pnl) && !isNaN(a.pnl)) ? a.pnl : -999999999;
+                const pnlB = (isFinite(b.pnl) && !isNaN(b.pnl)) ? b.pnl : -999999999;
+                return pnlB - pnlA; 
             });
         } else {
             // Newest (Youngest first -> smallest age / largest detectedAt)
