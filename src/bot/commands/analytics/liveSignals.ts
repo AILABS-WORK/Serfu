@@ -174,6 +174,12 @@ export const handleLiveSignals = async (ctx: BotContext) => {
   let loadingMsg: any = null;
   try {
     if (!ctx.session) (ctx as any).session = {};
+    const withTimeout = async <T>(promise: Promise<T>, ms: number): Promise<T> => {
+      return await Promise.race([
+        promise,
+        new Promise<T>((_, reject) => setTimeout(() => reject(new Error('timeout')), ms))
+      ]);
+    };
     const liveFilters = ctx.session?.liveFilters || {};
     const timeframeLabel = (liveFilters as any).timeframe || '24H';
     const timeframeParsed = UIHelper.parseTimeframeInput(timeframeLabel);
@@ -230,10 +236,7 @@ export const handleLiveSignals = async (ctx: BotContext) => {
       filtered.sort((a: CachedSignal, b: CachedSignal) => b.detectedAt.getTime() - a.detectedAt.getTime());
     }
 
-    const poolSize = sortBy === 'pnl' || sortBy === 'trending'
-      ? Math.min(filtered.length, displayLimit * 5)
-      : displayLimit;
-    const topPool = filtered.slice(0, poolSize);
+    const topPool = filtered.slice(0, displayLimit);
 
     const { enrichSignalMetrics } = await import('../../../analytics/metrics');
     const metaMap = new Map<string, any>();
@@ -247,9 +250,9 @@ export const handleLiveSignals = async (ctx: BotContext) => {
       for (const s of signals) signalMap.set(s.id, s);
     }
 
-    await Promise.all(topPool.map(async (item: CachedSignal) => {
+    await Promise.allSettled(topPool.map(async (item: CachedSignal) => {
       try {
-        const meta = await provider.getTokenMeta(item.mint);
+        const meta = await withTimeout(provider.getTokenMeta(item.mint), 5000);
         metaMap.set(item.mint, meta);
         if (meta.liveMarketCap || meta.marketCap) {
           const currentMc = meta.liveMarketCap || meta.marketCap || 0;
@@ -270,7 +273,9 @@ export const handleLiveSignals = async (ctx: BotContext) => {
           sig.entrySupply = sig.entryMarketCap / sig.entryPrice;
         }
         const currentPrice = item.currentPrice || 0;
-        await enrichSignalMetrics(sig, false, currentPrice || undefined);
+        try {
+          await withTimeout(enrichSignalMetrics(sig, false, currentPrice || undefined), 8000);
+        } catch {}
       }
     }));
 
