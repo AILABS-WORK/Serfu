@@ -1064,7 +1064,7 @@ export const handleLiveSignals = async (ctx: BotContext) => {
                 
                 // Refine Current MC if available from meta
                 if (meta.liveMarketCap || meta.marketCap) {
-                    item.currentMc = meta.liveMarketCap || meta.marketCap;
+                    item.currentMc = meta.liveMarketCap || meta.marketCap || 0;
                     // Recalculate PnL with better MC if possible? 
                     // Let's stick to Price PnL if available as it's more direct from Jupiter
                 }
