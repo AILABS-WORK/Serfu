@@ -4,6 +4,30 @@ export interface SessionData {
   liveFilters?: {
     minMult?: number;
     onlyGainers?: boolean;
+    timeframe?: string;
+    sortBy?: 'activity' | 'newest' | 'pnl' | 'trending';
+    expand?: boolean;
+    minAth?: number;
+  };
+  liveSignalsCache?: {
+    signals: Array<{
+      mint: string;
+      symbol: string;
+      entryPrice: number;
+      entryMc: number;
+      currentPrice: number;
+      currentMc: number;
+      pnl: number;
+      detectedAt: Date;
+      firstDetectedAt: Date;
+      groupId: number | null;
+      groupName: string;
+      userId: number | null;
+      userName: string;
+      signalId: number;
+    }>;
+    fetchedAt: number;
+    timeframe: string;
   };
   distributions?: {
     timeframe?: string;
@@ -59,6 +83,8 @@ export interface SessionData {
   pendingInput?: {
     type:
       | 'dist_timeframe'
+      | 'live_timeframe'
+      | 'live_ath_min'
       | 'leaderboard_groups'
       | 'leaderboard_users'
       | 'leaderboard_signals'

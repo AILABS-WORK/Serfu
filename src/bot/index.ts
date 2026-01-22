@@ -16,9 +16,11 @@ import {
   handleAnalyticsCommand,
   handleGroupStatsCommand,
   handleUserStatsCommand,
+} from './commands/analytics';
+import {
   handleGroupLeaderboardCommand,
   handleUserLeaderboardCommand,
-} from './commands/analytics';
+} from './commands/analytics/leaderboards';
 import { handleSettingsCommand } from './commands/settings';
 import { getJupiterPrice, getJupiterTokenInfo } from '../providers/jupiter';
 

@@ -130,7 +130,8 @@ export const generateFirstSignalCard = async (
   meta: TokenMeta,
   groupName: string,
   userName: string,
-  headerOverride?: string
+  headerOverride?: string,
+  sourceLineOverride?: string
 ): Promise<string> => {
   // Data prep
   const currentPrice = meta.livePrice ?? (meta.marketCap && meta.supply ? meta.marketCap / meta.supply : signal.entryPrice ?? null);
@@ -246,7 +247,7 @@ Organic: \`${organicBuys}\` (${formatNumber(organicVol)})
   const tokenIdent = `*${meta.name || 'Unknown'}* (${meta.symbol || 'N/A'})`;
   const caLine = `\`${signal.mint}\``;
   const displayUser = (userName === 'Unknown User' || !signal.userId) ? groupName : `@${userName}`;
-  const sourceLine = `Source: ${groupName} • ${displayUser}`;
+  const sourceLine = sourceLineOverride || `Source: ${groupName} • ${displayUser}`;
 
   return `
 ${header}

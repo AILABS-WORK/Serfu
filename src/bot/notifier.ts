@@ -101,12 +101,69 @@ export const notifySignal = async (
         });
         const sourceGroupName = firstSignal?.group?.name || duplicateCheck.firstGroupName || 'Unknown Group';
         const sourceUserName = firstSignal?.user?.username || firstSignal?.user?.firstName || 'Unknown User';
+
+        let signalForCard: Signal = (firstSignal || signal) as Signal;
+        let sourceLineOverride: string | undefined;
+
+        try {
+          // If this mint was forwarded into this destination, use the forward time as entry
+          const forwarded = await prisma.forwardedSignal.findFirst({
+            where: {
+              destGroupId: signal.chatId,
+              signal: { mint: signal.mint },
+            },
+            orderBy: { forwardedAt: 'asc' },
+            include: {
+              signal: { include: { group: true } },
+            },
+          });
+
+          if (forwarded?.forwardedAt) {
+            const forwardedAt = forwarded.forwardedAt;
+            const forwardedSourceName =
+              forwarded.signal?.group?.name || sourceGroupName || 'Unknown Group';
+
+            const sample = await prisma.priceSample.findFirst({
+              where: {
+                signalId: forwarded.signalId,
+                sampledAt: { lte: forwardedAt },
+              },
+              orderBy: { sampledAt: 'desc' },
+            });
+
+            const supply = forwarded.signal?.entrySupply ?? metaWithLive?.supply ?? null;
+            const entryPriceAtForward = sample?.price ?? forwarded.signal?.entryPrice ?? null;
+            const entryMcAtForward =
+              sample?.marketCap ??
+              (entryPriceAtForward && supply ? entryPriceAtForward * supply : forwarded.signal?.entryMarketCap ?? null);
+
+            signalForCard = {
+              ...(forwarded.signal as Signal),
+              userId: null,
+              entryPrice: entryPriceAtForward,
+              entryMarketCap: entryMcAtForward,
+              entryPriceAt: forwardedAt,
+            };
+
+            const forwardedLabel = forwardedAt.toLocaleString('en-US', {
+              month: 'short',
+              day: '2-digit',
+              hour: '2-digit',
+              minute: '2-digit',
+            });
+            sourceLineOverride = `Source: ${forwardedSourceName} • Forwarded: ${forwardedLabel}`;
+          }
+        } catch (err) {
+          logger.debug(`Notifier: failed to resolve forwarded entry for ${signal.mint}:`, err);
+        }
+
         message = await generateFirstSignalCard(
-          firstSignal || signal,
+          signalForCard,
           metaWithLive,
           sourceGroupName,
           sourceUserName,
-          '🧭 *SIGNAL UPDATE*'
+          '🧭 *SIGNAL UPDATE*',
+          sourceLineOverride
         );
         keyboard = {
           inline_keyboard: [

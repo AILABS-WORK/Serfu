@@ -6,8 +6,11 @@ import { checkPriceAlerts } from '../jobs/priceAlerts';
 import { generateFirstSignalCard } from './signalCard';
 import { provider } from '../providers';
 import { TokenMeta } from '../providers/types';
-import { getGroupStats, getUserStats, getLeaderboard } from '../analytics/aggregator';
-import { handleRecentCalls, handleAnalyticsCommand } from './commands/analytics';
+import { handleAnalyticsCommand, handleEarliestCallers, handleCrossGroupConfirms, handleGroupStatsCommand, handleUserStatsCommand, handleStrategyCommand } from './commands/analytics';
+import { handleLiveSignals } from './commands/analytics/liveSignals';
+import { handleDistributions } from './commands/analytics/distributions';
+import { handleRecentCalls } from './commands/analytics/recentCalls';
+import { handleGroupLeaderboardCommand, handleUserLeaderboardCommand, handleSignalLeaderboardCommand } from './commands/analytics/leaderboards';
 import { updateHistoricalMetrics } from '../jobs/historicalMetrics';
 import { getDeepHolderAnalysis } from '../analytics/holders';
 import { UIHelper } from '../utils/ui';
@@ -289,7 +292,6 @@ Max Drawdown: ${(dd * 100).toFixed(2)}%
   bot.action(/^strategy_view:(GROUP|USER):(\d+)$/, async (ctx) => {
       const type = ctx.match[1] as 'GROUP' | 'USER';
       const id = ctx.match[2];
-      const { handleStrategyCommand } = await import('./commands/analytics');
       await handleStrategyCommand(ctx as any, type, id);
       await ctx.answerCbQuery();
   });
@@ -297,7 +299,6 @@ Max Drawdown: ${(dd * 100).toFixed(2)}%
   // --- LIVE SIGNALS & FILTERS ---
   
   bot.action('live_signals', async (ctx) => {
-      const { handleLiveSignals } = await import('./commands/analytics');
       await handleLiveSignals(ctx);
   });
 
@@ -318,7 +319,6 @@ Max Drawdown: ${(dd * 100).toFixed(2)}%
           }
 
           // Reload view
-          const { handleLiveSignals } = await import('./commands/analytics');
           await handleLiveSignals(ctx);
           await ctx.answerCbQuery('Filter updated');
       } catch (error) {
@@ -340,7 +340,6 @@ Max Drawdown: ${(dd * 100).toFixed(2)}%
           }
 
           // Reload view
-          const { handleLiveSignals } = await import('./commands/analytics');
           await handleLiveSignals(ctx);
           await ctx.answerCbQuery(`Sorted by ${sortBy}`);
       } catch (error) {
@@ -361,7 +360,6 @@ Max Drawdown: ${(dd * 100).toFixed(2)}%
               return;
           }
           (ctx.session.liveFilters as any).timeframe = tf;
-          const { handleLiveSignals } = await import('./commands/analytics');
           await handleLiveSignals(ctx);
           await ctx.answerCbQuery('Timeframe updated');
       } catch (error) {
@@ -384,7 +382,6 @@ Max Drawdown: ${(dd * 100).toFixed(2)}%
           if (val === 'reset') {
               (ctx.session.liveFilters as any).minAth = undefined;
           }
-          const { handleLiveSignals } = await import('./commands/analytics');
           await handleLiveSignals(ctx);
           await ctx.answerCbQuery('ATH filter updated');
       } catch (error) {
@@ -394,13 +391,11 @@ Max Drawdown: ${(dd * 100).toFixed(2)}%
   });
 
   bot.action('distributions', async (ctx) => {
-      const { handleDistributions } = await import('./commands/analytics');
       await handleDistributions(ctx as any, 'mcap');
   });
 
   bot.action(/^dist_view:(.*)$/, async (ctx) => {
       const view = ctx.match[1];
-      const { handleDistributions } = await import('./commands/analytics');
       await handleDistributions(ctx as any, view);
       await ctx.answerCbQuery();
   });
@@ -416,7 +411,6 @@ Max Drawdown: ${(dd * 100).toFixed(2)}%
           return;
       }
       ctx.session.distributions.timeframe = tf;
-      const { handleDistributions } = await import('./commands/analytics');
       await handleDistributions(ctx as any, 'mcap');
       await ctx.answerCbQuery();
   });
@@ -469,7 +463,6 @@ Max Drawdown: ${(dd * 100).toFixed(2)}%
       if (!ctx.session.distributions) ctx.session.distributions = {};
       ctx.session.distributions.targetType = 'OVERALL';
       ctx.session.distributions.targetId = undefined;
-      const { handleDistributions } = await import('./commands/analytics');
       await handleDistributions(ctx as any, 'mcap');
       await ctx.answerCbQuery();
   });
@@ -479,7 +472,6 @@ Max Drawdown: ${(dd * 100).toFixed(2)}%
       if (!ctx.session.distributions) ctx.session.distributions = {};
       ctx.session.distributions.targetType = 'GROUP';
       ctx.session.distributions.targetId = parseInt(ctx.match[1]);
-      const { handleDistributions } = await import('./commands/analytics');
       await handleDistributions(ctx as any, 'mcap');
       await ctx.answerCbQuery();
   });
@@ -489,7 +481,6 @@ Max Drawdown: ${(dd * 100).toFixed(2)}%
       if (!ctx.session.distributions) ctx.session.distributions = {};
       ctx.session.distributions.targetType = 'USER';
       ctx.session.distributions.targetId = parseInt(ctx.match[1]);
-      const { handleDistributions } = await import('./commands/analytics');
       await handleDistributions(ctx as any, 'mcap');
       await ctx.answerCbQuery();
   });
@@ -1033,7 +1024,6 @@ Max Drawdown: ${(dd * 100).toFixed(2)}%
   });
   
   bot.action('analytics_recent', async (ctx) => {
-      const { handleRecentCalls } = await import('./commands/analytics');
       await handleRecentCalls(ctx as any);
   });
 
@@ -1048,7 +1038,6 @@ Max Drawdown: ${(dd * 100).toFixed(2)}%
           return;
       }
       ctx.session.recent.timeframe = tf;
-      const { handleRecentCalls } = await import('./commands/analytics');
       await handleRecentCalls(ctx as any, tf);
       await ctx.answerCbQuery();
   });
@@ -1133,7 +1122,6 @@ Max Drawdown: ${(dd * 100).toFixed(2)}%
   // Handle viewing stats for a specific group
   bot.action(/^group_stats_view:(\d+)$/, async (ctx) => {
       const groupId = ctx.match[1];
-      const { handleGroupStatsCommand } = await import('./commands/analytics');
       // We need to reply a new message or edit? handleGroupStatsCommand usually replies.
       // Let's modify handleGroupStatsCommand to support editing if possible, or just reply.
       // But we are in a callback. Replying is fine.
@@ -1151,7 +1139,6 @@ Max Drawdown: ${(dd * 100).toFixed(2)}%
       // Wait, handleGroupStatsCommand doesn't take window arg in the export?
       // Let's check analytics.ts... it takes (ctx, groupIdStr). It DOES NOT take window.
       // We need to update handleGroupStatsCommand to accept window.
-      const { handleGroupStatsCommand } = await import('./commands/analytics');
       // @ts-ignore
       await handleGroupStatsCommand(ctx as any, groupId, ctx.match[2]); 
       await ctx.answerCbQuery();
@@ -1167,14 +1154,12 @@ Max Drawdown: ${(dd * 100).toFixed(2)}%
 
   bot.action(/^user_stats_view:(\d+)$/, async (ctx) => {
       const userId = ctx.match[1];
-      const { handleUserStatsCommand } = await import('./commands/analytics');
       await handleUserStatsCommand(ctx as any, userId);
       await ctx.answerCbQuery();
   });
 
   bot.action(/^user_stats_window:(\d+):(1D|3D|7D|30D|ALL)$/, async (ctx) => {
       const userId = ctx.match[1];
-      const { handleUserStatsCommand } = await import('./commands/analytics');
       // @ts-ignore
       await handleUserStatsCommand(ctx as any, userId, ctx.match[2]);
       await ctx.answerCbQuery();
@@ -1190,18 +1175,15 @@ Max Drawdown: ${(dd * 100).toFixed(2)}%
 
 
   bot.action('analytics_earliest', async (ctx) => {
-      const { handleEarliestCallers } = await import('./commands/analytics');
       await handleEarliestCallers(ctx as any);
   });
 
   bot.action('analytics_confirms', async (ctx) => {
-      const { handleCrossGroupConfirms } = await import('./commands/analytics');
       await handleCrossGroupConfirms(ctx as any, 'lag');
   });
 
   bot.action(/^confirms_view:(.*)$/, async (ctx) => {
       const view = ctx.match[1];
-      const { handleCrossGroupConfirms } = await import('./commands/analytics');
       await handleCrossGroupConfirms(ctx as any, view);
       await ctx.answerCbQuery();
   });
@@ -1235,19 +1217,16 @@ Max Drawdown: ${(dd * 100).toFixed(2)}%
 
   bot.action(/^leaderboard_groups:(.*)$/, async (ctx) => {
       const window = ctx.match[1] as '1D' | '3D' | '7D' | '30D' | 'ALL' | string;
-      const { handleGroupLeaderboardCommand } = await import('./commands/analytics');
       await handleGroupLeaderboardCommand(ctx as any, window);
   });
 
   bot.action(/^leaderboard_users:(.*)$/, async (ctx) => {
       const window = ctx.match[1] as '1D' | '3D' | '7D' | '30D' | 'ALL' | string;
-      const { handleUserLeaderboardCommand } = await import('./commands/analytics');
       await handleUserLeaderboardCommand(ctx as any, window);
   });
 
   bot.action(/^leaderboard_signals:(.*)$/, async (ctx) => {
       const window = ctx.match[1] as '1D' | '3D' | '7D' | '30D' | 'ALL' | string;
-      const { handleSignalLeaderboardCommand } = await import('./commands/analytics');
       await handleSignalLeaderboardCommand(ctx as any, window);
   });
 

@@ -88,7 +88,7 @@ export const ingestMiddleware: Middleware<Context> = async (ctx, next) => {
         const lastMessageId = (ctx as any).session.distributions.lastMessageId;
         if (lastChatId && lastMessageId) {
           try {
-            const { handleDistributions } = await import('./commands/analytics');
+            const { handleDistributions } = await import('./commands/analytics/distributions');
             await handleDistributions(ctx as any, 'mcap');
             return next();
           } catch (err) {
@@ -102,7 +102,7 @@ export const ingestMiddleware: Middleware<Context> = async (ctx, next) => {
       if (pending.type === 'live_timeframe') {
         if (!(ctx as any).session.liveFilters) (ctx as any).session.liveFilters = {};
         (ctx as any).session.liveFilters.timeframe = parsedLabel!;
-        const { handleLiveSignals } = await import('./commands/analytics');
+        const { handleLiveSignals } = await import('./commands/analytics/liveSignals');
         await handleLiveSignals(ctx as any);
         return next();
       }
@@ -110,7 +110,7 @@ export const ingestMiddleware: Middleware<Context> = async (ctx, next) => {
       if (pending.type === 'leaderboard_groups') {
         if (!(ctx as any).session.leaderboards) (ctx as any).session.leaderboards = {};
         (ctx as any).session.leaderboards.group = parsedLabel!;
-        const { handleGroupLeaderboardCommand } = await import('./commands/analytics');
+        const { handleGroupLeaderboardCommand } = await import('./commands/analytics/leaderboards');
         await handleGroupLeaderboardCommand(ctx as any, parsedLabel as any);
         return next();
       }
@@ -118,7 +118,7 @@ export const ingestMiddleware: Middleware<Context> = async (ctx, next) => {
       if (pending.type === 'leaderboard_users') {
         if (!(ctx as any).session.leaderboards) (ctx as any).session.leaderboards = {};
         (ctx as any).session.leaderboards.user = parsedLabel!;
-        const { handleUserLeaderboardCommand } = await import('./commands/analytics');
+        const { handleUserLeaderboardCommand } = await import('./commands/analytics/leaderboards');
         await handleUserLeaderboardCommand(ctx as any, parsedLabel as any);
         return next();
       }
@@ -126,7 +126,7 @@ export const ingestMiddleware: Middleware<Context> = async (ctx, next) => {
       if (pending.type === 'leaderboard_signals') {
         if (!(ctx as any).session.leaderboards) (ctx as any).session.leaderboards = {};
         (ctx as any).session.leaderboards.signal = parsedLabel!;
-        const { handleSignalLeaderboardCommand } = await import('./commands/analytics');
+        const { handleSignalLeaderboardCommand } = await import('./commands/analytics/leaderboards');
         await handleSignalLeaderboardCommand(ctx as any, parsedLabel as any);
         return next();
       }
@@ -134,7 +134,7 @@ export const ingestMiddleware: Middleware<Context> = async (ctx, next) => {
       if (pending.type === 'recent_timeframe') {
         if (!(ctx as any).session.recent) (ctx as any).session.recent = {};
         (ctx as any).session.recent.timeframe = parsedLabel!;
-        const { handleRecentCalls } = await import('./commands/analytics');
+        const { handleRecentCalls } = await import('./commands/analytics/recentCalls');
         await handleRecentCalls(ctx as any, parsedLabel as any);
         return next();
       }
@@ -148,7 +148,7 @@ export const ingestMiddleware: Middleware<Context> = async (ctx, next) => {
         if (!(ctx as any).session.liveFilters) (ctx as any).session.liveFilters = {};
         (ctx as any).session.liveFilters.minAth = val;
         (ctx as any).session.pendingInput = undefined;
-        const { handleLiveSignals } = await import('./commands/analytics');
+        const { handleLiveSignals } = await import('./commands/analytics/liveSignals');
         await handleLiveSignals(ctx as any);
         return next();
       }
