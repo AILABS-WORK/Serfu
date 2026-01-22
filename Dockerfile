@@ -21,9 +21,9 @@ WORKDIR /app
 COPY package*.json ./
 COPY prisma ./prisma/
 
-# Install dependencies
+# Install dependencies (including dev dependencies for build)
 # npm ci is faster and more reliable for builds
-RUN npm ci --only=production=false
+RUN npm ci
 
 # Copy source code (docs, tests, scripts excluded via .dockerignore)
 COPY . .
