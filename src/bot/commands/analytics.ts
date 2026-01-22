@@ -1277,8 +1277,8 @@ export const handleLiveSignals = async (ctx: BotContext) => {
         // Use PnL as proxy for trending (high PnL = trending up)
         filteredCandidates.sort((a, b) => (b.pnl || (b as any)._calculatedPnl || 0) - (a.pnl || (a as any)._calculatedPnl || 0));
     } else if (sortBy === 'newest') {
-        // Sort by latest detection time (most recent mention) - newest first
-        filteredCandidates.sort((a, b) => b.latestDate.getTime() - a.latestDate.getTime());
+        // Sort by signal creation time (earliest detection) - newest signals first
+        filteredCandidates.sort((a, b) => b.earliestDate.getTime() - a.earliestDate.getTime());
     } else if (sortBy === 'pnl') {
         // Highest PnL first - use the most accurate PnL value available
         filteredCandidates.sort((a, b) => {
@@ -1292,7 +1292,7 @@ export const handleLiveSignals = async (ctx: BotContext) => {
         });
     } else {
         // Fallback to newest if sortBy is unknown
-        filteredCandidates.sort((a, b) => b.latestDate.getTime() - a.latestDate.getTime());
+        filteredCandidates.sort((a, b) => b.earliestDate.getTime() - a.earliestDate.getTime());
     }
     
     // STEP 6: Take top 10 AFTER sorting

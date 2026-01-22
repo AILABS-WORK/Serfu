@@ -189,8 +189,28 @@ export const processMessage = async (message: RawMessage) => {
 
     logger.info(`Signal created: ${signal.id} for ${mint} at ${entryPrice} from group ${chatId}`);
 
-    // Check if this is a duplicate CA (group-scoped, exclude this signal)
-    const duplicateCheck = await checkDuplicateCA(mint, ownerForDuplicate, groupId || undefined, signal.id);
+    // Check if this is a duplicate CA (workspace-scoped, exclude this signal)
+    let duplicateCheck = await checkDuplicateCA(mint, ownerForDuplicate, groupId || undefined, signal.id);
+    if (rawMsg?.group?.type === 'destination' && ownerForDuplicate) {
+      const firstSignal = await prisma.signal.findFirst({
+        where: {
+          mint,
+          group: {
+            ownerId: ownerForDuplicate,
+            type: 'source',
+          },
+        },
+        orderBy: { detectedAt: 'asc' },
+        include: { group: true },
+      });
+      if (firstSignal && firstSignal.id !== signal.id) {
+        duplicateCheck = {
+          isDuplicate: true,
+          firstSignal,
+          firstGroupName: firstSignal.group?.name || 'Unknown Group',
+        };
+      }
+    }
 
     // Fetch a fresh quote for current stats (for notification only)
     let livePrice: number | null = null;
