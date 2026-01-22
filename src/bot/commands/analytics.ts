@@ -1445,7 +1445,7 @@ export const handleLiveSignals = async (ctx: BotContext) => {
         // FIX: Icon should be green if positive compared to entry MC, red if negative
         const pnlStr = UIHelper.formatPercent(calculatedPnl);
         const icon = calculatedPnl >= 0 ? '🟢' : '🔴';
-        const timeAgo = UIHelper.formatTimeAgo(row.latestDate);
+        const timeAgo = UIHelper.formatTimeAgo(row.earliestDate);
         
         // Use symbol from meta if available
         const displaySymbol = meta?.symbol || row.symbol;
@@ -1494,7 +1494,7 @@ export const handleLiveSignals = async (ctx: BotContext) => {
         message += `🍬 Dex: ${dexPaid} | 📦 Migrated: ${migrated} | 👥 Team: ${hasTeam} | 𝕏: ${hasX}\n`;
 
         // Age and Caller
-        message += `⏱️ Age: ${timeAgo} | 👤 ${row.latestCaller || row.earliestCaller}\n`;
+        message += `⏱️ Age: ${timeAgo} | 👤 ${row.earliestCaller || row.latestCaller}\n`;
         message += UIHelper.separator('LIGHT'); 
     }
 
