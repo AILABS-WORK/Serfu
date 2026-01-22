@@ -70,7 +70,34 @@ const buildCache = async (
   // Get all unique mints for price fetching
   const allMints = [...new Set(signals.map(s => s.mint))];
   const { getMultipleTokenPrices } = await import('../../../providers/jupiter');
+  
+  logger.info(`[LiveSignals] Fetching prices for ${allMints.length} unique mints`);
   const priceMap = await getMultipleTokenPrices(allMints);
+  
+  // Log price fetch results for debugging
+  const pricesFound = Object.values(priceMap).filter(p => p !== null && p > 0).length;
+  logger.info(`[LiveSignals] Price fetch complete: ${pricesFound}/${allMints.length} prices found`);
+  
+  if (pricesFound === 0 && allMints.length > 0) {
+    logger.warn('[LiveSignals] No prices fetched from Jupiter - checking if API is accessible');
+  }
+
+  // Fetch metadata for tokens missing prices (as fallback for market cap)
+  const missingPriceMints = allMints.filter(m => !priceMap[m] || priceMap[m] === null);
+  const metaMap = new Map<string, any>();
+  
+  if (missingPriceMints.length > 0 && missingPriceMints.length <= 20) {
+    // Only fetch metadata for a small number of missing prices to avoid timeout
+    logger.info(`[LiveSignals] Fetching metadata for ${missingPriceMints.length} tokens missing prices`);
+    await Promise.allSettled(missingPriceMints.slice(0, 20).map(async (mint) => {
+      try {
+        const meta = await provider.getTokenMeta(mint);
+        if (meta) metaMap.set(mint, meta);
+      } catch (err) {
+        // Silently fail - metadata is just a fallback
+      }
+    }));
+  }
 
   // Calculate PnL for EVERY signal (keep all signals, don't aggregate)
   const cachedSignals: CachedSignal[] = signals.map(sig => {
@@ -80,24 +107,46 @@ const buildCache = async (
     const entrySupply = sig.entrySupply ?? null;
     
     // Get current price from Jupiter (don't default to 0)
-    const currentPrice = priceMap[sig.mint] ?? null;
+    let currentPrice = priceMap[sig.mint] ?? null;
+    
+    // If no price from Jupiter, try to get from metadata
+    if (currentPrice === null || currentPrice === 0) {
+      const meta = metaMap.get(sig.mint);
+      if (meta?.price) {
+        currentPrice = meta.price;
+      } else if (meta?.livePrice) {
+        currentPrice = meta.livePrice;
+      }
+    }
     
     // Calculate current market cap
     let currentMc: number | null = null;
-    if (currentPrice !== null && entrySupply !== null && entrySupply > 0) {
-      currentMc = currentPrice * entrySupply;
-    } else if (currentPrice !== null && entryPrice !== null && entryMc !== null && entryPrice > 0) {
-      // Estimate supply from entry data
-      const estimatedSupply = entryMc / entryPrice;
-      currentMc = currentPrice * estimatedSupply;
+    if (currentPrice !== null && currentPrice > 0) {
+      if (entrySupply !== null && entrySupply > 0) {
+        currentMc = currentPrice * entrySupply;
+      } else if (entryPrice !== null && entryPrice > 0 && entryMc !== null && entryMc > 0) {
+        // Estimate supply from entry data
+        const estimatedSupply = entryMc / entryPrice;
+        currentMc = currentPrice * estimatedSupply;
+      }
+    }
+    
+    // Try to get market cap from metadata if we still don't have it
+    if ((currentMc === null || currentMc === 0) && currentPrice === null) {
+      const meta = metaMap.get(sig.mint);
+      if (meta?.marketCap) {
+        currentMc = meta.marketCap;
+      } else if (meta?.liveMarketCap) {
+        currentMc = meta.liveMarketCap;
+      }
     }
     
     // Calculate PnL - use price if available, otherwise market cap
     // Use -Infinity as sentinel for "cannot calculate"
     let pnl: number = -Infinity;
-    if (currentPrice !== null && entryPrice !== null && entryPrice > 0) {
+    if (currentPrice !== null && currentPrice > 0 && entryPrice !== null && entryPrice > 0) {
       pnl = ((currentPrice - entryPrice) / entryPrice) * 100;
-    } else if (currentMc !== null && entryMc !== null && entryMc > 0) {
+    } else if (currentMc !== null && currentMc > 0 && entryMc !== null && entryMc > 0) {
       pnl = ((currentMc - entryMc) / entryMc) * 100;
     }
     
@@ -171,9 +220,16 @@ export const handleLiveSignals = async (ctx: BotContext) => {
       cached.timeframe === timeframeLabel &&
       Date.now() - cached.fetchedAt < CACHE_TTL_MS;
 
-    const cache = cacheFresh
+    let cache = cacheFresh
       ? cached
       : await buildCache(ctx, timeframeCutoff, timeframeLabel);
+    
+    // Force refresh if cache has no valid prices (all PnL are invalid)
+    const validPricesInCache = cache.signals.filter(s => isFinite(s.pnl) && s.currentPrice > 0).length;
+    if (cacheFresh && validPricesInCache === 0 && cache.signals.length > 0) {
+      logger.warn('[LiveSignals] Cache has no valid prices, forcing refresh');
+      cache = await buildCache(ctx, timeframeCutoff, timeframeLabel);
+    }
 
     ctx.session.liveSignalsCache = cache;
 
