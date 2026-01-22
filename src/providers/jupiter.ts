@@ -220,6 +220,128 @@ export interface JupiterTokenInfo {
   graduatedAt?: string;
 }
 
+/**
+ * Fetch multiple token info via Jupiter search endpoint (batch).
+ * This is FASTER than price endpoint because it returns ALL data in one call:
+ * price, market cap, liquidity, holders, audit, stats, socials, etc.
+ * 
+ * Note: Search endpoint queries by mint address, returns array of matches.
+ * We process in parallel batches with rate limiting.
+ */
+export const getMultipleTokenInfo = async (mints: string[]): Promise<Record<string, JupiterTokenInfo | null>> => {
+  if (mints.length === 0) return {};
+  
+  const results: Record<string, JupiterTokenInfo | null> = {};
+  
+  // Initialize all as null
+  mints.forEach(mint => {
+    results[mint] = null;
+  });
+  
+  try {
+    // Search endpoint can handle individual queries efficiently
+    // Process in parallel batches with rate limiting
+    const BATCH_SIZE = 10; // Process 10 tokens in parallel
+    const DELAY_BETWEEN_BATCHES_MS = 200; // 200ms delay between batches
+    const REQUEST_TIMEOUT_MS = 10000; // 10 seconds per request
+    
+    logger.info(`[Jupiter] Fetching token info for ${mints.length} tokens using search endpoint (${BATCH_SIZE} parallel, ${Math.ceil(mints.length / BATCH_SIZE)} batches)`);
+    
+    // Process in batches
+    for (let i = 0; i < mints.length; i += BATCH_SIZE) {
+      const batch = mints.slice(i, i + BATCH_SIZE);
+      
+      // Add delay between batches (except first)
+      if (i > 0) {
+        await new Promise(resolve => setTimeout(resolve, DELAY_BETWEEN_BATCHES_MS));
+      }
+      
+      // Process batch in parallel
+      await Promise.allSettled(batch.map(async (mint) => {
+        try {
+          const headers: Record<string, string> = {};
+          if (JUP_API_KEY) {
+            headers['x-api-key'] = JUP_API_KEY;
+          }
+          const url = `${JUP_SEARCH_URL}?query=${mint}`;
+          
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+          
+          try {
+            const res = await fetch(url, { headers, signal: controller.signal });
+            clearTimeout(timeoutId);
+            
+            if (!res.ok) {
+              if (res.status === 429) {
+                logger.warn(`[Jupiter] Rate limited for ${mint.slice(0, 8)}...`);
+              }
+              return;
+            }
+            
+            const data: any = await res.json();
+            if (!data || !data.length) return;
+            
+            const t = data[0];
+            // Only store if mint matches (search might return similar tokens)
+            if (t.id === mint) {
+              results[mint] = {
+                id: t.id,
+                name: t.name,
+                symbol: t.symbol,
+                icon: t.icon,
+                decimals: t.decimals,
+                circSupply: t.circSupply,
+                totalSupply: t.totalSupply,
+                usdPrice: t.usdPrice,
+                mcap: t.mcap,
+                fdv: t.fdv,
+                liquidity: t.liquidity,
+                holderCount: t.holderCount,
+                priceBlockId: t.priceBlockId,
+                stats5m: t.stats5m,
+                stats1h: t.stats1h,
+                stats6h: t.stats6h,
+                stats24h: t.stats24h,
+                twitter: t.twitter,
+                telegram: t.telegram,
+                website: t.website,
+                launchpad: t.launchpad,
+                createdAt: t.createdAt,
+                firstPoolId: t?.firstPool?.id,
+                firstPoolCreatedAt: t?.firstPool?.createdAt,
+                audit: t.audit,
+                organicScore: t.organicScore,
+                organicScoreLabel: t.organicScoreLabel,
+                isVerified: t.isVerified,
+                cexes: t.cexes,
+                tags: t.tags,
+                graduatedPool: t.graduatedPool,
+                graduatedAt: t.graduatedAt,
+              };
+            }
+          } catch (fetchErr: any) {
+            clearTimeout(timeoutId);
+            if (fetchErr.name !== 'AbortError') {
+              logger.debug(`[Jupiter] Search error for ${mint.slice(0, 8)}...: ${fetchErr.message}`);
+            }
+          }
+        } catch (err: any) {
+          logger.debug(`[Jupiter] Error processing ${mint.slice(0, 8)}...: ${err.message}`);
+        }
+      }));
+    }
+    
+    const found = Object.values(results).filter(r => r !== null).length;
+    logger.info(`[Jupiter] Token info fetch complete: ${found}/${mints.length} tokens found`);
+    
+    return results;
+  } catch (err: any) {
+    logger.error('[Jupiter] Batch token info error:', err);
+    return results;
+  }
+};
+
 export const getJupiterTokenInfo = async (mint: string): Promise<JupiterTokenInfo | null> => {
   try {
     const headers: Record<string, string> = {};
@@ -236,6 +358,8 @@ export const getJupiterTokenInfo = async (mint: string): Promise<JupiterTokenInf
     const data: any = await res.json();
     if (!data || !data.length) return null;
     const t = data[0];
+    // Verify mint matches
+    if (t.id !== mint) return null;
     return {
       id: t.id,
       name: t.name,

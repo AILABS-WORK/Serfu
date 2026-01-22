@@ -67,36 +67,35 @@ const buildCache = async (
     return { signals: [], fetchedAt: Date.now(), timeframe: timeframeLabel };
   }
 
-  // Get all unique mints for price fetching
+  // Get all unique mints for fetching token info
   const allMints = [...new Set(signals.map(s => s.mint))];
-  const { getMultipleTokenPrices } = await import('../../../providers/jupiter');
+  const { getMultipleTokenInfo } = await import('../../../providers/jupiter');
   
-  logger.info(`[LiveSignals] Fetching prices for ${allMints.length} unique mints`);
-  const priceMap = await getMultipleTokenPrices(allMints);
+  // Use search endpoint - it returns price, market cap, and ALL data in one call (FASTER!)
+  logger.info(`[LiveSignals] Fetching token info for ${allMints.length} unique mints using Jupiter search endpoint`);
+  const tokenInfoMap = await getMultipleTokenInfo(allMints);
   
-  // Log price fetch results for debugging
+  // Extract prices and market caps from token info
+  const priceMap: Record<string, number | null> = {};
+  const marketCapMap: Record<string, number | null> = {};
+  
+  Object.entries(tokenInfoMap).forEach(([mint, info]) => {
+    if (info) {
+      priceMap[mint] = info.usdPrice ?? null;
+      marketCapMap[mint] = info.mcap ?? null;
+    } else {
+      priceMap[mint] = null;
+      marketCapMap[mint] = null;
+    }
+  });
+  
+  // Log fetch results for debugging
   const pricesFound = Object.values(priceMap).filter(p => p !== null && p > 0).length;
-  logger.info(`[LiveSignals] Price fetch complete: ${pricesFound}/${allMints.length} prices found`);
+  const marketCapsFound = Object.values(marketCapMap).filter(m => m !== null && m > 0).length;
+  logger.info(`[LiveSignals] Token info fetch complete: ${pricesFound}/${allMints.length} prices, ${marketCapsFound}/${allMints.length} market caps`);
   
   if (pricesFound === 0 && allMints.length > 0) {
-    logger.warn('[LiveSignals] No prices fetched from Jupiter - checking if API is accessible');
-  }
-
-  // Fetch metadata for tokens missing prices (as fallback for market cap)
-  const missingPriceMints = allMints.filter(m => !priceMap[m] || priceMap[m] === null);
-  const metaMap = new Map<string, any>();
-  
-  if (missingPriceMints.length > 0 && missingPriceMints.length <= 20) {
-    // Only fetch metadata for a small number of missing prices to avoid timeout
-    logger.info(`[LiveSignals] Fetching metadata for ${missingPriceMints.length} tokens missing prices`);
-    await Promise.allSettled(missingPriceMints.slice(0, 20).map(async (mint) => {
-      try {
-        const meta = await provider.getTokenMeta(mint);
-        if (meta) metaMap.set(mint, meta);
-      } catch (err) {
-        // Silently fail - metadata is just a fallback
-      }
-    }));
+    logger.warn('[LiveSignals] No prices fetched from Jupiter search - API may be down or rate limited');
   }
 
   // Calculate PnL for EVERY signal (keep all signals, don't aggregate)
@@ -106,22 +105,12 @@ const buildCache = async (
     const entryMc = sig.entryMarketCap ?? null;
     const entrySupply = sig.entrySupply ?? null;
     
-    // Get current price from Jupiter (don't default to 0)
+    // Get current price and market cap from Jupiter search (already fetched)
     let currentPrice = priceMap[sig.mint] ?? null;
+    let currentMc = marketCapMap[sig.mint] ?? null;
     
-    // If no price from Jupiter, try to get from metadata
-    if (currentPrice === null || currentPrice === 0) {
-      const meta = metaMap.get(sig.mint);
-      if (meta?.price) {
-        currentPrice = meta.price;
-      } else if (meta?.livePrice) {
-        currentPrice = meta.livePrice;
-      }
-    }
-    
-    // Calculate current market cap
-    let currentMc: number | null = null;
-    if (currentPrice !== null && currentPrice > 0) {
+    // If we have price but no market cap, calculate it
+    if (currentPrice !== null && currentPrice > 0 && (currentMc === null || currentMc === 0)) {
       if (entrySupply !== null && entrySupply > 0) {
         currentMc = currentPrice * entrySupply;
       } else if (entryPrice !== null && entryPrice > 0 && entryMc !== null && entryMc > 0) {
@@ -131,13 +120,15 @@ const buildCache = async (
       }
     }
     
-    // Try to get market cap from metadata if we still don't have it
-    if ((currentMc === null || currentMc === 0) && currentPrice === null) {
-      const meta = metaMap.get(sig.mint);
-      if (meta?.marketCap) {
-        currentMc = meta.marketCap;
-      } else if (meta?.liveMarketCap) {
-        currentMc = meta.liveMarketCap;
+    // If we have market cap but no price, try to calculate price
+    if ((currentPrice === null || currentPrice === 0) && currentMc !== null && currentMc > 0) {
+      if (entrySupply !== null && entrySupply > 0) {
+        currentPrice = currentMc / entrySupply;
+      } else if (entryPrice !== null && entryPrice > 0 && entryMc !== null && entryMc > 0) {
+        const estimatedSupply = entryMc / entryPrice;
+        if (estimatedSupply > 0) {
+          currentPrice = currentMc / estimatedSupply;
+        }
       }
     }
     
@@ -302,15 +293,50 @@ export const handleLiveSignals = async (ctx: BotContext) => {
       }
     }));
 
-    // Fetch metadata only for display (symbol, audit data), not for PnL calculation
+    // Fetch token info for top items using Jupiter search (fast, returns all data)
+    const { getMultipleTokenInfo } = await import('../../../providers/jupiter');
+    const topMints = topItems.map(item => item.mint);
+    const topTokenInfoMap = await getMultipleTokenInfo(topMints);
+    
+    // Build metaMap from token info (contains symbol, audit, socials, etc.)
     const metaMap = new Map<string, any>();
-    await Promise.allSettled(topItems.map(async (item: CachedSignal) => {
-      try {
-        const meta = await withTimeout(provider.getTokenMeta(item.mint), 5000);
-        metaMap.set(item.mint, meta);
-        // Don't update item.currentMc - use cached value for display
-      } catch {}
-    }));
+    topItems.forEach(item => {
+      const info = topTokenInfoMap[item.mint];
+      if (info) {
+        metaMap.set(item.mint, {
+          symbol: info.symbol,
+          name: info.name,
+          audit: info.audit,
+          socialLinks: {
+            twitter: info.twitter,
+            telegram: info.telegram,
+            website: info.website
+          },
+          tags: info.tags || [],
+          marketCap: info.mcap,
+          price: info.usdPrice
+        });
+      } else {
+        // Fallback: try provider.getTokenMeta for missing tokens
+        // Only for a few to avoid timeout
+        if (topMints.length <= 10) {
+          // Will be handled in Promise.allSettled below
+        }
+      }
+    });
+    
+    // Fallback: fetch from provider for any missing tokens (only if small batch)
+    const missingMints = topMints.filter(m => !topTokenInfoMap[m]);
+    if (missingMints.length > 0 && missingMints.length <= 5) {
+      await Promise.allSettled(missingMints.map(async (mint) => {
+        try {
+          const meta = await withTimeout(provider.getTokenMeta(mint), 5000);
+          if (meta && !metaMap.has(mint)) {
+            metaMap.set(mint, meta);
+          }
+        } catch {}
+      }));
+    }
 
     let message = UIHelper.header(`Live Signals (${filtered.length})`);
     if (topItems.length === 0) {
