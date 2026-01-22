@@ -85,6 +85,10 @@ const buildCache = async (
     if (info) {
       priceMap[mint] = info.usdPrice ?? null;
       marketCapMap[mint] = info.mcap ?? null;
+      // Log first few successful fetches for debugging
+      if (Object.keys(priceMap).length <= 5) {
+        logger.info(`[LiveSignals] Fetched ${mint.slice(0, 8)}...: price=$${info.usdPrice}, mcap=$${info.mcap}`);
+      }
     } else {
       priceMap[mint] = null;
       marketCapMap[mint] = null;
@@ -97,7 +101,10 @@ const buildCache = async (
   logger.info(`[LiveSignals] Token info fetch complete: ${pricesFound}/${allMints.length} prices, ${marketCapsFound}/${allMints.length} market caps`);
   
   if (pricesFound === 0 && allMints.length > 0) {
-    logger.warn('[LiveSignals] No prices fetched from Jupiter search - API may be down or rate limited');
+    logger.error('[LiveSignals] CRITICAL: No prices fetched from Jupiter search - API may be down or rate limited');
+    logger.error(`[LiveSignals] Sample mints: ${allMints.slice(0, 3).join(', ')}`);
+  } else if (pricesFound < allMints.length * 0.5) {
+    logger.warn(`[LiveSignals] Only ${pricesFound}/${allMints.length} prices found - may have rate limiting issues`);
   }
 
   // Calculate PnL for EVERY signal (keep all signals, don't aggregate)
@@ -110,6 +117,14 @@ const buildCache = async (
     // Get current price and market cap from Jupiter search (already fetched)
     let currentPrice = priceMap[sig.mint] ?? null;
     let currentMc = marketCapMap[sig.mint] ?? null;
+    
+    // DEBUG: Log if we're missing data for this signal
+    if ((currentPrice === null || currentPrice === 0) && (currentMc === null || currentMc === 0)) {
+      // Only log first few to avoid spam
+      if (signals.indexOf(sig) < 3) {
+        logger.debug(`[LiveSignals] Missing price/mcap for ${sig.mint.slice(0, 8)}... - tokenInfoMap has: ${!!tokenInfoMap[sig.mint]}`);
+      }
+    }
     
     // If we have price but no market cap, calculate it
     if (currentPrice !== null && currentPrice > 0 && (currentMc === null || currentMc === 0)) {
@@ -352,8 +367,13 @@ export const handleLiveSignals = async (ctx: BotContext) => {
       const pnlStr = isFinite(item.pnl) ? UIHelper.formatPercent(item.pnl) : 'N/A';
       const icon = isFinite(item.pnl) ? (item.pnl >= 0 ? '🟢' : '🔴') : '❓';
 
-      const entryStr = item.entryMc ? UIHelper.formatMarketCap(item.entryMc) : 'N/A';
-      const currentStr = item.currentMc ? UIHelper.formatMarketCap(item.currentMc) : 'N/A';
+      const entryStr = item.entryMc > 0 ? UIHelper.formatMarketCap(item.entryMc) : 'N/A';
+      const currentStr = item.currentMc > 0 ? UIHelper.formatMarketCap(item.currentMc) : 'N/A';
+      
+      // DEBUG: Log if we're showing N/A for current price/mcap
+      if (currentStr === 'N/A' && item.currentPrice === 0 && item.currentMc === 0) {
+        logger.debug(`[LiveSignals] Displaying N/A for ${item.mint.slice(0, 8)}... - price=${item.currentPrice}, mcap=${item.currentMc}, pnl=${item.pnl}`);
+      }
 
       const athMult = sig?.metrics?.athMultiple || 0;
       const athMc = sig?.metrics?.athMarketCap || 0;

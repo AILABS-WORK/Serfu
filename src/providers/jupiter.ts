@@ -238,9 +238,11 @@ export const getMultipleTokenInfo = async (mints: string[]): Promise<Record<stri
     // Process all tokens in parallel batches
     for (let i = 0; i < mints.length; i += MAX_PARALLEL) {
       const batch = mints.slice(i, i + MAX_PARALLEL);
+      const batchNum = Math.floor(i / MAX_PARALLEL) + 1;
+      const totalBatches = Math.ceil(mints.length / MAX_PARALLEL);
       
       // Process batch in parallel - NO DELAYS
-      await Promise.allSettled(batch.map(async (mint) => {
+      const batchResults = await Promise.allSettled(batch.map(async (mint) => {
         try {
           const headers: Record<string, string> = {};
           if (JUP_API_KEY) {
@@ -257,18 +259,25 @@ export const getMultipleTokenInfo = async (mints: string[]): Promise<Record<stri
             
             if (!res.ok) {
               if (res.status === 429) {
-                logger.warn(`[Jupiter] Rate limited for ${mint.slice(0, 8)}...`);
+                logger.warn(`[Jupiter] Rate limited for ${mint.slice(0, 8)}... (batch ${batchNum}/${totalBatches})`);
+              } else {
+                logger.debug(`[Jupiter] Search failed for ${mint.slice(0, 8)}...: ${res.status} ${res.statusText}`);
               }
-              return;
+              return null;
             }
             
             const data: any = await res.json();
-            if (!data || !data.length) return;
+            if (!data || !data.length) {
+              logger.debug(`[Jupiter] No results for ${mint.slice(0, 8)}...`);
+              return null;
+            }
             
-            const t = data[0];
-            // Only store if mint matches (search might return similar tokens)
+            // Search endpoint returns array - find exact match
+            const t = data.find((token: any) => token.id === mint) || data[0];
+            
+            // If first result matches, use it; otherwise log mismatch
             if (t.id === mint) {
-              results[mint] = {
+              return { mint, info: {
                 id: t.id,
                 name: t.name,
                 symbol: t.symbol,
@@ -301,18 +310,32 @@ export const getMultipleTokenInfo = async (mints: string[]): Promise<Record<stri
                 tags: t.tags,
                 graduatedPool: t.graduatedPool,
                 graduatedAt: t.graduatedAt,
-              };
+              }};
+            } else {
+              logger.debug(`[Jupiter] Mint mismatch for ${mint.slice(0, 8)}...: got ${t.id?.slice(0, 8)}...`);
+              return null;
             }
           } catch (fetchErr: any) {
             clearTimeout(timeoutId);
             if (fetchErr.name !== 'AbortError') {
               logger.debug(`[Jupiter] Search error for ${mint.slice(0, 8)}...: ${fetchErr.message}`);
             }
+            return null;
           }
         } catch (err: any) {
           logger.debug(`[Jupiter] Error processing ${mint.slice(0, 8)}...: ${err.message}`);
+          return null;
         }
       }));
+      
+      // Store successful results
+      batchResults.forEach((result) => {
+        if (result.status === 'fulfilled' && result.value) {
+          results[result.value.mint] = result.value.info;
+        }
+      });
+      
+      logger.debug(`[Jupiter] Batch ${batchNum}/${totalBatches} complete: ${batchResults.filter(r => r.status === 'fulfilled' && r.value).length}/${batch.length} found`);
     }
     
     const found = Object.values(results).filter(r => r !== null).length;
