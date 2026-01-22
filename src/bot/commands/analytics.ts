@@ -1159,8 +1159,11 @@ export const handleLiveSignals = async (ctx: BotContext) => {
             return row;
         }
 
-        const currentPrice = prices.get(row.mint) ?? 0;
+        const currentPrice = prices.get(row.mint) ?? sig.metrics?.currentPrice ?? 0;
         row.currentPrice = currentPrice;
+        if (currentPrice > 0 && !prices.has(row.mint)) {
+            prices.set(row.mint, currentPrice);
+        }
 
         const entrySig = entrySignalByMint.get(row.mint) || sig;
         const { entryPrice } = resolveEntrySnapshot(entrySig);
@@ -1368,16 +1371,8 @@ export const handleLiveSignals = async (ctx: BotContext) => {
             (row as any).currentMarketCap = currentMc;
         }
         
-        // CRITICAL: Calculate PnL from current MC and entry MC
-        // Ensure PnL is always calculated and displayed
-        const calculatedPnl = calculatePnlPercent({
-            currentMc: currentMc || 0,
-            entryMc: entryMc || 0,
-            currentPrice: prices.get(row.mint) || row.currentPrice || 0,
-            entryPrice: entryPrice || 0
-        });
-        row.pnl = calculatedPnl;
-        (row as any)._calculatedPnl = calculatedPnl;
+        // Use price-based PnL calculated earlier for consistent ordering/display
+        const calculatedPnl = (row as any)._calculatedPnl ?? row.pnl ?? 0;
         
         // PnL & formatting
         // FIX: Icon should be green if positive compared to entry MC, red if negative
