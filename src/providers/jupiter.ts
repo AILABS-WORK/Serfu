@@ -10,22 +10,36 @@ const JUP_API_KEY = (process.env.JUPITER_API_KEY || process.env.JUP_API_KEY || '
 
 /**
  * Fetch multiple prices via Jupiter price/v3 (batch request).
+ * Implements rate limiting with smaller chunks and delays between requests.
  */
 export const getMultipleTokenPrices = async (mints: string[]): Promise<Record<string, number | null>> => {
   if (mints.length === 0) return {};
   
   try {
-    // Jupiter API allows comma separated IDs
-    // We should chunk if too many, but 40 is fine usually.
+    // Jupiter API rate limits: use smaller chunks (20 tokens) to avoid overwhelming the API
+    // Process sequentially with delays to respect rate limits
+    const CHUNK_SIZE = 20; // Reduced from 50 to avoid rate limits
+    const DELAY_BETWEEN_CHUNKS_MS = 300; // 300ms delay between chunks
+    const REQUEST_TIMEOUT_MS = 15000; // 15 seconds per request
+    
     const chunks = [];
-    for (let i = 0; i < mints.length; i += 50) {
-        chunks.push(mints.slice(i, i + 50));
+    for (let i = 0; i < mints.length; i += CHUNK_SIZE) {
+        chunks.push(mints.slice(i, i + CHUNK_SIZE));
     }
 
     const results: Record<string, number | null> = {};
+    
+    logger.info(`[Jupiter] Fetching prices for ${mints.length} tokens in ${chunks.length} chunks (${CHUNK_SIZE} per chunk)`);
 
-    // Process chunks with timeout (10 seconds per chunk)
-    for (const chunk of chunks) {
+    // Process chunks sequentially with rate limiting
+    for (let i = 0; i < chunks.length; i++) {
+        const chunk = chunks[i];
+        
+        // Add delay between chunks (except for the first one)
+        if (i > 0) {
+          await new Promise(resolve => setTimeout(resolve, DELAY_BETWEEN_CHUNKS_MS));
+        }
+        
         try {
           const ids = chunk.join(',');
           const headers: Record<string, string> = {};
@@ -34,40 +48,59 @@ export const getMultipleTokenPrices = async (mints: string[]): Promise<Record<st
           }
           const url = `${JUP_PRICE_URL}?ids=${ids}`;
           
-          // Add timeout: 10 seconds per chunk
+          // Add timeout per request
           const controller = new AbortController();
-          const timeoutId = setTimeout(() => controller.abort(), 10000);
+          const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
           
           try {
             const res = await fetch(url, { headers, signal: controller.signal });
             clearTimeout(timeoutId);
             
             if (!res.ok) {
-              logger.debug(`Jupiter batch price failed status ${res.status}`);
+              const statusText = res.statusText || 'unknown';
+              logger.warn(`[Jupiter] Batch price failed for chunk ${i + 1}/${chunks.length}: status ${res.status} (${statusText})`);
+              
+              // If rate limited (429), add extra delay before continuing
+              if (res.status === 429) {
+                logger.warn(`[Jupiter] Rate limited, waiting 2 seconds before next chunk`);
+                await new Promise(resolve => setTimeout(resolve, 2000));
+              }
+              
               chunk.forEach(mint => {
                 if (!(mint in results)) results[mint] = null;
               });
               continue;
             }
+            
             const data: any = await res.json();
             
+            let pricesFound = 0;
             chunk.forEach(mint => {
                 const price = data?.data?.[mint]?.price;
-                results[mint] = price !== undefined && price !== null ? Number(price) : null;
+                if (price !== undefined && price !== null) {
+                  results[mint] = Number(price);
+                  pricesFound++;
+                } else {
+                  results[mint] = null;
+                }
             });
+            
+            logger.debug(`[Jupiter] Chunk ${i + 1}/${chunks.length}: ${pricesFound}/${chunk.length} prices found`);
+            
           } catch (fetchErr: any) {
             clearTimeout(timeoutId);
             if (fetchErr.name === 'AbortError') {
-              logger.debug(`Jupiter batch price timeout for chunk of ${chunk.length} tokens`);
+              logger.warn(`[Jupiter] Batch price timeout for chunk ${i + 1}/${chunks.length} (${chunk.length} tokens)`);
             } else {
-              logger.debug(`Jupiter batch price error:`, fetchErr);
+              logger.warn(`[Jupiter] Batch price error for chunk ${i + 1}/${chunks.length}:`, fetchErr.message || fetchErr);
             }
             // Mark chunk as missing
             chunk.forEach(mint => {
               if (!(mint in results)) results[mint] = null;
             });
           }
-        } catch (err) {
+        } catch (err: any) {
+          logger.warn(`[Jupiter] Error processing chunk ${i + 1}/${chunks.length}:`, err.message || err);
           // Mark chunk as missing on any error
           chunk.forEach(mint => {
             if (!(mint in results)) results[mint] = null;
@@ -75,13 +108,13 @@ export const getMultipleTokenPrices = async (mints: string[]): Promise<Record<st
         }
     }
     
-    // Skip fallback loop - it's too slow and causes timeouts
-    // Missing prices will be null, which is fine for Live Signals (they'll show 0% PnL or skip)
+    const totalPricesFound = Object.values(results).filter(p => p !== null && p > 0).length;
+    logger.info(`[Jupiter] Price fetch complete: ${totalPricesFound}/${mints.length} prices found`);
 
     return results;
 
   } catch (err: any) {
-    logger.debug('Jupiter batch price error:', err);
+    logger.error('[Jupiter] Batch price error:', err);
     return {};
   }
 };
