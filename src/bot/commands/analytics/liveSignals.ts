@@ -13,6 +13,16 @@ const resolveEntrySnapshot = (sig: any) => {
   let entryPrice = sig?.entryPrice || firstSample?.price || 0;
   let entryMarketCap = sig?.entryMarketCap || firstSample?.marketCap || 0;
   let entrySupply = sig?.entrySupply || 0;
+  const metrics = sig?.metrics;
+
+  if ((!entryMarketCap || !entryPrice) && metrics?.currentMultiple && metrics.currentMultiple > 0) {
+    if (!entryMarketCap && metrics.currentMarketCap) {
+      entryMarketCap = metrics.currentMarketCap / metrics.currentMultiple;
+    }
+    if (!entryPrice && metrics.currentPrice) {
+      entryPrice = metrics.currentPrice / metrics.currentMultiple;
+    }
+  }
 
   if (!entrySupply && entryPrice > 0 && entryMarketCap > 0) {
     entrySupply = entryMarketCap / entryPrice;
@@ -110,6 +120,7 @@ const buildCache = async (
     const { entryPrice, entryMarketCap, entrySupply } = resolveEntrySnapshot(earliestSig);
 
     let currentMc = latestSig.metrics?.currentMarketCap || 0;
+    let currentMultiple = latestSig.metrics?.currentMultiple || 0;
     if (currentPrice > 0) {
       if (entrySupply > 0) {
         currentMc = currentPrice * entrySupply;
@@ -125,6 +136,11 @@ const buildCache = async (
       pnl = ((currentPrice - entryPrice) / entryPrice) * 100;
     } else if (currentMc > 0 && entryMc > 0) {
       pnl = ((currentMc - entryMc) / entryMc) * 100;
+    } else if (currentMultiple > 0) {
+      pnl = (currentMultiple - 1) * 100;
+      if (!currentMc && entryMc > 0) {
+        currentMc = entryMc * currentMultiple;
+      }
     }
 
     return {
@@ -245,6 +261,11 @@ export const handleLiveSignals = async (ctx: BotContext) => {
 
       const sig = signalMap.get(item.signalId);
       if (sig) {
+        if (!sig.entryMarketCap && item.entryMc > 0) sig.entryMarketCap = item.entryMc;
+        if (!sig.entryPrice && item.entryPrice > 0) sig.entryPrice = item.entryPrice;
+        if (!sig.entrySupply && sig.entryMarketCap && sig.entryPrice) {
+          sig.entrySupply = sig.entryMarketCap / sig.entryPrice;
+        }
         const currentPrice = item.currentPrice || 0;
         await enrichSignalMetrics(sig, false, currentPrice || undefined);
       }

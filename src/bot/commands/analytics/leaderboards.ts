@@ -136,7 +136,10 @@ export const handleSignalLeaderboardCommand = async (ctx: Context, window: TimeW
       message += `   Caller: ${s.sourceName} | 📅 ${s.detectedAt.toLocaleDateString()}\n`;
 
       const entryMcStr = s.entryMarketCap ? UIHelper.formatMarketCap(s.entryMarketCap) : 'N/A';
-      const athMcStr = s.athMarketCap ? UIHelper.formatMarketCap(s.athMarketCap) : 'N/A';
+      const derivedAthMc = !s.athMarketCap && s.entryMarketCap && s.athMultiple
+        ? s.entryMarketCap * s.athMultiple
+        : s.athMarketCap;
+      const athMcStr = derivedAthMc ? UIHelper.formatMarketCap(derivedAthMc) : 'N/A';
       const currentMcStr = s.currentMarketCap ? UIHelper.formatMarketCap(s.currentMarketCap) : 'N/A';
       const timeToAthStr = s.timeToAth
         ? s.timeToAth < 60 ? `${Math.round(s.timeToAth)}m` : `${(s.timeToAth / 60).toFixed(1)}h`
