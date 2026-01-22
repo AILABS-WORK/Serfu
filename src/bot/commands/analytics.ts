@@ -989,6 +989,7 @@ export const handleLiveSignals = async (ctx: BotContext) => {
             let currentMc = 0;
             
             // Calculate MC
+            let entryMc = 0;
             if (currentPrice > 0) {
                  if (entrySupply > 0) {
                      currentMc = currentPrice * entrySupply;
@@ -998,6 +999,7 @@ export const handleLiveSignals = async (ctx: BotContext) => {
                      currentMc = currentPrice * estimatedSupply;
                  }
             }
+            if (entryMarketCap > 0) entryMc = entryMarketCap;
 
             // Calculate PnL
             if (currentPrice > 0 && entryPrice > 0) {
