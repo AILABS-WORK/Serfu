@@ -17,19 +17,22 @@ RUN apt-get update && apt-get install -y \
 # Set working directory
 WORKDIR /app
 
-# Copy package files
+# Copy package files first (for better layer caching)
 COPY package*.json ./
 COPY prisma ./prisma/
 
 # Install dependencies
 # npm ci is faster and more reliable for builds
-RUN npm ci
+RUN npm ci --only=production=false
 
-# Copy source code
+# Copy source code (docs, tests, scripts excluded via .dockerignore)
 COPY . .
 
 # Build the application
 RUN npm run build
+
+# Remove dev dependencies to reduce image size
+RUN npm prune --production
 
 # Start the application
 CMD ["npm", "run", "start"]
