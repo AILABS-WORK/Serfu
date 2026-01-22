@@ -936,7 +936,7 @@ export const handleLiveSignals = async (ctx: BotContext) => {
         ? new Date(0)
         : (timeframeParsed ? new Date(Date.now() - timeframeParsed.ms) : subDays(new Date(), 1));
 
-    // 3. Fetch Active Signals WITH Timeframe Filter (if not ALL)
+    // 3. Fetch Active Signals (timeframe is applied after earliest-call aggregation)
     const signals = await prisma.signal.findMany({
       where: {
         trackingStatus: { in: ['ACTIVE', 'ENTRY_PENDING'] },
@@ -944,8 +944,6 @@ export const handleLiveSignals = async (ctx: BotContext) => {
             { chatId: { in: ownedChatIds } },
             { id: { in: forwardedSignalIds } }
         ],
-        // CRITICAL: Filter by timeframe FIRST - only get signals detected in past 24H (or selected timeframe)
-        ...(timeframeLabel !== 'ALL' ? { detectedAt: { gte: timeframeCutoff } } : {})
       },
       orderBy: { detectedAt: 'asc' }, // Oldest first to find "Earliest Caller"
       include: {
@@ -956,26 +954,14 @@ export const handleLiveSignals = async (ctx: BotContext) => {
       }
     });
 
-    const mintList = Array.from(new Set(signals.map((s) => s.mint)));
-    const entrySignals = mintList.length > 0
-        ? await prisma.signal.findMany({
-            where: {
-                mint: { in: mintList },
-                chatId: { in: ownedChatIds },
-            },
-            orderBy: { detectedAt: 'asc' },
-            include: {
-                group: true,
-                user: true,
-                priceSamples: { orderBy: { sampledAt: 'asc' }, take: 1 },
-            }
-        })
-        : [];
     const entrySignalByMint = new Map<string, any>();
-    for (const sig of entrySignals) {
-        if (!entrySignalByMint.has(sig.mint)) {
-            entrySignalByMint.set(sig.mint, sig);
-        }
+    const signalsByDetected = [...signals].sort(
+      (a, b) => a.detectedAt.getTime() - b.detectedAt.getTime()
+    );
+    for (const sig of signalsByDetected) {
+      if (!entrySignalByMint.has(sig.mint)) {
+        entrySignalByMint.set(sig.mint, sig);
+      }
     }
 
     if (signals.length === 0) {
@@ -1150,12 +1136,13 @@ export const handleLiveSignals = async (ctx: BotContext) => {
     // We rely on Jupiter Batch Prices (fetched above) and fallback to Price-based PnL if MC is missing.
     // Full metadata is only fetched for the displayed top 10 signals.
 
-    // 4. Get remaining filters (timeframe already applied above)
+    // 4. Get remaining filters (timeframe applied after earliest-call aggregation)
     const minMult = liveFilters.minMult || 0;
     const onlyGainers = liveFilters.onlyGainers || false;
     // FIX: Default sort should be 'newest' (by time, newest first)
     const sortBy = (liveFilters as any).sortBy || 'newest';
     const minAth = (liveFilters as any).minAth || 0;
+    const displayLimit = (liveFilters as any).expand ? 20 : 10;
     
     // OPTIMIZATION: Removed expensive priceSample query that was causing timeouts
     // Velocity calculation removed - can be re-added later using cached metrics if needed
@@ -1165,66 +1152,37 @@ export const handleLiveSignals = async (ctx: BotContext) => {
     // CRITICAL: Calculate current price and PnL for ALL signals BEFORE filtering/sorting
     // This ensures all signals have accurate data for proper sorting
     // NOTE: Timeframe filtering is already done in DB query, so all aggregated signals are within timeframe
-    const candidates = Array.from(aggregated.values())
-        .map(row => {
-             // Find entry market cap from earliest signal
-             const sig = signals.find(s => s.id === (row as any).earliestSignalId) || signals.find(s => s.mint === row.mint);
-             
-             // Initialize PnL to 0 to ensure it's always defined
-             row.pnl = 0;
-             
-             if (!sig) {
-                 return row; // Return early if no signal found
-             }
-             
-             // Get current MC from fresh metadata (always fetched above, no cached metrics)
-             const currentMc = marketCaps.get(row.mint) ?? 0;
-             const currentPrice = prices.get(row.mint) ?? 0;
-             row.currentPrice = currentPrice;
-             
-             // FIX: Entry MC and price - use earliest signal for this mint
-             const entrySig = entrySignalByMint.get(row.mint) || sig;
-             const { entryPrice, entryMarketCap: entryMc } = resolveEntrySnapshot(entrySig);
-             if (entryMc > 0 && entrySig.id && !entrySig.entryMarketCap) {
-                 prisma.signal.update({
-                     where: { id: entrySig.id },
-                     data: { entryMarketCap: entryMc }
-                 }).catch(() => {});
-             }
+    const candidates = Array.from(aggregated.values()).map(row => {
+        const sig = signals.find(s => s.id === (row as any).earliestSignalId) || signals.find(s => s.mint === row.mint);
+        row.pnl = 0;
+        if (!sig) {
+            return row;
+        }
 
-             // Calculate PnL - try market cap first, then price fallback
-             row.pnl = calculatePnlPercent({
-                 currentMc,
-                 entryMc,
-                 currentPrice,
-                 entryPrice
-             });
-             (row as any)._calculatedPnl = row.pnl;
-             // If no data, pnl remains 0 (already initialized above)
+        const currentPrice = prices.get(row.mint) ?? 0;
+        row.currentPrice = currentPrice;
 
-             // Current multiple (market cap preferred, price fallback)
-             const currentMultiple = resolveCurrentMultiple({
-                 currentMc,
-                 entryMc,
-                 currentPrice,
-                 entryPrice,
-                 fallbackMultiple: entrySig?.metrics?.currentMultiple || sig?.metrics?.currentMultiple || 0
-             });
-             (row as any).currentMultiple = currentMultiple;
-             
-             // Use ATH multiple from metrics only (OHLCV/cached)
-             const athMult = sig?.metrics?.athMultiple || 0;
-             (row as any).athMultiple = athMult;
-             
-             // Velocity calculation removed to prevent timeout
-             // Use PnL-based trending instead (high PnL = trending up)
-             (row as any).velocity = row.pnl; // Fallback: use PnL as velocity proxy
-             (row as any).currentMarketCap = currentMc;
-             (row as any).entryMarketCap = entryMc; // Store for later use
-             (row as any).entryPrice = entryPrice;
-             
-             return row;
-        });
+        const entrySig = entrySignalByMint.get(row.mint) || sig;
+        const { entryPrice } = resolveEntrySnapshot(entrySig);
+
+        if (entryPrice > 0 && currentPrice > 0) {
+            row.pnl = ((currentPrice - entryPrice) / entryPrice) * 100;
+        }
+        (row as any)._calculatedPnl = row.pnl;
+
+        const currentMultiple = entryPrice > 0 && currentPrice > 0 ? currentPrice / entryPrice : 0;
+        (row as any).currentMultiple = currentMultiple;
+
+        const athMult = sig?.metrics?.athMultiple || 0;
+        (row as any).athMultiple = athMult;
+
+        (row as any).velocity = row.pnl;
+        (row as any).entryPrice = entryPrice;
+        (row as any).entrySignalId = entrySig.id;
+        (row as any).entryDetectedAt = entrySig.detectedAt;
+
+        return row;
+    });
     
     // STEP 2: Skip expensive metadata fetch for all candidates.
     // Filters rely on price-based PnL when MC is unavailable for speed.
@@ -1232,36 +1190,27 @@ export const handleLiveSignals = async (ctx: BotContext) => {
     // STEP 3: Apply remaining filters (timeframe already filtered above)
     // All data (entry MC, current MC, PnL) has been calculated above, so filters use accurate values
     const filteredCandidates = candidates.filter(row => {
-            const backupPnl = (row as any)._calculatedPnl;
-            const signalPnl = row.pnl || 0;
-            const effectivePnl = (backupPnl !== undefined && backupPnl !== null) ? backupPnl : signalPnl;
+        const pnl = (row as any)._calculatedPnl ?? row.pnl ?? 0;
 
-            // Only gainers filter
-            if (onlyGainers && effectivePnl < 0) return false;
-            
-            // FIX: > 2x / > 5x filters should use CURRENT PnL (current MC vs entry MC), not ATH
-            // 2x = 100% PnL, 5x = 400% PnL (current multiple = 1 + PnL/100)
-            // User wants to see signals that are CURRENTLY above 2x/5x, not historically
-            if (minMult > 0) {
-              // Convert multiple to PnL: 2x = 100%, 5x = 400%
-              const requiredPnl = (minMult - 1) * 100;
-              
-              // FIX: Use backup _calculatedPnl if available (calculated when entryMc/currentMc both > 0)
-              // If both row.pnl and _calculatedPnl are 0 or undefined, signal has no MC data yet
-              // We still filter it out, but the backup ensures we use calculated PnL when available
-              if (effectivePnl < requiredPnl) {
-                  return false;
-              }
-            }
-            
-            // ATH threshold filter (uses ATH multiple from OHLCV)
-            if (minAth > 0) {
-              const ath = (row as any).athMultiple || 0;
-              if (ath < minAth) return false;
-            }
-            
-            return true;
-        });
+        // Timeframe filter based on creation time (earliest mention)
+        if (timeframeLabel !== 'ALL' && row.earliestDate < timeframeCutoff) {
+            return false;
+        }
+
+        if (onlyGainers && pnl < 0) return false;
+
+        if (minMult > 0) {
+            const requiredPnl = (minMult - 1) * 100;
+            if (pnl < requiredPnl) return false;
+        }
+
+        if (minAth > 0) {
+            const ath = (row as any).athMultiple || 0;
+            if (ath < minAth) return false;
+        }
+
+        return true;
+    });
     
     // STEP 4: Initialize metaMap for storing token metadata (used for all sorting methods)
     const metaMap = new Map<string, any>();
@@ -1273,30 +1222,19 @@ export const handleLiveSignals = async (ctx: BotContext) => {
     
     // STEP 5: Sort filtered candidates AFTER ensuring all have PnL calculated (metaMap already initialized above)
     // Default sort is 'newest' (by time, newest first) as per requirements
-    if (sortBy === 'trending') {
-        // Use PnL as proxy for trending (high PnL = trending up)
-        filteredCandidates.sort((a, b) => (b.pnl || (b as any)._calculatedPnl || 0) - (a.pnl || (a as any)._calculatedPnl || 0));
-    } else if (sortBy === 'newest') {
-        // Sort by signal creation time (earliest detection) - newest signals first
-        filteredCandidates.sort((a, b) => b.earliestDate.getTime() - a.earliestDate.getTime());
-    } else if (sortBy === 'pnl') {
-        // Highest PnL first - use the most accurate PnL value available
+    if (sortBy === 'pnl' || sortBy === 'trending') {
         filteredCandidates.sort((a, b) => {
-            const aPnl = (a as any)._calculatedPnl !== undefined && (a as any)._calculatedPnl !== null 
-                ? (a as any)._calculatedPnl 
-                : (a.pnl || 0);
-            const bPnl = (b as any)._calculatedPnl !== undefined && (b as any)._calculatedPnl !== null 
-                ? (b as any)._calculatedPnl 
-                : (b.pnl || 0);
-            return bPnl - aPnl; // Highest first
+            const aPnl = (a as any)._calculatedPnl ?? a.pnl ?? 0;
+            const bPnl = (b as any)._calculatedPnl ?? b.pnl ?? 0;
+            return bPnl - aPnl;
         });
     } else {
-        // Fallback to newest if sortBy is unknown
+        // Newest = creation time of the signal (earliest mention), newest first
         filteredCandidates.sort((a, b) => b.earliestDate.getTime() - a.earliestDate.getTime());
     }
     
     // STEP 6: Take top 10 AFTER sorting
-    const top10 = filteredCandidates.slice(0, 10);
+    const top10 = filteredCandidates.slice(0, displayLimit);
     
     // STEP 7: OPTIMIZED - Parallel metadata fetch for top 10 signals (only if missing)
     // This ensures we have full metadata (DEX, migrations, etc.) for display
