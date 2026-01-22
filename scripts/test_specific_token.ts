@@ -1,50 +1,77 @@
-import axios from 'axios';
-import { prisma } from '../src/db';
-import { geckoTerminal } from '../src/providers/geckoTerminal';
+import 'dotenv/config';
+import { getMultipleTokenInfo } from '../src/providers/jupiter';
 
-async function testHistory() {
-  const mint = '4Khi2zGhb7BdgmFvjEutygAs6civxJoi1WCRt3xKpump'; 
-  console.log(`Testing with ${mint}...`);
+const testMint = 'BPLEyoTtmPSa9ExmFEEvJP3s2uBZNCm6Z2gWH8Bqpump';
+
+async function testSpecificToken() {
+  console.log(`\n=== Testing Token: ${testMint} ===\n`);
   
-  // 1. Get OHLCV
-  const ohlcv = await geckoTerminal.getOHLCV(mint, 'minute', 1000);
-  console.log(`Fetched ${ohlcv.length} candles`);
+  const tokenInfoMap = await getMultipleTokenInfo([testMint]);
+  const info = tokenInfoMap[testMint];
   
-  if (ohlcv.length > 0) {
-    console.log('First Candle:', new Date(ohlcv[0].timestamp).toISOString(), ohlcv[0].close);
-    console.log('Last Candle:', new Date(ohlcv[ohlcv.length - 1].timestamp).toISOString(), ohlcv[ohlcv.length - 1].close);
+  if (info) {
+    console.log('✅ Token found!');
+    console.log(`   Symbol: ${info.symbol}`);
+    console.log(`   Name: ${info.name}`);
+    console.log(`   Price: $${info.usdPrice}`);
+    console.log(`   Market Cap: $${info.mcap}`);
+    console.log(`   Has audit: ${!!info.audit}`);
     
-    // 2. Simulate metrics calc
-    // Assume entry was 2 hours ago at price X
-    const entryTime = Date.now() - (2 * 60 * 60 * 1000);
-    const entryPrice = ohlcv.find(c => c.timestamp >= entryTime)?.open || ohlcv[0].open;
+    // Simulate what liveSignals does
+    const priceMap: Record<string, number | null> = {};
+    const marketCapMap: Record<string, number | null> = {};
     
-    console.log(`Simulated Entry: $${entryPrice} at ${new Date(entryTime).toISOString()}`);
+    priceMap[testMint] = info.usdPrice ?? null;
+    marketCapMap[testMint] = info.mcap ?? null;
     
-    const validCandles = ohlcv.filter(c => c.timestamp >= entryTime);
-    let ath = 0;
-    let min = Infinity;
+    console.log(`\n   Extracted:`);
+    console.log(`   priceMap[token] = ${priceMap[testMint]}`);
+    console.log(`   marketCapMap[token] = ${marketCapMap[testMint]}`);
     
-    for (const c of validCandles) {
-        if (c.high > ath) ath = c.high;
-        if (c.low < min) min = c.low;
+    // Simulate signal processing
+    const entryPrice = 0.0001;
+    const entryMc = 50000;
+    const currentPrice = priceMap[testMint] ?? null;
+    const currentMc = marketCapMap[testMint] ?? null;
+    
+    let pnl = -Infinity;
+    if (currentPrice !== null && currentPrice > 0 && entryPrice > 0) {
+      pnl = ((currentPrice - entryPrice) / entryPrice) * 100;
+    } else if (currentMc !== null && currentMc > 0 && entryMc > 0) {
+      pnl = ((currentMc - entryMc) / entryMc) * 100;
     }
     
-    console.log(`ATH: $${ath} (${(ath/entryPrice).toFixed(2)}x)`);
-    console.log(`Min: $${min} (Drawdown: ${((min-entryPrice)/entryPrice*100).toFixed(2)}%)`);
+    console.log(`\n   Signal Processing:`);
+    console.log(`   currentPrice: ${currentPrice}`);
+    console.log(`   currentMc: ${currentMc}`);
+    console.log(`   pnl: ${isFinite(pnl) ? `${pnl.toFixed(2)}%` : 'N/A'}`);
+    
+    // Simulate cache storage
+    const cachedSignal = {
+      currentPrice: currentPrice ?? 0,
+      currentMc: currentMc ?? 0,
+      pnl,
+    };
+    
+    console.log(`\n   Cached Signal:`);
+    console.log(`   currentPrice: ${cachedSignal.currentPrice}`);
+    console.log(`   currentMc: ${cachedSignal.currentMc}`);
+    console.log(`   pnl: ${cachedSignal.pnl}`);
+    
+    // Simulate display
+    const currentStr = cachedSignal.currentMc > 0 ? `$${cachedSignal.currentMc.toLocaleString()}` : 'N/A';
+    const pnlStr = isFinite(cachedSignal.pnl) ? `${cachedSignal.pnl.toFixed(2)}%` : 'N/A';
+    
+    console.log(`\n   Display:`);
+    console.log(`   currentStr: ${currentStr}`);
+    console.log(`   pnlStr: ${pnlStr}`);
+    console.log(`   Will show: Entry: $50K → Now: ${currentStr} (${pnlStr})`);
+  } else {
+    console.log('❌ Token NOT found!');
+    console.log('   This means Jupiter search endpoint returned no results for this token.');
   }
+  
+  console.log('\n=== Test Complete ===\n');
 }
 
-testHistory().catch(console.error).finally(() => prisma.$disconnect());
-
-
-
-
-
-
-
-
-
-
-
-
+testSpecificToken().catch(console.error);
