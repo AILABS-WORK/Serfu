@@ -219,7 +219,7 @@ export const handleLiveSignals = async (ctx: BotContext) => {
 
     ctx.session.liveSignalsCache = cache;
 
-  let filtered = cache.signals.filter((c: CachedSignal) => {
+    let filtered = cache.signals.filter((c: CachedSignal) => {
       if (onlyGainers && c.pnl <= 0) return false;
       if (minMult > 0) {
         const requiredPnl = (minMult - 1) * 100;
@@ -228,7 +228,10 @@ export const handleLiveSignals = async (ctx: BotContext) => {
       return true;
     });
 
-    if (sortBy === 'pnl' || sortBy === 'trending') {
+    if (minMult > 0) {
+      // >2x / >5x always sort by newest creation
+      filtered.sort((a: CachedSignal, b: CachedSignal) => b.firstDetectedAt.getTime() - a.firstDetectedAt.getTime());
+    } else if (sortBy === 'pnl' || sortBy === 'trending') {
       filtered.sort((a: CachedSignal, b: CachedSignal) => b.pnl - a.pnl);
     } else if (sortBy === 'newest') {
       filtered.sort((a: CachedSignal, b: CachedSignal) => b.firstDetectedAt.getTime() - a.firstDetectedAt.getTime());
@@ -236,21 +239,21 @@ export const handleLiveSignals = async (ctx: BotContext) => {
       filtered.sort((a: CachedSignal, b: CachedSignal) => b.detectedAt.getTime() - a.detectedAt.getTime());
     }
 
-    const topPool = filtered.slice(0, displayLimit);
+    const topItems = filtered.slice(0, displayLimit);
 
     const { enrichSignalMetrics } = await import('../../../analytics/metrics');
     const metaMap = new Map<string, any>();
     const signalMap = new Map<number, any>();
 
-    if (topPool.length > 0) {
+    if (topItems.length > 0) {
       const signals = await prisma.signal.findMany({
-        where: { id: { in: topPool.map(i => i.signalId) } },
+        where: { id: { in: topItems.map(i => i.signalId) } },
         include: { metrics: true, priceSamples: { orderBy: { sampledAt: 'asc' }, take: 1 }, group: true, user: true }
       });
       for (const s of signals) signalMap.set(s.id, s);
     }
 
-    await Promise.allSettled(topPool.map(async (item: CachedSignal) => {
+    await Promise.allSettled(topItems.map(async (item: CachedSignal) => {
       try {
         const meta = await withTimeout(provider.getTokenMeta(item.mint), 5000);
         metaMap.set(item.mint, meta);
@@ -258,9 +261,6 @@ export const handleLiveSignals = async (ctx: BotContext) => {
           const currentMc = meta.liveMarketCap || meta.marketCap || 0;
           if (currentMc > 0) {
             item.currentMc = currentMc;
-            if (item.entryMc > 0) {
-              item.pnl = ((item.currentMc - item.entryMc) / item.entryMc) * 100;
-            }
           }
         }
       } catch {}
@@ -279,11 +279,7 @@ export const handleLiveSignals = async (ctx: BotContext) => {
       }
     }));
 
-    if (sortBy === 'pnl' || sortBy === 'trending') {
-      topPool.sort((a: CachedSignal, b: CachedSignal) => b.pnl - a.pnl);
-    }
-
-    const topItems = topPool.slice(0, displayLimit);
+    // Keep ordering based on pre-computed PnL for the full timeframe
 
     let message = UIHelper.header(`Live Signals (${filtered.length})`);
     if (topItems.length === 0) {
