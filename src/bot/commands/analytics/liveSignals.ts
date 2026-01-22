@@ -188,14 +188,14 @@ const buildCache = async (
       pnl = ((currentMc - entryMc) / entryMc) * 100;
     }
     
-    // CRITICAL FIX: Store actual values, not 0 if null
-    // If we have price/mcap from Jupiter, use them. Otherwise calculate or leave as 0
-    const finalPrice = currentPrice !== null && currentPrice > 0 ? currentPrice : 0;
-    const finalMc = currentMc !== null && currentMc > 0 ? currentMc : 0;
+    // EXACT SAME LOGIC AS TEST SCRIPT - Store values exactly as test does
+    // Test script does: currentPrice: currentPrice ?? 0, currentMc: currentMc ?? 0
+    const finalPrice = currentPrice ?? 0;
+    const finalMc = currentMc ?? 0;
     
-    // Log first few to verify data is being stored
-    if (signals.indexOf(sig) < 3) {
-      logger.info(`[LiveSignals] Caching signal ${sig.mint.slice(0, 8)}...: price=${finalPrice}, mcap=${finalMc}, pnl=${isFinite(pnl) ? pnl.toFixed(2) : 'N/A'}`);
+    // CRITICAL: Log to verify we're storing the right values
+    if (signals.indexOf(sig) < 5) {
+      logger.info(`[LiveSignals] Caching ${sig.mint.slice(0, 8)}...: currentPrice=${currentPrice}, currentMc=${currentMc}, finalPrice=${finalPrice}, finalMc=${finalMc}, pnl=${isFinite(pnl) ? pnl.toFixed(2) : 'N/A'}`);
     }
     
     return {
@@ -407,27 +407,32 @@ export const handleLiveSignals = async (ctx: BotContext) => {
       const pnlStr = isFinite(item.pnl) ? UIHelper.formatPercent(item.pnl) : 'N/A';
       const icon = isFinite(item.pnl) ? (item.pnl >= 0 ? '🟢' : '🔴') : '❓';
 
+      // EXACT SAME LOGIC AS TEST SCRIPT
+      // Test script does: currentStr = cachedSignal.currentMc > 0 ? format : 'N/A'
       const entryStr = item.entryMc > 0 ? UIHelper.formatMarketCap(item.entryMc) : 'N/A';
-      // FIX: Check if currentMc is actually set (not 0 from null conversion)
-      // If currentMc is 0 but we have currentPrice, calculate it
-      let displayMc = item.currentMc;
-      if (displayMc === 0 && item.currentPrice > 0) {
-        // Try to calculate from price if we have entry data
-        const sig = signalMap.get(item.signalId);
-        if (sig?.entrySupply && sig.entrySupply > 0) {
-          displayMc = item.currentPrice * sig.entrySupply;
+      let currentStr = item.currentMc > 0 ? UIHelper.formatMarketCap(item.currentMc) : 'N/A';
+      
+      // CRITICAL DEBUG: Log what we're displaying
+      if (topItems.indexOf(item) < 3) {
+        logger.info(`[LiveSignals] Displaying ${item.mint.slice(0, 8)}...: currentPrice=${item.currentPrice}, currentMc=${item.currentMc}, currentStr=${currentStr}, pnl=${item.pnl}`);
+      }
+      
+      // If we have price but no market cap, try to calculate for display
+      if (currentStr === 'N/A' && item.currentPrice > 0) {
+        const sigForCalc = signalMap.get(item.signalId);
+        let calculatedMc = 0;
+        if (sigForCalc?.entrySupply && sigForCalc.entrySupply > 0) {
+          calculatedMc = item.currentPrice * sigForCalc.entrySupply;
         } else if (item.entryPrice > 0 && item.entryMc > 0) {
           const estimatedSupply = item.entryMc / item.entryPrice;
           if (estimatedSupply > 0) {
-            displayMc = item.currentPrice * estimatedSupply;
+            calculatedMc = item.currentPrice * estimatedSupply;
           }
         }
-      }
-      const currentStr = displayMc > 0 ? UIHelper.formatMarketCap(displayMc) : 'N/A';
-      
-      // DEBUG: Log if we're showing N/A for current price/mcap
-      if (currentStr === 'N/A') {
-        logger.warn(`[LiveSignals] N/A for ${item.mint.slice(0, 8)}... - price=${item.currentPrice}, mcap=${item.currentMc}, calculated=${displayMc}, pnl=${item.pnl}`);
+        if (calculatedMc > 0) {
+          currentStr = UIHelper.formatMarketCap(calculatedMc);
+          logger.info(`[LiveSignals] Calculated MC for ${item.mint.slice(0, 8)}...: ${currentStr} from price=${item.currentPrice}`);
+        }
       }
 
       const athMult = sig?.metrics?.athMultiple || 0;
