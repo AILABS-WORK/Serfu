@@ -10,17 +10,18 @@ const JUP_API_KEY = (process.env.JUPITER_API_KEY || process.env.JUP_API_KEY || '
 
 /**
  * Fetch multiple prices via Jupiter price/v3 (batch request).
- * Implements rate limiting with smaller chunks and delays between requests.
+ * MAXIMUM SPEED: Process all chunks in parallel with NO delays.
+ * Price/v3 supports comma-separated IDs for true batch requests.
  */
 export const getMultipleTokenPrices = async (mints: string[]): Promise<Record<string, number | null>> => {
   if (mints.length === 0) return {};
   
   try {
-    // Jupiter API rate limits: use smaller chunks (20 tokens) to avoid overwhelming the API
-    // Process sequentially with delays to respect rate limits
-    const CHUNK_SIZE = 20; // Reduced from 50 to avoid rate limits
-    const DELAY_BETWEEN_CHUNKS_MS = 300; // 300ms delay between chunks
-    const REQUEST_TIMEOUT_MS = 15000; // 15 seconds per request
+    // Jupiter price/v3 supports batch requests with comma-separated IDs
+    // Test with larger chunks and parallel processing for maximum speed
+    const CHUNK_SIZE = 100; // Larger chunks = fewer requests = faster
+    const REQUEST_TIMEOUT_MS = 20000; // 20 seconds per request
+    const MAX_PARALLEL_CHUNKS = 10; // Process up to 10 chunks in parallel
     
     const chunks = [];
     for (let i = 0; i < mints.length; i += CHUNK_SIZE) {
@@ -29,17 +30,14 @@ export const getMultipleTokenPrices = async (mints: string[]): Promise<Record<st
 
     const results: Record<string, number | null> = {};
     
-    logger.info(`[Jupiter] Fetching prices for ${mints.length} tokens in ${chunks.length} chunks (${CHUNK_SIZE} per chunk)`);
+    logger.info(`[Jupiter] Fetching prices for ${mints.length} tokens in ${chunks.length} chunks (${CHUNK_SIZE} per chunk, ${MAX_PARALLEL_CHUNKS} parallel)`);
 
-    // Process chunks sequentially with rate limiting
-    for (let i = 0; i < chunks.length; i++) {
-        const chunk = chunks[i];
-        
-        // Add delay between chunks (except for the first one)
-        if (i > 0) {
-          await new Promise(resolve => setTimeout(resolve, DELAY_BETWEEN_CHUNKS_MS));
-        }
-        
+    // Process chunks in parallel batches for maximum speed
+    for (let i = 0; i < chunks.length; i += MAX_PARALLEL_CHUNKS) {
+      const parallelBatch = chunks.slice(i, i + MAX_PARALLEL_CHUNKS);
+      
+      await Promise.allSettled(parallelBatch.map(async (chunk, batchIndex) => {
+        const chunkIndex = i + batchIndex;
         try {
           const ids = chunk.join(',');
           const headers: Record<string, string> = {};
@@ -48,7 +46,6 @@ export const getMultipleTokenPrices = async (mints: string[]): Promise<Record<st
           }
           const url = `${JUP_PRICE_URL}?ids=${ids}`;
           
-          // Add timeout per request
           const controller = new AbortController();
           const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
           
@@ -57,19 +54,14 @@ export const getMultipleTokenPrices = async (mints: string[]): Promise<Record<st
             clearTimeout(timeoutId);
             
             if (!res.ok) {
-              const statusText = res.statusText || 'unknown';
-              logger.warn(`[Jupiter] Batch price failed for chunk ${i + 1}/${chunks.length}: status ${res.status} (${statusText})`);
-              
-              // If rate limited (429), add extra delay before continuing
               if (res.status === 429) {
-                logger.warn(`[Jupiter] Rate limited, waiting 2 seconds before next chunk`);
-                await new Promise(resolve => setTimeout(resolve, 2000));
+                logger.warn(`[Jupiter] Rate limited for chunk ${chunkIndex + 1}/${chunks.length}`);
+                // On rate limit, mark as null but continue
               }
-              
               chunk.forEach(mint => {
                 if (!(mint in results)) results[mint] = null;
               });
-              continue;
+              return;
             }
             
             const data: any = await res.json();
@@ -85,27 +77,24 @@ export const getMultipleTokenPrices = async (mints: string[]): Promise<Record<st
                 }
             });
             
-            logger.debug(`[Jupiter] Chunk ${i + 1}/${chunks.length}: ${pricesFound}/${chunk.length} prices found`);
+            logger.debug(`[Jupiter] Chunk ${chunkIndex + 1}/${chunks.length}: ${pricesFound}/${chunk.length} prices found`);
             
           } catch (fetchErr: any) {
             clearTimeout(timeoutId);
-            if (fetchErr.name === 'AbortError') {
-              logger.warn(`[Jupiter] Batch price timeout for chunk ${i + 1}/${chunks.length} (${chunk.length} tokens)`);
-            } else {
-              logger.warn(`[Jupiter] Batch price error for chunk ${i + 1}/${chunks.length}:`, fetchErr.message || fetchErr);
+            if (fetchErr.name !== 'AbortError') {
+              logger.debug(`[Jupiter] Chunk ${chunkIndex + 1} error:`, fetchErr.message || fetchErr);
             }
-            // Mark chunk as missing
             chunk.forEach(mint => {
               if (!(mint in results)) results[mint] = null;
             });
           }
         } catch (err: any) {
-          logger.warn(`[Jupiter] Error processing chunk ${i + 1}/${chunks.length}:`, err.message || err);
-          // Mark chunk as missing on any error
+          logger.debug(`[Jupiter] Error processing chunk ${chunkIndex + 1}:`, err.message || err);
           chunk.forEach(mint => {
             if (!(mint in results)) results[mint] = null;
           });
         }
+      }));
     }
     
     const totalPricesFound = Object.values(results).filter(p => p !== null && p > 0).length;
@@ -239,24 +228,18 @@ export const getMultipleTokenInfo = async (mints: string[]): Promise<Record<stri
   });
   
   try {
-    // Search endpoint can handle individual queries efficiently
-    // Process in parallel batches with rate limiting
-    const BATCH_SIZE = 10; // Process 10 tokens in parallel
-    const DELAY_BETWEEN_BATCHES_MS = 200; // 200ms delay between batches
-    const REQUEST_TIMEOUT_MS = 10000; // 10 seconds per request
+    // MAXIMUM SPEED: Process all tokens in parallel with NO delays
+    // Search endpoint handles individual queries, so we parallelize everything
+    const MAX_PARALLEL = 50; // Process 50 tokens in parallel for maximum speed
+    const REQUEST_TIMEOUT_MS = 15000; // 15 seconds per request
     
-    logger.info(`[Jupiter] Fetching token info for ${mints.length} tokens using search endpoint (${BATCH_SIZE} parallel, ${Math.ceil(mints.length / BATCH_SIZE)} batches)`);
+    logger.info(`[Jupiter] Fetching token info for ${mints.length} tokens using search endpoint (${MAX_PARALLEL} parallel, no delays)`);
     
-    // Process in batches
-    for (let i = 0; i < mints.length; i += BATCH_SIZE) {
-      const batch = mints.slice(i, i + BATCH_SIZE);
+    // Process all tokens in parallel batches
+    for (let i = 0; i < mints.length; i += MAX_PARALLEL) {
+      const batch = mints.slice(i, i + MAX_PARALLEL);
       
-      // Add delay between batches (except first)
-      if (i > 0) {
-        await new Promise(resolve => setTimeout(resolve, DELAY_BETWEEN_BATCHES_MS));
-      }
-      
-      // Process batch in parallel
+      // Process batch in parallel - NO DELAYS
       await Promise.allSettled(batch.map(async (mint) => {
         try {
           const headers: Record<string, string> = {};
