@@ -86,6 +86,11 @@ export const notifySignal = async (
     let message: string;
     let keyboard: any;
 
+    // Detect if this is a "Reused Entry" (Mention) based on time gap between Entry Price Time and Detection Time
+    const timeSinceEntry = signal.entryPriceAt ? (signal.detectedAt.getTime() - signal.entryPriceAt.getTime()) : 0;
+    // If entry is > 10 minutes older than detection, treat as a mention/update
+    const isReusedEntry = timeSinceEntry > 10 * 60 * 1000; 
+
     // Check if this is a duplicate
     if (duplicateCheck?.isDuplicate && duplicateCheck.firstSignal && metaWithLive) {
       const isDestination = signalWithGroup?.group?.type === 'destination';
@@ -145,7 +150,9 @@ export const notifySignal = async (
       }
     } else if (metaWithLive) {
       // Generate rich first signal card
-      message = await generateFirstSignalCard(signal, metaWithLive, groupName, userName);
+      // If we reused entry data from an old signal, change header to reflect it's a mention/update
+      const header = isReusedEntry ? '🔔 *SIGNAL MENTION*' : undefined;
+      message = await generateFirstSignalCard(signal, metaWithLive, groupName, userName, header);
       keyboard = {
         inline_keyboard: [
           [

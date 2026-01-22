@@ -163,6 +163,42 @@ export const processMessage = async (message: RawMessage) => {
       ownerForDuplicate = rawMsg.group.ownerId;
     }
 
+    // SEARCH FOR EXISTING SIGNAL IN SCOPE TO REUSE ENTRY DATA
+    // This ensures that if the token was called previously in the workspace, 
+    // we attribute the PnL to the original entry price, not the current price.
+    let reuseEntryData = false;
+    try {
+        const scopeWhere: any = { mint };
+        if (ownerForDuplicate) {
+            scopeWhere.group = { ownerId: ownerForDuplicate };
+        } else if (groupId) {
+            scopeWhere.groupId = groupId;
+        }
+
+        const earliestSignal = await prisma.signal.findFirst({
+            where: scopeWhere,
+            orderBy: { detectedAt: 'asc' }
+        });
+
+        if (earliestSignal && earliestSignal.entryPrice && earliestSignal.entryMarketCap) {
+            logger.info(`Reusing entry data for ${mint} from signal ${earliestSignal.id} (Entry: $${earliestSignal.entryMarketCap})`);
+            entryPrice = earliestSignal.entryPrice;
+            entryMarketCap = earliestSignal.entryMarketCap;
+            entrySupply = earliestSignal.entrySupply;
+            tokenCreatedAt = earliestSignal.tokenCreatedAt || tokenCreatedAt;
+            entryProvider = earliestSignal.entryPriceProvider || entryProvider;
+            dexPaid = earliestSignal.dexPaid || dexPaid;
+            // Capture the original entry time to detect this is a follow-up
+            if (earliestSignal.entryPriceAt) {
+                 // Store original entry time in a way we can detect? 
+                 // We'll pass it to createSignal via entryPriceAt
+            }
+            reuseEntryData = true;
+        }
+    } catch (err) {
+        logger.warn(`Failed to lookup earliest signal for ${mint}:`, err);
+    }
+
     // Create Signal
     const signal = await createSignal({
       chatId,
@@ -173,7 +209,7 @@ export const processMessage = async (message: RawMessage) => {
       name: meta.name,
       symbol: meta.symbol,
       entryPrice,
-      entryPriceAt: entryPrice ? new Date() : null,
+      entryPriceAt: reuseEntryData && earliestSignal?.entryPriceAt ? earliestSignal.entryPriceAt : (entryPrice ? new Date() : null),
       entryPriceProvider: entryProvider,
       entryMarketCap,
       entrySupply,
