@@ -1015,30 +1015,97 @@ export const handleLiveSignals = async (ctx: BotContext) => {
     }
 
     // 4. OPTIMIZED: Fetch current prices using Jupiter batch API (50 tokens at once - much faster!)
-    // Then calculate current MC from price * entrySupply for signals with supply stored
-    // Entry MC is already stored in signal, so we don't need to fetch it
+    // Cache current price/PnL for all signals in DB for reuse across filters/timeframes.
     const uniqueMints = Array.from(aggregated.keys());
     const marketCaps = new Map<string, number>();
     const prices = new Map<string, number>();
+    const mintSupply = new Map<string, number>();
     
-    // OPTIMIZATION: Use Jupiter batch API to fetch prices for all mints at once (up to 50 per batch)
-    const { getMultipleTokenPrices } = await import('../../providers/jupiter');
-    const priceMap = await getMultipleTokenPrices(uniqueMints);
-    
-    // Calculate current MC from price * entrySupply (if supply is stored in signal)
-    // This is much faster than fetching full metadata for each token
-    for (const mint of uniqueMints) {
-      const price = priceMap[mint];
-      if (price !== null && price !== undefined) {
-        prices.set(mint, price);
-        
-        // Get entrySupply from signal to calculate current MC
-        const sig = signals.find(s => s.mint === mint);
-        if (sig?.entrySupply && sig.entrySupply > 0) {
-          const currentMc = price * sig.entrySupply;
-          marketCaps.set(mint, currentMc);
+    const cacheFreshMs = 2 * 60 * 1000;
+    const nowTs = Date.now();
+    const canUseCached = signals.length > 0 && signals.every((sig) => {
+        const updatedAt = sig.metrics?.updatedAt?.getTime?.() || 0;
+        return sig.metrics?.currentPrice && (nowTs - updatedAt) < cacheFreshMs;
+    });
+
+    if (canUseCached) {
+        for (const sig of signals) {
+            if (!sig.metrics?.currentPrice) continue;
+            prices.set(sig.mint, sig.metrics.currentPrice);
+            const mc = sig.metrics.currentMarketCap;
+            if (mc && mc > 0) {
+                marketCaps.set(sig.mint, mc);
+                continue;
+            }
+            const { entryPrice, entryMarketCap, entrySupply } = resolveEntrySnapshot(sig);
+            const supply = sig.entrySupply || entrySupply || (entryPrice > 0 && entryMarketCap > 0 ? entryMarketCap / entryPrice : 0);
+            if (supply > 0) {
+                marketCaps.set(sig.mint, sig.metrics.currentPrice * supply);
+            }
         }
-      }
+    } else {
+        // OPTIMIZATION: Use Jupiter batch API to fetch prices for all mints at once (up to 50 per batch)
+        const { getMultipleTokenPrices } = await import('../../providers/jupiter');
+        const priceMap = await getMultipleTokenPrices(uniqueMints);
+
+        await Promise.allSettled(signals.map(async (sig) => {
+            const { entryPrice, entryMarketCap, entrySupply } = resolveEntrySnapshot(sig);
+            const supply = sig.entrySupply || entrySupply || 0;
+            if (supply > 0 && !mintSupply.has(sig.mint)) {
+                mintSupply.set(sig.mint, supply);
+            }
+
+            const currentPrice = priceMap[sig.mint];
+            if (currentPrice === null || currentPrice === undefined || !entryPrice) return;
+
+            const currentMc = supply > 0 ? currentPrice * supply : null;
+            const currentMultiple = entryPrice > 0
+                ? currentPrice / entryPrice
+                : (entryMarketCap && currentMc ? currentMc / entryMarketCap : 0);
+
+            if (sig.metrics) {
+                await prisma.signalMetric.update({
+                    where: { signalId: sig.id },
+                    data: {
+                        currentPrice: currentPrice,
+                        currentMarketCap: currentMc ?? undefined,
+                        currentMultiple,
+                        updatedAt: new Date()
+                    }
+                }).catch(() => {});
+                sig.metrics.currentPrice = currentPrice;
+                sig.metrics.currentMarketCap = currentMc ?? null;
+                sig.metrics.currentMultiple = currentMultiple;
+                sig.metrics.updatedAt = new Date();
+            } else {
+                const created = await prisma.signalMetric.create({
+                    data: {
+                        signalId: sig.id,
+                        currentPrice: currentPrice,
+                        currentMarketCap: currentMc ?? null,
+                        currentMultiple,
+                        athPrice: 0,
+                        athMultiple: 0,
+                        athMarketCap: null,
+                        athAt: sig.detectedAt,
+                        maxDrawdown: 0
+                    }
+                }).catch(() => null);
+                if (created) {
+                    sig.metrics = created;
+                }
+            }
+        }));
+
+        for (const mint of uniqueMints) {
+            const price = priceMap[mint];
+            if (price === null || price === undefined) continue;
+            prices.set(mint, price);
+            const supply = mintSupply.get(mint);
+            if (supply && supply > 0) {
+                marketCaps.set(mint, price * supply);
+            }
+        }
     }
     
     // FIX: Fetch market caps for ALL signals missing MC (not just 20)
@@ -1107,13 +1174,8 @@ export const handleLiveSignals = async (ctx: BotContext) => {
              });
              (row as any).currentMultiple = currentMultiple;
              
-             // FIX: Use ATH multiple from metrics (real ATH from OHLCV)
-             // CRITICAL: Ensure ATH is never less than Current Multiple (ATH >= Current)
-             let athMult = sig?.metrics?.athMultiple || 0;
-             if (currentMultiple > athMult) {
-                athMult = currentMultiple;
-                // Optionally trigger background update if discrepancy found?
-             }
+             // Use ATH multiple from metrics only (OHLCV/cached)
+             const athMult = sig?.metrics?.athMultiple || 0;
              (row as any).athMultiple = athMult;
              
              // Velocity calculation removed to prevent timeout
@@ -1360,9 +1422,10 @@ export const handleLiveSignals = async (ctx: BotContext) => {
           (row as any).currentMultiple ||
           (entryMc && currentMc && currentMc > 0 && entryMc > 0 ? currentMc / entryMc : 0);
         const rawAthMult = (row as any).athMultiple || sig?.metrics?.athMultiple || 0;
-        const athMult = Math.max(rawAthMult, currentMultiple || 0, 1);
+        const showAth = rawAthMult > 0;
+        const athMult = showAth ? Math.max(rawAthMult, currentMultiple || 0, 1) : 0;
         const athMc = (row as any).athMarketCap || sig?.metrics?.athMarketCap || null;
-        const athLabel = athMult > 0
+        const athLabel = showAth
           ? `${athMult.toFixed(1).replace(/\.0$/, '')}x ATH${athMc ? ` (${UIHelper.formatMarketCap(athMc)})` : ''}`
           : 'ATH N/A';
         message += `💰 Entry MC: ${entryStr} ➔ Now MC: ${currentStr} (*${pnlStr}*) | ${athLabel}\n`;

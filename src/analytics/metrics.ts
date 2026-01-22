@@ -174,6 +174,8 @@ export const enrichSignalMetrics = async (
         dayBoundary.setDate(dayBoundary.getDate() + 1);
         const dayBoundaryTs = dayBoundary.getTime();
 
+        let candlesFound = 0;
+
         // Minute candles: entry -> hour boundary
         if (nowTimestamp > entryTimestamp) {
             const minuteEnd = Math.min(hourBoundaryTs, nowTimestamp);
@@ -185,6 +187,7 @@ export const enrichSignalMetrics = async (
                     const postEntryMinutes = minuteCandles.filter(
                         (c) => c.timestamp >= entryTimestamp && c.timestamp < minuteEnd
                     );
+                    candlesFound += postEntryMinutes.length;
                     for (const candle of postEntryMinutes) {
                         if (candle.high > maxHigh) {
                             maxHigh = candle.high;
@@ -208,6 +211,7 @@ export const enrichSignalMetrics = async (
                     const hourlyInRange = hourlyCandles.filter(
                         (c) => c.timestamp >= hourBoundaryTs && c.timestamp < hourEnd
                     );
+                    candlesFound += hourlyInRange.length;
                     for (const candle of hourlyInRange) {
                         if (candle.high > maxHigh) {
                             maxHigh = candle.high;
@@ -227,6 +231,7 @@ export const enrichSignalMetrics = async (
             try {
                 const dailyCandles = await geckoTerminal.getOHLCV(sig.mint, 'day', dayLimit);
                 const dailyInRange = dailyCandles.filter((c) => c.timestamp >= dayBoundaryTs);
+                candlesFound += dailyInRange.length;
                 for (const candle of dailyInRange) {
                     if (candle.high > maxHigh) {
                         maxHigh = candle.high;
@@ -238,14 +243,18 @@ export const enrichSignalMetrics = async (
             }
         }
 
-        // Ensure ATH is never below current price or entry price
-        const fallbackPrice = Math.max(entryPriceValue, currentPrice || 0);
-        if (maxHigh === 0 && fallbackPrice > 0) {
-            maxHigh = fallbackPrice;
-            maxAt = currentPrice >= entryPriceValue ? nowTimestamp : entryTimestamp;
-        } else if (currentPrice > maxHigh) {
-            maxHigh = currentPrice;
-            maxAt = nowTimestamp;
+        if (candlesFound === 0) {
+            if (!sig.metrics?.athPrice || sig.metrics.athPrice <= 0) {
+                return;
+            }
+            maxHigh = sig.metrics.athPrice;
+            maxAt = sig.metrics.athAt?.getTime?.() || entryTimestamp;
+        } else {
+            // Ensure ATH is never below entry price when OHLCV exists
+            if (maxHigh < entryPriceValue) {
+                maxHigh = entryPriceValue;
+                maxAt = entryTimestamp;
+            }
         }
 
         // Never allow ATH to decrease below cached ATH price if it exists
