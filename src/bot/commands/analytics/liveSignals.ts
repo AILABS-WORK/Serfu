@@ -230,21 +230,24 @@ export const handleLiveSignals = async (ctx: BotContext) => {
       filtered.sort((a: CachedSignal, b: CachedSignal) => b.detectedAt.getTime() - a.detectedAt.getTime());
     }
 
-    const topItems = filtered.slice(0, displayLimit);
+    const poolSize = sortBy === 'pnl' || sortBy === 'trending'
+      ? Math.min(filtered.length, displayLimit * 5)
+      : displayLimit;
+    const topPool = filtered.slice(0, poolSize);
 
     const { enrichSignalMetrics } = await import('../../../analytics/metrics');
     const metaMap = new Map<string, any>();
     const signalMap = new Map<number, any>();
 
-    if (topItems.length > 0) {
+    if (topPool.length > 0) {
       const signals = await prisma.signal.findMany({
-        where: { id: { in: topItems.map(i => i.signalId) } },
+        where: { id: { in: topPool.map(i => i.signalId) } },
         include: { metrics: true, priceSamples: { orderBy: { sampledAt: 'asc' }, take: 1 }, group: true, user: true }
       });
       for (const s of signals) signalMap.set(s.id, s);
     }
 
-    await Promise.all(topItems.map(async (item: CachedSignal) => {
+    await Promise.all(topPool.map(async (item: CachedSignal) => {
       try {
         const meta = await provider.getTokenMeta(item.mint);
         metaMap.set(item.mint, meta);
@@ -270,6 +273,12 @@ export const handleLiveSignals = async (ctx: BotContext) => {
         await enrichSignalMetrics(sig, false, currentPrice || undefined);
       }
     }));
+
+    if (sortBy === 'pnl' || sortBy === 'trending') {
+      topPool.sort((a: CachedSignal, b: CachedSignal) => b.pnl - a.pnl);
+    }
+
+    const topItems = topPool.slice(0, displayLimit);
 
     let message = UIHelper.header(`Live Signals (${filtered.length})`);
     if (topItems.length === 0) {
