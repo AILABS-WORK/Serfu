@@ -969,20 +969,28 @@ export const handleLiveSignals = async (ctx: BotContext) => {
              return;
         }
 
-        // Step 2: Deduplicate & Resolve Earliest Entry
-        // Map<Mint, EarliestSignal>
-        const uniqueMints = new Set<string>();
-        const signalMap = new Map<string, any>(); // Mint -> Earliest Signal Object
+        // Step 2: Deduplicate & Resolve Earliest Entry (Aggregation)
+        // Map<Mint, { earliest: Signal, latest: Signal }>
+        // We need 'latest' for display (Recent Activity) and 'earliest' for PnL (Entry Price)
+        const mintAggregation = new Map<string, { earliest: any, latest: any }>();
 
         for (const sig of signals) {
-            if (!uniqueMints.has(sig.mint)) {
-                uniqueMints.add(sig.mint);
-                signalMap.set(sig.mint, sig);
+            if (!mintAggregation.has(sig.mint)) {
+                mintAggregation.set(sig.mint, { earliest: sig, latest: sig });
+            } else {
+                const agg = mintAggregation.get(sig.mint)!;
+                // Update Earliest (for Entry Price)
+                if (sig.detectedAt < agg.earliest.detectedAt) {
+                    agg.earliest = sig;
+                }
+                // Update Latest (for Display/Time)
+                if (sig.detectedAt > agg.latest.detectedAt) {
+                    agg.latest = sig;
+                }
             }
         }
         
-        const uniqueSignals = Array.from(signalMap.values());
-        const allMints = Array.from(uniqueMints);
+        const allMints = Array.from(mintAggregation.keys());
 
         // Step 3: Fetch Current Data (Batch)
         // Fetch live prices for ALL unique mints
@@ -991,9 +999,16 @@ export const handleLiveSignals = async (ctx: BotContext) => {
 
         // Step 4: Calculate Metrics (All)
         // Create lightweight objects for filtering/sorting
-        const candidates = uniqueSignals.map(sig => {
-            const currentPrice = priceMap[sig.mint] ?? sig.metrics?.currentPrice ?? 0;
-            const { entryPrice, entryMarketCap, entrySupply } = resolveEntrySnapshot(sig);
+        const candidates = allMints.map(mint => {
+            const agg = mintAggregation.get(mint)!;
+            const sig = agg.latest; // Use LATEST signal for display (Caller, Time, User)
+            const earliestSig = agg.earliest; // Use EARLIEST signal for Entry Price
+
+            // Price from Jupiter OR Latest Signal (fallback)
+            const currentPrice = priceMap[mint] ?? sig.metrics?.currentPrice ?? 0;
+            
+            // Entry from EARLIEST signal
+            const { entryPrice, entryMarketCap, entrySupply } = resolveEntrySnapshot(earliestSig);
             
             let pnl = 0;
             let currentMc = 0;
@@ -1018,18 +1033,21 @@ export const handleLiveSignals = async (ctx: BotContext) => {
                 pnl = ((currentMc - entryMarketCap) / entryMarketCap) * 100;
             }
 
-            // Age
-            const age = Date.now() - sig.detectedAt.getTime();
+            // Age is based on Earliest Detection? Or Latest?
+            // "Age" usually means "How long ago was it FIRST called?"
+            const age = Date.now() - earliestSig.detectedAt.getTime();
 
             return {
-                mint: sig.mint,
-                signal: sig,
+                mint: mint,
+                signal: sig, // Display Latest
+                earliestSignal: earliestSig, // Keep ref
                 pnl,
                 currentPrice,
                 currentMc,
-                entryMc: entryMc || 0, // Ensure no undefined
+                entryMc: entryMc || 0,
                 entryPrice,
-                detectedAt: sig.detectedAt,
+                detectedAt: sig.detectedAt, // Sort by Latest Activity
+                firstDetectedAt: earliestSig.detectedAt,
                 age
             };
         });
