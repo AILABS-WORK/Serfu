@@ -1073,7 +1073,8 @@ export const handleLiveSignals = async (ctx: BotContext) => {
             // 2. ATH Calculation
             // Ensure ATH >= Current Price/Entry Price inside enrichSignalMetrics
             // We pass currentPrice to enrichSignalMetrics to enforce this
-            await enrichSignalMetrics(item.signal, false, item.currentPrice || undefined);
+            const currentPrice = item.currentPrice || 0;
+            await enrichSignalMetrics(item.signal, false, currentPrice || undefined);
         }));
 
         // Step 8: Render
