@@ -1,7 +1,7 @@
 import { Context, Middleware } from 'telegraf';
 import { createRawMessage } from '../db/messages';
 import { processMessage } from '../ingest/processor';
-import { createOrUpdateGroup, getAnyGroupByChatId } from '../db/groups';
+import { createOrUpdateGroup, getAnyGroupByChatId, getGroupByChatId } from '../db/groups';
 import { createOrUpdateUser } from '../db/users';
 import { logger } from '../utils/logger';
 import { UIHelper } from '../utils/ui';
@@ -534,7 +534,10 @@ export const ingestMiddleware: Middleware<Context> = async (ctx, next) => {
       const isGroup = message.chat.type === 'group' || message.chat.type === 'supergroup';
       
       if (isGroup) {
-        const existing = await getAnyGroupByChatId(BigInt(chatId));
+        const preferred = senderId
+          ? await getGroupByChatId(BigInt(chatId), BigInt(senderId)).catch(() => null)
+          : null;
+        const existing = preferred || await getAnyGroupByChatId(BigInt(chatId));
         if (existing) {
           groupId = existing.id;
         } else if (senderId) {
@@ -666,7 +669,10 @@ export const ingestMiddleware: Middleware<Context> = async (ctx, next) => {
         const isGroup = message.chat.type === 'group' || message.chat.type === 'supergroup';
         
         if (isGroup) {
-          const existing = await getAnyGroupByChatId(BigInt(chatId));
+          const preferred = senderId
+            ? await getGroupByChatId(BigInt(chatId), BigInt(senderId)).catch(() => null)
+            : null;
+          const existing = preferred || await getAnyGroupByChatId(BigInt(chatId));
           if (existing) {
             groupId = existing.id;
           } else if (senderId) {
