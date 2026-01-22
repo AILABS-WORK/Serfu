@@ -1029,9 +1029,12 @@ export const handleLiveSignals = async (ctx: BotContext) => {
         });
 
         // Step 5: Filter & Sort
+        // Debug Logging for Sorting Issue
+        logger.info(`[LiveSignals] Sorting by: ${sortBy}. Total candidates: ${candidates.length}`);
+        
         let filtered = candidates.filter(c => {
             // PnL Filters
-            if (onlyGainers && c.pnl < 0) return false;
+            if (onlyGainers && c.pnl <= 0) return false; // Strict > 0 for gainers
             if (minMult > 0) {
                 const requiredPnl = (minMult - 1) * 100;
                 if (c.pnl < requiredPnl) return false;
@@ -1044,13 +1047,23 @@ export const handleLiveSignals = async (ctx: BotContext) => {
             return true;
         });
 
+        logger.info(`[LiveSignals] Filtered candidates: ${filtered.length}. Top 3 PnL before sort: ${filtered.slice(0,3).map(c => c.pnl.toFixed(2)).join(', ')}`);
+
         // Sort
         if (sortBy === 'pnl' || sortBy === 'trending') {
-            filtered.sort((a, b) => b.pnl - a.pnl);
+            filtered.sort((a, b) => {
+                // Handle NaN/Infinity
+                const pnlA = isFinite(a.pnl) ? a.pnl : -Infinity;
+                const pnlB = isFinite(b.pnl) ? b.pnl : -Infinity;
+                return pnlB - pnlA; // Descending
+            });
         } else {
             // Newest (Youngest first -> smallest age / largest detectedAt)
             filtered.sort((a, b) => b.detectedAt.getTime() - a.detectedAt.getTime());
         }
+
+        logger.info(`[LiveSignals] Top 3 PnL after sort: ${filtered.slice(0,3).map(c => c.pnl.toFixed(2)).join(', ')}`);
+
 
         // Step 6: Top Selection
         const topItems = filtered.slice(0, displayLimit);
