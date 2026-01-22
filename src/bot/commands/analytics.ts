@@ -864,35 +864,6 @@ const resolveEntrySnapshot = (sig: any) => {
   return { entryPrice, entryMarketCap, entrySupply };
 };
 
-const calculatePnlPercent = (params: {
-  currentMc: number;
-  entryMc: number;
-  currentPrice: number;
-  entryPrice: number;
-}) => {
-  const { currentMc, entryMc, currentPrice, entryPrice } = params;
-  if (currentMc > 0 && entryMc > 0) {
-    return ((currentMc - entryMc) / entryMc) * 100;
-  }
-  if (currentPrice > 0 && entryPrice > 0) {
-    return ((currentPrice - entryPrice) / entryPrice) * 100;
-  }
-  return 0;
-};
-
-const resolveCurrentMultiple = (params: {
-  currentMc: number;
-  entryMc: number;
-  currentPrice: number;
-  entryPrice: number;
-  fallbackMultiple: number;
-}) => {
-  const { currentMc, entryMc, currentPrice, entryPrice, fallbackMultiple } = params;
-  if (currentMc > 0 && entryMc > 0) return currentMc / entryMc;
-  if (currentPrice > 0 && entryPrice > 0) return currentPrice / entryPrice;
-  return fallbackMultiple;
-};
-
 const formatCallerLabel = (sig: any) => {
   const user = sig.user?.username ? `@${sig.user.username}` : null;
   const group = sig.group?.name || (sig.group?.chatId ? `Chat ${sig.group.chatId}` : null);
@@ -901,612 +872,301 @@ const formatCallerLabel = (sig: any) => {
 };
 
 export const handleLiveSignals = async (ctx: BotContext) => {
-  let loadingMsg: any = null;
-  try {
-    const ownerTelegramId = ctx.from?.id ? BigInt(ctx.from.id) : null;
-    if (!ownerTelegramId) return ctx.reply('❌ Unable to identify user.');
+    let loadingMsg: any = null;
+    try {
+        const ownerTelegramId = ctx.from?.id ? BigInt(ctx.from.id) : null;
+        if (!ownerTelegramId) return ctx.reply('❌ Unable to identify user.');
 
-    // 1. Get Workspace Scope
-    const userGroups = await prisma.group.findMany({
-        where: { owner: { userId: ownerTelegramId }, isActive: true },
-        select: { id: true, chatId: true, type: true }
-    });
-    const ownedChatIds = userGroups.map(g => g.chatId);
-    const destinationGroupIds = userGroups.filter(g => g.type === 'destination').map(g => g.id);
-    
-    let forwardedSignalIds: number[] = [];
-    if (destinationGroupIds.length > 0) {
-        const forwarded = await prisma.forwardedSignal.findMany({
-            where: { destGroupId: { in: destinationGroupIds.map(id => BigInt(id)) } },
-            select: { signalId: true }
+        // 1. Get Workspace Scope
+        const userGroups = await prisma.group.findMany({
+            where: { owner: { userId: ownerTelegramId }, isActive: true },
+            select: { id: true, chatId: true, type: true }
         });
-        forwardedSignalIds = forwarded.map(f => f.signalId);
-    }
-
-    if (ownedChatIds.length === 0 && forwardedSignalIds.length === 0) {
-        return ctx.reply('You are not monitoring any groups/channels yet.');
-    }
-
-    // 2. Get Filters FIRST (to filter signals by timeframe)
-    const liveFilters = ctx.session?.liveFilters || {};
-    const timeframeLabel = (liveFilters as any).timeframe || '24H'; // Default 24H
-    const timeframeParsed = UIHelper.parseTimeframeInput(timeframeLabel);
-    const timeframeCutoff =
-      timeframeLabel === 'ALL'
-        ? new Date(0)
-        : (timeframeParsed ? new Date(Date.now() - timeframeParsed.ms) : subDays(new Date(), 1));
-
-    // 3. Fetch Active Signals (timeframe is applied after earliest-call aggregation)
-    const signals = await prisma.signal.findMany({
-      where: {
-        trackingStatus: { in: ['ACTIVE', 'ENTRY_PENDING'] },
-        OR: [
-            { chatId: { in: ownedChatIds } },
-            { id: { in: forwardedSignalIds } }
-        ],
-      },
-      orderBy: { detectedAt: 'asc' }, // Oldest first to find "Earliest Caller"
-      include: {
-        group: true,
-        user: true,
-        metrics: true,
-        priceSamples: { orderBy: { sampledAt: 'asc' }, take: 1 },
-      }
-    });
-
-    const entrySignalByMint = new Map<string, any>();
-    const signalsByDetected = [...signals].sort(
-      (a, b) => a.detectedAt.getTime() - b.detectedAt.getTime()
-    );
-    for (const sig of signalsByDetected) {
-      if (!entrySignalByMint.has(sig.mint)) {
-        entrySignalByMint.set(sig.mint, sig);
-      }
-    }
-
-    if (signals.length === 0) {
-      return ctx.reply('No active signals right now.', {
-          reply_markup: {
-              inline_keyboard: [[{ text: '🔙 Back', callback_data: 'analytics' }]]
-          }
-      });
-    }
-
-    // Check if we're updating an existing message (from filter/sort action)
-    // loadingMsg declared outside try block now
-    if (ctx.callbackQuery && ctx.callbackQuery.message) {
-      // Edit existing message instead of creating new one
-      loadingMsg = ctx.callbackQuery.message;
-      try {
-        await ctx.telegram.editMessageText(
-          loadingMsg.chat.id,
-          loadingMsg.message_id,
-          undefined,
-          '⏳ Loading live data...',
-          { parse_mode: 'Markdown' }
-        );
-      } catch {}
-    } else {
-      loadingMsg = await ctx.reply('⏳ Loading live data...');
-    }
-
-    // 3. Aggregate by Mint (Initial Pass)
-    const aggregated = new Map<string, {
-        symbol: string;
-        mint: string;
-        earliestDate: Date;
-        latestDate: Date;
-        earliestCaller: string;
-        latestCaller: string;
-        earliestSignalId: number;
-        latestSignalId: number;
-        mentions: number;
-        pnl: number;
-        currentPrice: number;
-        meta?: any; // TokenMeta
-    }>();
-
-    for (const sig of signals) {
-        if (!aggregated.has(sig.mint)) {
-            const caller = formatCallerLabel(sig);
-            aggregated.set(sig.mint, {
-                symbol: sig.symbol || 'N/A',
-                mint: sig.mint,
-                earliestDate: sig.detectedAt,
-                latestDate: sig.detectedAt,
-                earliestCaller: caller,
-                latestCaller: caller,
-                earliestSignalId: sig.id,
-                latestSignalId: sig.id,
-                mentions: 0,
-                pnl: 0,
-                currentPrice: 0
+        const ownedChatIds = userGroups.map(g => g.chatId);
+        const destinationGroupIds = userGroups.filter(g => g.type === 'destination').map(g => g.id);
+        
+        let forwardedSignalIds: number[] = [];
+        if (destinationGroupIds.length > 0) {
+            const forwarded = await prisma.forwardedSignal.findMany({
+                where: { destGroupId: { in: destinationGroupIds.map(id => BigInt(id)) } },
+                select: { signalId: true }
             });
-        }
-        const row = aggregated.get(sig.mint)!;
-        row.mentions++;
-        if (sig.detectedAt < row.earliestDate) {
-            row.earliestDate = sig.detectedAt;
-            row.earliestCaller = formatCallerLabel(sig);
-            row.earliestSignalId = sig.id;
-        }
-        if (sig.detectedAt > row.latestDate) {
-            row.latestDate = sig.detectedAt;
-            row.latestCaller = formatCallerLabel(sig);
-            row.latestSignalId = sig.id;
-        }
-    }
-
-    // 4. OPTIMIZED: Fetch current prices using Jupiter batch API (50 tokens at once - much faster!)
-    // Cache current price/PnL for all signals in DB for reuse across filters/timeframes.
-    const uniqueMints = Array.from(aggregated.keys());
-    const marketCaps = new Map<string, number>();
-    const prices = new Map<string, number>();
-    const mintSupply = new Map<string, number>();
-    
-    const cacheFreshMs = 2 * 60 * 1000;
-    const nowTs = Date.now();
-    const canUseCached = signals.length > 0 && signals.every((sig) => {
-        const updatedAt = sig.metrics?.updatedAt?.getTime?.() || 0;
-        return sig.metrics?.currentPrice && (nowTs - updatedAt) < cacheFreshMs;
-    });
-
-    if (canUseCached) {
-        for (const sig of signals) {
-            if (!sig.metrics?.currentPrice) continue;
-            prices.set(sig.mint, sig.metrics.currentPrice);
-            const mc = sig.metrics.currentMarketCap;
-            if (mc && mc > 0) {
-                marketCaps.set(sig.mint, mc);
-                continue;
-            }
-            const { entryPrice, entryMarketCap, entrySupply } = resolveEntrySnapshot(sig);
-            const supply = sig.entrySupply || entrySupply || (entryPrice > 0 && entryMarketCap > 0 ? entryMarketCap / entryPrice : 0);
-            if (supply > 0) {
-                marketCaps.set(sig.mint, sig.metrics.currentPrice * supply);
-            }
-        }
-    } else {
-        // OPTIMIZATION: Use Jupiter batch API to fetch prices for all mints at once (up to 50 per batch)
-        const { getMultipleTokenPrices } = await import('../../providers/jupiter');
-        const priceMap = await getMultipleTokenPrices(uniqueMints);
-
-        await Promise.allSettled(signals.map(async (sig) => {
-            const { entryPrice, entryMarketCap, entrySupply } = resolveEntrySnapshot(sig);
-            const supply = sig.entrySupply || entrySupply || 0;
-            if (supply > 0 && !mintSupply.has(sig.mint)) {
-                mintSupply.set(sig.mint, supply);
-            }
-
-            const currentPrice = priceMap[sig.mint];
-            if (currentPrice === null || currentPrice === undefined || !entryPrice) return;
-
-            const currentMc = supply > 0 ? currentPrice * supply : null;
-            const currentMultiple = entryPrice > 0
-                ? currentPrice / entryPrice
-                : (entryMarketCap && currentMc ? currentMc / entryMarketCap : 0);
-
-            if (sig.metrics) {
-                await prisma.signalMetric.update({
-                    where: { signalId: sig.id },
-                    data: {
-                        currentPrice: currentPrice,
-                        currentMarketCap: currentMc ?? undefined,
-                        currentMultiple,
-                        updatedAt: new Date()
-                    }
-                }).catch(() => {});
-                sig.metrics.currentPrice = currentPrice;
-                sig.metrics.currentMarketCap = currentMc ?? null;
-                sig.metrics.currentMultiple = currentMultiple;
-                sig.metrics.updatedAt = new Date();
-            } else {
-                const created = await prisma.signalMetric.create({
-                    data: {
-                        signalId: sig.id,
-                        currentPrice: currentPrice,
-                        currentMarketCap: currentMc ?? null,
-                        currentMultiple,
-                        athPrice: 0,
-                        athMultiple: 0,
-                        athMarketCap: null,
-                        athAt: sig.detectedAt,
-                        maxDrawdown: 0
-                    }
-                }).catch(() => null);
-                if (created) {
-                    sig.metrics = created;
-                }
-            }
-        }));
-
-        for (const mint of uniqueMints) {
-            const price = priceMap[mint];
-            if (price === null || price === undefined) continue;
-            prices.set(mint, price);
-            const supply = mintSupply.get(mint);
-            if (supply && supply > 0) {
-                marketCaps.set(mint, price * supply);
-            }
-        }
-    }
-    
-    // FIX: Fetch market caps for ALL signals missing MC (not just 20)
-    // REMOVED: Fetching MC for all signals is too slow. 
-    // We rely on Jupiter Batch Prices (fetched above) and fallback to Price-based PnL if MC is missing.
-    // Full metadata is only fetched for the displayed top 10 signals.
-
-    // 4. Get remaining filters (timeframe applied after earliest-call aggregation)
-    const minMult = liveFilters.minMult || 0;
-    const onlyGainers = liveFilters.onlyGainers || false;
-    // FIX: Default sort should be 'newest' (by time, newest first)
-    const sortBy = (liveFilters as any).sortBy || 'newest';
-    const minAth = (liveFilters as any).minAth || 0;
-    const displayLimit = (liveFilters as any).expand ? 20 : 10;
-    
-    // OPTIMIZATION: Removed expensive priceSample query that was causing timeouts
-    // Velocity calculation removed - can be re-added later using cached metrics if needed
-    // For now, trending sort will use PnL instead of velocity
-    
-    // STEP 1: Calculate PnL and all data for ALL signals in timeframe FIRST
-    // CRITICAL: Calculate current price and PnL for ALL signals BEFORE filtering/sorting
-    // This ensures all signals have accurate data for proper sorting
-    // NOTE: Timeframe filtering is already done in DB query, so all aggregated signals are within timeframe
-    const candidates = Array.from(aggregated.values()).map(row => {
-        const sig = signals.find(s => s.id === (row as any).earliestSignalId) || signals.find(s => s.mint === row.mint);
-        row.pnl = 0;
-        if (!sig) {
-            return row;
+            forwardedSignalIds = forwarded.map(f => f.signalId);
         }
 
-        const currentPrice = prices.get(row.mint) ?? sig.metrics?.currentPrice ?? 0;
-        row.currentPrice = currentPrice;
-        if (currentPrice > 0 && !prices.has(row.mint)) {
-            prices.set(row.mint, currentPrice);
+        if (ownedChatIds.length === 0 && forwardedSignalIds.length === 0) {
+            return ctx.reply('You are not monitoring any groups/channels yet.');
         }
 
-        const entrySig = entrySignalByMint.get(row.mint) || sig;
-        const { entryPrice } = resolveEntrySnapshot(entrySig);
+        // 2. Get Filters & State
+        const liveFilters = ctx.session?.liveFilters || {};
+        const timeframeLabel = (liveFilters as any).timeframe || '24H';
+        const timeframeParsed = UIHelper.parseTimeframeInput(timeframeLabel);
+        const timeframeCutoff = timeframeLabel === 'ALL'
+            ? new Date(0)
+            : (timeframeParsed ? new Date(Date.now() - timeframeParsed.ms) : subDays(new Date(), 1));
 
-        if (entryPrice > 0 && currentPrice > 0) {
-            row.pnl = ((currentPrice - entryPrice) / entryPrice) * 100;
-        }
-        (row as any)._calculatedPnl = row.pnl;
+        const sortBy = (liveFilters as any).sortBy || 'newest';
+        const minMult = liveFilters.minMult || 0;
+        const onlyGainers = liveFilters.onlyGainers || false;
+        const minAth = (liveFilters as any).minAth || 0;
+        const displayLimit = (liveFilters as any).expand ? 20 : 10;
 
-        const currentMultiple = entryPrice > 0 && currentPrice > 0 ? currentPrice / entryPrice : 0;
-        (row as any).currentMultiple = currentMultiple;
-
-        const athMult = sig?.metrics?.athMultiple || 0;
-        (row as any).athMultiple = athMult;
-
-        (row as any).velocity = row.pnl;
-        (row as any).entryPrice = entryPrice;
-        (row as any).entrySignalId = entrySig.id;
-        (row as any).entryDetectedAt = entrySig.detectedAt;
-
-        return row;
-    });
-    
-    // STEP 2: Skip expensive metadata fetch for all candidates.
-    // Filters rely on price-based PnL when MC is unavailable for speed.
-    
-    // STEP 3: Apply remaining filters (timeframe already filtered above)
-    // All data (entry MC, current MC, PnL) has been calculated above, so filters use accurate values
-    const filteredCandidates = candidates.filter(row => {
-        const pnl = (row as any)._calculatedPnl ?? row.pnl ?? 0;
-
-        // Timeframe filter based on creation time (earliest mention)
-        if (timeframeLabel !== 'ALL' && row.earliestDate < timeframeCutoff) {
-            return false;
-        }
-
-        if (onlyGainers && pnl < 0) return false;
-
-        if (minMult > 0) {
-            const requiredPnl = (minMult - 1) * 100;
-            if (pnl < requiredPnl) return false;
-        }
-
-        if (minAth > 0) {
-            const ath = (row as any).athMultiple || 0;
-            if (ath < minAth) return false;
-        }
-
-        return true;
-    });
-    
-    // STEP 4: Initialize metaMap for storing token metadata (used for all sorting methods)
-    const metaMap = new Map<string, any>();
-    
-    // REMOVED: Fetching metadata for ALL candidates when sorting by PnL is too slow.
-    // We rely on the initial PnL calculation using Jupiter Batch Prices (lines 970-1150).
-    // This provides "good enough" accuracy for sorting hundreds of signals instantly.
-    // Precise metadata is fetched only for the displayed Top 10 signals in Step 7.
-    
-    // STEP 5: Sort filtered candidates AFTER ensuring all have PnL calculated (metaMap already initialized above)
-    // Default sort is 'newest' (by time, newest first) as per requirements
-    if (sortBy === 'pnl' || sortBy === 'trending') {
-        filteredCandidates.sort((a, b) => {
-            const aPnl = (a as any)._calculatedPnl ?? a.pnl ?? 0;
-            const bPnl = (b as any)._calculatedPnl ?? b.pnl ?? 0;
-            return bPnl - aPnl;
-        });
-    } else {
-        // Newest = creation time of the signal (earliest mention), newest first
-        filteredCandidates.sort((a, b) => b.earliestDate.getTime() - a.earliestDate.getTime());
-    }
-    
-    // STEP 6: Take top 10 AFTER sorting
-    const top10 = filteredCandidates.slice(0, displayLimit);
-    
-    // STEP 7: OPTIMIZED - Parallel metadata fetch for top 10 signals (only if missing)
-    // This ensures we have full metadata (DEX, migrations, etc.) for display
-    // Also ensure current MC is set for all top 10 signals
-    await Promise.all(top10.map(async (row) => {
-        // Get metadata if missing
-        if (!metaMap.has(row.mint)) {
+        // UI: Loading State
+        if (ctx.callbackQuery && ctx.callbackQuery.message) {
+            loadingMsg = ctx.callbackQuery.message;
             try {
-                const meta = await provider.getTokenMeta(row.mint);
-                metaMap.set(row.mint, meta);
-                
-                // Update market cap from metadata if missing
-                if (!marketCaps.has(row.mint) || marketCaps.get(row.mint) === 0) {
-                    const freshMc = meta.liveMarketCap || meta.marketCap;
-                    if (freshMc && freshMc > 0) {
-                        marketCaps.set(row.mint, freshMc);
-                        (row as any).currentMarketCap = freshMc;
-                    } else if (meta.supply && meta.livePrice) {
-                        const calculatedMc = meta.livePrice * meta.supply;
-                        if (calculatedMc > 0) {
-                            marketCaps.set(row.mint, calculatedMc);
-                            (row as any).currentMarketCap = calculatedMc;
-                            prices.set(row.mint, meta.livePrice);
-                        }
-                }
+                await ctx.telegram.editMessageText(
+                    loadingMsg.chat.id,
+                    loadingMsg.message_id,
+                    undefined,
+                    '⏳ Loading live signals...',
+                    { parse_mode: 'Markdown' }
+                );
+            } catch {}
+        } else {
+            loadingMsg = await ctx.reply('⏳ Loading live signals...');
+        }
+
+        // 3. Strict Linear Pipeline
+        // Step 1: DB Query - Fetch ALL signals in scope & timeframe
+        const signals = await prisma.signal.findMany({
+            where: {
+                detectedAt: { gte: timeframeCutoff },
+                trackingStatus: { in: ['ACTIVE', 'ENTRY_PENDING'] },
+                OR: [
+                    { chatId: { in: ownedChatIds } },
+                    { id: { in: forwardedSignalIds } }
+                ]
+            },
+            include: {
+                group: true,
+                user: true,
+                metrics: true,
+                priceSamples: { orderBy: { sampledAt: 'asc' }, take: 1 }
+            },
+            orderBy: { detectedAt: 'asc' } // Oldest first for entry resolution
+        });
+
+        if (signals.length === 0) {
+            // ... handle empty state ...
+             const emptyMsg = 'No active signals found in this timeframe.';
+             if (loadingMsg && loadingMsg.chat && loadingMsg.message_id) {
+                 await ctx.telegram.editMessageText(loadingMsg.chat.id, loadingMsg.message_id, undefined, emptyMsg);
+             } else {
+                 await ctx.reply(emptyMsg);
+             }
+             return;
+        }
+
+        // Step 2: Deduplicate & Resolve Earliest Entry
+        // Map<Mint, EarliestSignal>
+        const uniqueMints = new Set<string>();
+        const signalMap = new Map<string, any>(); // Mint -> Earliest Signal Object
+
+        for (const sig of signals) {
+            if (!uniqueMints.has(sig.mint)) {
+                uniqueMints.add(sig.mint);
+                signalMap.set(sig.mint, sig);
             }
-        } catch {}
         }
         
-        // Ensure current MC is set on row object from marketCaps Map
-        if (!(row as any).currentMarketCap || (row as any).currentMarketCap === 0) {
-            const mcFromMap = marketCaps.get(row.mint);
-            if (mcFromMap && mcFromMap > 0) {
-                (row as any).currentMarketCap = mcFromMap;
+        const uniqueSignals = Array.from(signalMap.values());
+        const allMints = Array.from(uniqueMints);
+
+        // Step 3: Fetch Current Data (Batch)
+        // Fetch live prices for ALL unique mints
+        const { getMultipleTokenPrices } = await import('../../providers/jupiter');
+        const priceMap = await getMultipleTokenPrices(allMints);
+
+        // Step 4: Calculate Metrics (All)
+        // Create lightweight objects for filtering/sorting
+        const candidates = uniqueSignals.map(sig => {
+            const currentPrice = priceMap[sig.mint] ?? sig.metrics?.currentPrice ?? 0;
+            const { entryPrice, entryMarketCap, entrySupply } = resolveEntrySnapshot(sig);
+            
+            let pnl = 0;
+            let currentMc = 0;
+            
+            // Calculate MC
+            if (currentPrice > 0) {
+                 if (entrySupply > 0) {
+                     currentMc = currentPrice * entrySupply;
+                 } else if (entryPrice > 0 && entryMarketCap > 0) {
+                     // Derive supply
+                     const estimatedSupply = entryMarketCap / entryPrice;
+                     currentMc = currentPrice * estimatedSupply;
+                 }
             }
-        }
-        
-        // Recalculate PnL if we have current MC
-        const sig = signals.find(s => s.id === (row as any).earliestSignalId) || signals.find(s => s.mint === row.mint);
-        if (sig) {
-            const entrySig = entrySignalByMint.get(row.mint) || sig;
-            const { entryPrice, entryMarketCap: entryMc } = resolveEntrySnapshot(entrySig);
-            const currentMc = (row as any).currentMarketCap || 0;
-            const currentPrice = prices.get(row.mint) ?? row.currentPrice ?? 0;
-            const newPnl = calculatePnlPercent({
+
+            // Calculate PnL
+            if (currentPrice > 0 && entryPrice > 0) {
+                pnl = ((currentPrice - entryPrice) / entryPrice) * 100;
+            } else if (currentMc > 0 && entryMarketCap > 0) {
+                pnl = ((currentMc - entryMarketCap) / entryMarketCap) * 100;
+            }
+
+            // Age
+            const age = Date.now() - sig.detectedAt.getTime();
+
+            return {
+                mint: sig.mint,
+                signal: sig,
+                pnl,
+                currentPrice,
                 currentMc,
                 entryMc,
-                currentPrice,
-                entryPrice
-            });
-            row.pnl = newPnl;
-            (row as any)._calculatedPnl = newPnl;
-        }
-    }));
-    
-    // OPTIMIZED: Calculate/refresh ATH for top 10 only using simplified OHLCV
-    const { enrichSignalMetrics } = await import('../../analytics/metrics');
-    const athResults = await Promise.allSettled(top10.map(async (row) => {
-        const sig = signals.find(s => s.id === (row as any).earliestSignalId) || signals.find(s => s.mint === row.mint);
-        if (!sig) return;
+                entryPrice,
+                detectedAt: sig.detectedAt,
+                age
+            };
+        });
 
-        const currentPrice = prices.get(row.mint) ?? row.currentPrice ?? 0;
-        await enrichSignalMetrics(sig as any, false, currentPrice);
-
-        if (sig.metrics?.athMultiple) {
-            (row as any).athMultiple = sig.metrics.athMultiple;
-            (row as any).athMarketCap = sig.metrics.athMarketCap;
-        }
-    }));
-
-    const failures = athResults.filter(r => r.status === 'rejected');
-    if (failures.length > 0) {
-        logger.warn(`${failures.length} ATH calculations failed`);
-    }
-
-    // 6. Construct Message
-    let message = UIHelper.header('Live Signals (Active)');
-    
-    if (top10.length === 0) {
-        message += '\nNo signals match your filters.';
-    }
-
-    for (const row of top10) {
-        const meta = metaMap.get(row.mint);
-        const sig = signals.find(s => s.id === (row as any).earliestSignalId) || signals.find(s => s.mint === row.mint);
-        if (!sig) continue;
-        if (meta) {
-          const updates: any = {};
-          const tokenCreatedAt = meta.createdAt || meta.firstPoolCreatedAt || null;
-          if (!sig.tokenCreatedAt && tokenCreatedAt) updates.tokenCreatedAt = tokenCreatedAt;
-          if (!sig.socials && meta.socialLinks) updates.socials = meta.socialLinks;
-          if (!sig.entrySupply && meta.supply) updates.entrySupply = meta.supply;
-          if (Object.keys(updates).length > 0) {
-            prisma.signal.update({ where: { id: sig.id }, data: updates }).catch(() => {});
-          }
-        }
-        
-        // Entry -> Current Market Cap (preferred) or Price (fallback)
-        // FIX: Use stored entryMc from mapping phase for consistency, or recalculate if missing
-        const entrySig = entrySignalByMint.get(row.mint) || sig;
-        const { entryPrice, entryMarketCap: entryMc } = resolveEntrySnapshot(entrySig);
-        
-        // CRITICAL: Get current MC from multiple sources in priority order
-        // 1. From row object (set during calculation phase)
-        // 2. From marketCaps Map (fresh data from API)
-        // 3. From metadata if available
-        // 4. Calculate from price * supply if needed
-        let currentMc = (row as any).currentMarketCap || marketCaps.get(row.mint) || null;
-        
-        // Fallback: try to get from metadata
-        if (!currentMc && meta) {
-            currentMc = meta.liveMarketCap || meta.marketCap || null;
-        }
-        
-        // Fallback: calculate from price * supply
-        if (!currentMc) {
-            const currentPrice = prices.get(row.mint) || row.currentPrice || 0;
-            const supply = sig?.entrySupply || meta?.supply || null;
-            if (currentPrice > 0 && supply && supply > 0) {
-                currentMc = currentPrice * supply;
-                // Store for next time
-                if (currentMc > 0) {
-                    marketCaps.set(row.mint, currentMc);
-                    (row as any).currentMarketCap = currentMc;
-                }
+        // Step 5: Filter & Sort
+        let filtered = candidates.filter(c => {
+            // PnL Filters
+            if (onlyGainers && c.pnl < 0) return false;
+            if (minMult > 0) {
+                const requiredPnl = (minMult - 1) * 100;
+                if (c.pnl < requiredPnl) return false;
             }
-        }
-        
-        // Store current MC on row for consistency
-        if (currentMc && currentMc > 0) {
-            (row as any).currentMarketCap = currentMc;
-        }
-        
-        // Use price-based PnL calculated earlier for consistent ordering/display
-        const calculatedPnl = (row as any)._calculatedPnl ?? row.pnl ?? 0;
-        
-        // PnL & formatting
-        // FIX: Icon should be green if positive compared to entry MC, red if negative
-        const pnlStr = UIHelper.formatPercent(calculatedPnl);
-        const icon = calculatedPnl >= 0 ? '🟢' : '🔴';
-        const timeAgo = UIHelper.formatTimeAgo(row.earliestDate);
-        
-        // Use symbol from meta if available
-        const displaySymbol = meta?.symbol || row.symbol;
-        
-        // Card Layout per Plan: Symbol, Entry->Now, Dex/Migrated flags, Age, Caller
-        message += `\n${icon} *${displaySymbol}* (${row.symbol || 'N/A'})\n`;
-        message += `└ \`${row.mint.slice(0, 8)}...${row.mint.slice(-4)}\`\n`;
-        const entryStr = entryMc ? UIHelper.formatMarketCap(entryMc) : 'N/A';
-        const currentStr = currentMc && currentMc > 0 ? UIHelper.formatMarketCap(currentMc) : 'N/A';
-        
-        // FIX: Ensure ATH is never below current multiple or 1x
-        const currentMultiple =
-          (row as any).currentMultiple ||
-          (entryMc && currentMc && currentMc > 0 && entryMc > 0 ? currentMc / entryMc : 0);
-        const rawAthMult = (row as any).athMultiple || sig?.metrics?.athMultiple || 0;
-        const showAth = rawAthMult > 0;
-        const athMult = showAth ? Math.max(rawAthMult, currentMultiple || 0, 1) : 0;
-        const athMc = (row as any).athMarketCap || sig?.metrics?.athMarketCap || null;
-        const athLabel = showAth
-          ? `${athMult.toFixed(1).replace(/\.0$/, '')}x ATH${athMc ? ` (${UIHelper.formatMarketCap(athMc)})` : ''}`
-          : 'ATH N/A';
-        message += `💰 Entry MC: ${entryStr} ➔ Now MC: ${currentStr} (*${pnlStr}*) | ${athLabel}\n`;
-        
-        if (!sig?.entryMarketCap && sig?.priceSamples?.[0]?.marketCap) {
-          prisma.signal.update({
-            where: { id: sig.id },
-            data: { entryMarketCap: sig.priceSamples[0].marketCap, trackingStatus: 'ACTIVE' },
-          }).catch(() => {});
+            // ATH Filter (requires metrics to be present)
+            if (minAth > 0) {
+                const ath = c.signal.metrics?.athMultiple || 0;
+                if (ath < minAth) return false;
+            }
+            return true;
+        });
+
+        // Sort
+        if (sortBy === 'pnl' || sortBy === 'trending') {
+            filtered.sort((a, b) => b.pnl - a.pnl);
+        } else {
+            // Newest (Youngest first -> smallest age / largest detectedAt)
+            filtered.sort((a, b) => b.detectedAt.getTime() - a.detectedAt.getTime());
         }
 
-        // Dex/Migrated/Team/X flags
-        const dexPaid = sig?.dexPaid
-          ? '✅'
-          : (meta?.tags || []).some((t: string) => t.toLowerCase().includes('dex'))
-            ? '✅'
-            : '❔';
-        const migrated = sig?.migrated
-          ? '✅'
-          : (meta?.audit?.devMigrations || 0) > 0
-            ? '✅'
-            : '❔';
-        const hasTeam = meta?.audit?.devBalancePercentage !== undefined
-          ? (meta.audit.devBalancePercentage < 5 ? '✅' : '❌')
-          : '❔';
-        const hasX = meta?.socialLinks ? (meta.socialLinks.twitter ? '✅' : '❌') : '❔';
-        message += `🍬 Dex: ${dexPaid} | 📦 Migrated: ${migrated} | 👥 Team: ${hasTeam} | 𝕏: ${hasX}\n`;
+        // Step 6: Top Selection
+        const topItems = filtered.slice(0, displayLimit);
 
-        // Age and Caller
-        message += `⏱️ Age: ${timeAgo} | 👤 ${row.earliestCaller || row.latestCaller}\n`;
-        message += UIHelper.separator('LIGHT'); 
-    }
+        // Step 7: Enrichment (Top Only)
+        // Fetch metadata & Calculate ATH
+        const { enrichSignalMetrics } = await import('../../analytics/metrics');
+        const metaMap = new Map<string, any>();
 
-    // 7. Filters & Sort UI
-    const filters = [
-        [
-            { text: '🔥 Trending', callback_data: 'live_sort:trending' },
-            { text: '🆕 Newest', callback_data: 'live_sort:newest' },
-            { text: '💰 Highest PnL', callback_data: 'live_sort:pnl' }
-        ],
-        [
-            { text: minMult === 2 ? '✅ > 2x' : '🚀 > 2x', callback_data: 'live_filter:2x' },
-            { text: minMult === 5 ? '✅ > 5x' : '🌕 > 5x', callback_data: 'live_filter:5x' },
-            { text: onlyGainers ? '✅ Gainers' : '🟢 Gainers', callback_data: 'live_filter:gainers' }
-        ],
-        [
-            { text: timeframeLabel === '1H' ? '✅ 1H' : '1H', callback_data: 'live_time:1H' },
-            { text: timeframeLabel === '6H' ? '✅ 6H' : '6H', callback_data: 'live_time:6H' },
-            { text: timeframeLabel === '24H' ? '✅ 24H' : '24H', callback_data: 'live_time:24H' },
-            { text: timeframeLabel === '7D' ? '✅ 7D' : '7D', callback_data: 'live_time:7D' },
-            { text: timeframeLabel === 'ALL' ? '✅ ALL' : 'ALL', callback_data: 'live_time:ALL' },
-            { text: 'Custom', callback_data: 'live_time:custom' }
-        ],
-        [
-            { text: minAth ? `🏔️ ATH ≥ ${minAth}x` : '🏔️ ATH ≥ X', callback_data: 'live_ath:custom' },
-            { text: minAth ? '♻️ Reset ATH' : ' ', callback_data: minAth ? 'live_ath:reset' : 'live_signals' }
-        ],
-        [
-            { text: '🔄 Refresh', callback_data: 'live_signals' },
-            { text: '❌ Close', callback_data: 'delete_msg' }
-        ]
-    ];
-
-    // Edit the loading message - ensure we have valid loadingMsg before editing
-    if (loadingMsg && loadingMsg.chat && loadingMsg.message_id) {
-        try {
-            await ctx.telegram.editMessageText(loadingMsg.chat.id, loadingMsg.message_id, undefined, message, { 
-                parse_mode: 'Markdown',
-                reply_markup: { inline_keyboard: filters }
-            });
-        } catch (editError: any) {
-            // If edit fails (e.g., message was deleted), try to send a new message
-            logger.debug(`Failed to edit message, sending new one: ${editError.message}`);
+        await Promise.all(topItems.map(async (item) => {
+            // 1. Fetch Metadata
             try {
-                await ctx.reply(message, { 
+                const meta = await provider.getTokenMeta(item.mint);
+                metaMap.set(item.mint, meta);
+                
+                // Refine Current MC if available from meta
+                if (meta.liveMarketCap || meta.marketCap) {
+                    item.currentMc = meta.liveMarketCap || meta.marketCap;
+                    // Recalculate PnL with better MC if possible? 
+                    // Let's stick to Price PnL if available as it's more direct from Jupiter
+                }
+            } catch {}
+
+            // 2. ATH Calculation
+            // Ensure ATH >= Current Price/Entry Price inside enrichSignalMetrics
+            // We pass currentPrice to enrichSignalMetrics to enforce this
+            await enrichSignalMetrics(item.signal, false, item.currentPrice);
+        }));
+
+        // Step 8: Render
+        let message = UIHelper.header(`Live Signals (${filtered.length})`);
+        if (topItems.length === 0) {
+            message += '\nNo signals match your filters.';
+        }
+
+        for (const item of topItems) {
+            const sig = item.signal;
+            const meta = metaMap.get(item.mint);
+            
+            const displaySymbol = meta?.symbol || sig.symbol || 'N/A';
+            const callerLabel = formatCallerLabel(sig);
+            const timeAgo = UIHelper.formatTimeAgo(sig.detectedAt);
+            
+            const pnlStr = UIHelper.formatPercent(item.pnl);
+            const icon = item.pnl >= 0 ? '🟢' : '🔴';
+
+            const entryStr = item.entryMc ? UIHelper.formatMarketCap(item.entryMc) : 'N/A';
+            const currentStr = item.currentMc ? UIHelper.formatMarketCap(item.currentMc) : 'N/A';
+
+            // ATH Display
+            const athMult = sig.metrics?.athMultiple || 0;
+            const athMc = sig.metrics?.athMarketCap || 0;
+            
+            // Sanity Check for Display
+            const currentMult = (item.pnl / 100) + 1;
+            const effectiveAth = Math.max(athMult, currentMult);
+            
+            const athLabel = effectiveAth > 1.05 
+                ? `${effectiveAth.toFixed(1)}x ATH${athMc ? ` (${UIHelper.formatMarketCap(athMc)})` : ''}`
+                : 'ATH N/A';
+
+            // Metadata Flags
+            const dexPaid = (meta?.tags || []).some((t: string) => t.toLowerCase().includes('dex')) ? '✅' : '❔';
+            const migrated = (meta?.audit?.devMigrations || 0) > 0 ? '✅' : '❔';
+            const hasTeam = meta?.audit?.devBalancePercentage !== undefined ? (meta.audit.devBalancePercentage < 5 ? '✅' : '❌') : '❔';
+            const hasX = meta?.socialLinks?.twitter ? '✅' : '❔';
+
+            message += `\n${icon} *${displaySymbol}* (\`${sig.mint.slice(0,4)}..${sig.mint.slice(-4)}\`)\n`;
+            message += `💰 Entry: ${entryStr} ➔ Now: ${currentStr} (*${pnlStr}*) | ${athLabel}\n`;
+            message += `🍬 Dex: ${dexPaid} | 📦 Mig: ${migrated} | 👥 Team: ${hasTeam} | 𝕏: ${hasX}\n`;
+            message += `⏱️ ${timeAgo} ago | 👤 ${callerLabel}\n`;
+            message += UIHelper.separator('LIGHT');
+        }
+
+        // Filters UI
+        const filters = [
+            [
+                { text: '🔥 Trending', callback_data: 'live_sort:trending' },
+                { text: '🆕 Newest', callback_data: 'live_sort:newest' },
+                { text: '💰 Highest PnL', callback_data: 'live_sort:pnl' }
+            ],
+            [
+                { text: minMult === 2 ? '✅ > 2x' : '🚀 > 2x', callback_data: 'live_filter:2x' },
+                { text: minMult === 5 ? '✅ > 5x' : '🌕 > 5x', callback_data: 'live_filter:5x' },
+                { text: onlyGainers ? '✅ Gainers' : '🟢 Gainers', callback_data: 'live_filter:gainers' }
+            ],
+            [
+                { text: timeframeLabel === '1H' ? '✅ 1H' : '1H', callback_data: 'live_time:1H' },
+                { text: timeframeLabel === '6H' ? '✅ 6H' : '6H', callback_data: 'live_time:6H' },
+                { text: timeframeLabel === '24H' ? '✅ 24H' : '24H', callback_data: 'live_time:24H' },
+                { text: timeframeLabel === '7D' ? '✅ 7D' : '7D', callback_data: 'live_time:7D' },
+                { text: timeframeLabel === 'ALL' ? '✅ ALL' : 'ALL', callback_data: 'live_time:ALL' },
+            ],
+            [
+                 { text: '🔄 Refresh', callback_data: 'live_signals' },
+                 { text: '❌ Close', callback_data: 'delete_msg' }
+            ]
+        ];
+
+        // Send/Edit Message
+        if (loadingMsg && loadingMsg.chat && loadingMsg.message_id) {
+             try {
+                await ctx.telegram.editMessageText(loadingMsg.chat.id, loadingMsg.message_id, undefined, message, {
                     parse_mode: 'Markdown',
                     reply_markup: { inline_keyboard: filters }
                 });
-            } catch (replyError) {
-                logger.error('Failed to send live signals message:', replyError);
-            }
+             } catch (e) {
+                 // Fallback if edit fails
+                 await ctx.reply(message, { parse_mode: 'Markdown', reply_markup: { inline_keyboard: filters } });
+             }
+        } else {
+             await ctx.reply(message, { parse_mode: 'Markdown', reply_markup: { inline_keyboard: filters } });
         }
-    } else {
-        // No loading message, just send the result
-        await ctx.reply(message, { 
-            parse_mode: 'Markdown',
-            reply_markup: { inline_keyboard: filters }
-        });
-    }
 
-  } catch (error) {
-    logger.error('Error loading live signals:', error);
-    // Try to update loading message with error, or send new error message
-    if (loadingMsg && loadingMsg.chat && loadingMsg.message_id) {
-        try {
-            await ctx.telegram.editMessageText(
-                loadingMsg.chat.id,
-                loadingMsg.message_id,
-                undefined,
-                '❌ Error loading live signals. Please try again.',
-                { parse_mode: 'Markdown' }
-            );
-        } catch {
-            try { await ctx.reply('❌ Error loading live signals. Please try again.'); } catch {}
+    } catch (error) {
+        logger.error('Error in live signals:', error);
+        if (loadingMsg && loadingMsg.chat && loadingMsg.message_id) {
+            try {
+                await ctx.telegram.editMessageText(loadingMsg.chat.id, loadingMsg.message_id, undefined, '❌ Error loading signals.');
+            } catch {}
         }
-    } else {
-        try { await ctx.reply('❌ Error loading live signals. Please try again.'); } catch {}
     }
-  }
 };
 
 export const handleDistributions = async (ctx: Context, view: string = 'mcap') => {
@@ -1839,10 +1499,6 @@ export const handleDistributions = async (ctx: Context, view: string = 'mcap') =
   }
 };
 
-// ----------------------------------------------------------------------
-// RECENT CALLS HANDLER (Timeline + Deduplication + V2 Design)
-// ----------------------------------------------------------------------
-
 const resolveSince = (window: string): Date | null => {
   const normalized = window.toUpperCase();
   if (normalized === 'ALL') return null;
@@ -2043,10 +1699,6 @@ export const handleRefreshMetrics = async (ctx: Context) => {
         ctx.reply('❌ Refresh failed.');
     }
 };
-
-// ----------------------------------------------------------------------
-// STRATEGY CREATOR (AI/Algo)
-// ----------------------------------------------------------------------
 
 export const handleStrategyCommand = async (ctx: Context, type: 'GROUP' | 'USER', id: string) => {
     try {

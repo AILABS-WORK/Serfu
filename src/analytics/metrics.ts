@@ -257,6 +257,12 @@ export const enrichSignalMetrics = async (
             }
         }
 
+        // Ensure ATH is never below Current Price
+        if (currentPrice > 0 && maxHigh < currentPrice) {
+            maxHigh = currentPrice;
+            maxAt = nowTimestamp; // If current is ATH, ATH time is now
+        }
+
         // Never allow ATH to decrease below cached ATH price if it exists
         if (sig.metrics?.athPrice && sig.metrics.athPrice > maxHigh) {
             maxHigh = sig.metrics.athPrice;
