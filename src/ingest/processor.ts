@@ -94,9 +94,9 @@ export const processMessage = async (message: RawMessage) => {
     let entryPrice: number | null = null;
     let entryProvider = 'helius';
     let trackingStatus: 'ACTIVE' | 'ENTRY_PENDING' = 'ACTIVE';
-    const entrySupply = meta.supply || null;
+    let entrySupply = meta.supply || null;
     let entryMarketCap: number | null = null;
-    const tokenCreatedAt = meta.createdAt || meta.firstPoolCreatedAt || null;
+    let tokenCreatedAt = meta.createdAt || meta.firstPoolCreatedAt || null;
 
     try {
       const quote = await provider.getQuote(mint); // Prefer Jupiter (inside provider)
@@ -167,6 +167,7 @@ export const processMessage = async (message: RawMessage) => {
     // This ensures that if the token was called previously in the workspace, 
     // we attribute the PnL to the original entry price, not the current price.
     let reuseEntryData = false;
+    let earliestSignal: any = null; // Declare outside try block
     try {
         const scopeWhere: any = { mint };
         if (ownerForDuplicate) {
@@ -175,7 +176,7 @@ export const processMessage = async (message: RawMessage) => {
             scopeWhere.groupId = groupId;
         }
 
-        const earliestSignal = await prisma.signal.findFirst({
+        earliestSignal = await prisma.signal.findFirst({
             where: scopeWhere,
             orderBy: { detectedAt: 'asc' }
         });
