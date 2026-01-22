@@ -893,6 +893,13 @@ const resolveCurrentMultiple = (params: {
   return fallbackMultiple;
 };
 
+const formatCallerLabel = (sig: any) => {
+  const user = sig.user?.username ? `@${sig.user.username}` : null;
+  const group = sig.group?.name || (sig.group?.chatId ? `Chat ${sig.group.chatId}` : null);
+  if (user && group) return `${user} (${group})`;
+  return user || group || 'Unknown';
+};
+
 export const handleLiveSignals = async (ctx: BotContext) => {
   let loadingMsg: any = null;
   try {
@@ -949,6 +956,28 @@ export const handleLiveSignals = async (ctx: BotContext) => {
       }
     });
 
+    const mintList = Array.from(new Set(signals.map((s) => s.mint)));
+    const entrySignals = mintList.length > 0
+        ? await prisma.signal.findMany({
+            where: {
+                mint: { in: mintList },
+                chatId: { in: ownedChatIds },
+            },
+            orderBy: { detectedAt: 'asc' },
+            include: {
+                group: true,
+                user: true,
+                priceSamples: { orderBy: { sampledAt: 'asc' }, take: 1 },
+            }
+        })
+        : [];
+    const entrySignalByMint = new Map<string, any>();
+    for (const sig of entrySignals) {
+        if (!entrySignalByMint.has(sig.mint)) {
+            entrySignalByMint.set(sig.mint, sig);
+        }
+    }
+
     if (signals.length === 0) {
       return ctx.reply('No active signals right now.', {
           reply_markup: {
@@ -982,6 +1011,7 @@ export const handleLiveSignals = async (ctx: BotContext) => {
         earliestDate: Date;
         latestDate: Date;
         earliestCaller: string;
+        latestCaller: string;
         earliestSignalId: number;
         latestSignalId: number;
         mentions: number;
@@ -992,13 +1022,14 @@ export const handleLiveSignals = async (ctx: BotContext) => {
 
     for (const sig of signals) {
         if (!aggregated.has(sig.mint)) {
-            const caller = sig.user?.username ? `@${sig.user.username}` : (sig.group?.name || 'Unknown');
+            const caller = formatCallerLabel(sig);
             aggregated.set(sig.mint, {
                 symbol: sig.symbol || 'N/A',
                 mint: sig.mint,
                 earliestDate: sig.detectedAt,
                 latestDate: sig.detectedAt,
                 earliestCaller: caller,
+                latestCaller: caller,
                 earliestSignalId: sig.id,
                 latestSignalId: sig.id,
                 mentions: 0,
@@ -1008,10 +1039,16 @@ export const handleLiveSignals = async (ctx: BotContext) => {
         }
         const row = aggregated.get(sig.mint)!;
         row.mentions++;
-        if (sig.detectedAt < row.earliestDate) row.earliestDate = sig.detectedAt;
-        if (sig.detectedAt > row.latestDate) row.latestDate = sig.detectedAt;
-        if (sig.detectedAt <= row.earliestDate) row.earliestSignalId = sig.id;
-        if (sig.detectedAt >= row.latestDate) row.latestSignalId = sig.id;
+        if (sig.detectedAt < row.earliestDate) {
+            row.earliestDate = sig.detectedAt;
+            row.earliestCaller = formatCallerLabel(sig);
+            row.earliestSignalId = sig.id;
+        }
+        if (sig.detectedAt > row.latestDate) {
+            row.latestDate = sig.detectedAt;
+            row.latestCaller = formatCallerLabel(sig);
+            row.latestSignalId = sig.id;
+        }
     }
 
     // 4. OPTIMIZED: Fetch current prices using Jupiter batch API (50 tokens at once - much faster!)
@@ -1145,11 +1182,12 @@ export const handleLiveSignals = async (ctx: BotContext) => {
              const currentPrice = prices.get(row.mint) ?? 0;
              row.currentPrice = currentPrice;
              
-             // FIX: Entry MC and price - try multiple sources and backfill if missing
-             const { entryPrice, entryMarketCap: entryMc } = resolveEntrySnapshot(sig);
-             if (entryMc > 0 && !sig.entryMarketCap) {
+             // FIX: Entry MC and price - use earliest signal for this mint
+             const entrySig = entrySignalByMint.get(row.mint) || sig;
+             const { entryPrice, entryMarketCap: entryMc } = resolveEntrySnapshot(entrySig);
+             if (entryMc > 0 && entrySig.id && !entrySig.entryMarketCap) {
                  prisma.signal.update({
-                     where: { id: sig.id },
+                     where: { id: entrySig.id },
                      data: { entryMarketCap: entryMc }
                  }).catch(() => {});
              }
@@ -1170,7 +1208,7 @@ export const handleLiveSignals = async (ctx: BotContext) => {
                  entryMc,
                  currentPrice,
                  entryPrice,
-                 fallbackMultiple: sig?.metrics?.currentMultiple || 0
+                 fallbackMultiple: entrySig?.metrics?.currentMultiple || sig?.metrics?.currentMultiple || 0
              });
              (row as any).currentMultiple = currentMultiple;
              
@@ -1239,9 +1277,8 @@ export const handleLiveSignals = async (ctx: BotContext) => {
         // Use PnL as proxy for trending (high PnL = trending up)
         filteredCandidates.sort((a, b) => (b.pnl || (b as any)._calculatedPnl || 0) - (a.pnl || (a as any)._calculatedPnl || 0));
     } else if (sortBy === 'newest') {
-        // Default: Sort by earliest detection time (when CA was first mentioned) - newest first
-        // This shows the newest CAs that appeared, not the most recently rementioned CAs
-        filteredCandidates.sort((a, b) => b.earliestDate.getTime() - a.earliestDate.getTime());
+        // Sort by latest detection time (most recent mention) - newest first
+        filteredCandidates.sort((a, b) => b.latestDate.getTime() - a.latestDate.getTime());
     } else if (sortBy === 'pnl') {
         // Highest PnL first - use the most accurate PnL value available
         filteredCandidates.sort((a, b) => {
@@ -1255,7 +1292,7 @@ export const handleLiveSignals = async (ctx: BotContext) => {
         });
     } else {
         // Fallback to newest if sortBy is unknown
-        filteredCandidates.sort((a, b) => b.earliestDate.getTime() - a.earliestDate.getTime());
+        filteredCandidates.sort((a, b) => b.latestDate.getTime() - a.latestDate.getTime());
     }
     
     // STEP 6: Take top 10 AFTER sorting
@@ -1300,7 +1337,8 @@ export const handleLiveSignals = async (ctx: BotContext) => {
         // Recalculate PnL if we have current MC
         const sig = signals.find(s => s.id === (row as any).earliestSignalId) || signals.find(s => s.mint === row.mint);
         if (sig) {
-            const { entryPrice, entryMarketCap: entryMc } = resolveEntrySnapshot(sig);
+            const entrySig = entrySignalByMint.get(row.mint) || sig;
+            const { entryPrice, entryMarketCap: entryMc } = resolveEntrySnapshot(entrySig);
             const currentMc = (row as any).currentMarketCap || 0;
             const currentPrice = prices.get(row.mint) ?? row.currentPrice ?? 0;
             const newPnl = calculatePnlPercent({
@@ -1358,7 +1396,8 @@ export const handleLiveSignals = async (ctx: BotContext) => {
         
         // Entry -> Current Market Cap (preferred) or Price (fallback)
         // FIX: Use stored entryMc from mapping phase for consistency, or recalculate if missing
-        const { entryPrice, entryMarketCap: entryMc } = resolveEntrySnapshot(sig);
+        const entrySig = entrySignalByMint.get(row.mint) || sig;
+        const { entryPrice, entryMarketCap: entryMc } = resolveEntrySnapshot(entrySig);
         
         // CRITICAL: Get current MC from multiple sources in priority order
         // 1. From row object (set during calculation phase)
@@ -1455,7 +1494,7 @@ export const handleLiveSignals = async (ctx: BotContext) => {
         message += `🍬 Dex: ${dexPaid} | 📦 Migrated: ${migrated} | 👥 Team: ${hasTeam} | 𝕏: ${hasX}\n`;
 
         // Age and Caller
-        message += `⏱️ Age: ${timeAgo} | 👤 ${row.earliestCaller}\n`;
+        message += `⏱️ Age: ${timeAgo} | 👤 ${row.latestCaller || row.earliestCaller}\n`;
         message += UIHelper.separator('LIGHT'); 
     }
 

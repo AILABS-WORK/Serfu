@@ -155,96 +155,12 @@ export const processMessage = async (message: RawMessage) => {
       ownerForDuplicate = rawMsg.group.ownerId;
     }
 
-    // Check if this is a destination group and if the mint already exists there
-    // If so, we should not create a new signal but show "CA reposted" instead
-    if (groupId && rawMsg?.group?.type === 'destination') {
-      const existingSignal = await prisma.signal.findFirst({
-        where: {
-          chatId: message.chatId,
-          mint: mint,
-        },
-        orderBy: { detectedAt: 'asc' },
-      });
-      
-      if (existingSignal) {
-        // Signal already exists in destination - don't create new one
-        // Instead, we could send a "CA reposted" message, but for now just skip
-        logger.info(`Signal ${mint} already exists in destination group ${message.chatId}, skipping duplicate creation`);
-        return;
-      }
+    if (!groupId) {
+      logger.debug(`Skipping signal ${mint} because group is not claimed/linked for chat ${message.chatId}`);
+      return;
     }
-
-    // CRITICAL: Check if signal already exists in alpha caller channel (source channel) BEFORE creating new signal
-    // If CA was already mentioned in a source channel, route from that signal instead of creating new one
-    // This ensures live signals shows correct entry price (from alpha caller channel, not new group entry)
-    if (ownerForDuplicate) {
-      // Check for existing signal in source channels (prioritize channels over groups)
-      const existingSourceSignal = await prisma.signal.findFirst({
-        where: {
-          mint: mint,
-          group: {
-            ownerId: ownerForDuplicate,
-            type: 'source',
-            chatType: 'channel', // Prioritize channels (alpha caller channels)
-          },
-        },
-        orderBy: { detectedAt: 'asc' }, // Get earliest signal
-        include: { group: true },
-      });
-
-      if (existingSourceSignal) {
-        // Signal already exists in source channel - route from that signal instead of creating new one
-        logger.info(`Signal ${mint} already exists in source channel ${existingSourceSignal.group?.name || existingSourceSignal.chatId} (detected at ${existingSourceSignal.detectedAt}), routing from existing signal instead of creating new one`);
-        
-        // Forward the existing signal to the current group (if it's a destination)
-        // This ensures the signal is routed correctly with the original entry price
-        if (groupId && rawMsg?.group?.type === 'destination') {
-          const { forwardSignalToDestination } = await import('../bot/forwarder');
-          // Re-fetch the signal with full relations for forwarding
-          const signalForForward = await prisma.signal.findUnique({
-            where: { id: existingSourceSignal.id },
-            include: { group: true, user: true },
-          });
-          if (signalForForward) {
-            await forwardSignalToDestination(signalForForward);
-          }
-        }
-        
-        // Don't create new signal - route from existing one
-        return;
-      }
-
-      // Also check source groups (not just channels) as fallback
-      const existingSourceGroupSignal = await prisma.signal.findFirst({
-        where: {
-          mint: mint,
-          group: {
-            ownerId: ownerForDuplicate,
-            type: 'source',
-            chatType: { in: ['group', 'supergroup'] }, // Check groups/supergroups
-          },
-        },
-        orderBy: { detectedAt: 'asc' },
-        include: { group: true },
-      });
-
-      if (existingSourceGroupSignal) {
-        // Signal exists in source group - check if current message is from a different group
-        // If current group is a destination, forward the existing signal
-        if (groupId && rawMsg?.group?.type === 'destination' && existingSourceGroupSignal.chatId !== message.chatId) {
-          logger.info(`Signal ${mint} already exists in source group ${existingSourceGroupSignal.group?.name || existingSourceGroupSignal.chatId}, forwarding to destination`);
-          const { forwardSignalToDestination } = await import('../bot/forwarder');
-          const signalForForward = await prisma.signal.findUnique({
-            where: { id: existingSourceGroupSignal.id },
-            include: { group: true, user: true },
-          });
-          if (signalForForward) {
-            await forwardSignalToDestination(signalForForward);
-          }
-          return;
-        }
-        // If current message is from same group, allow creation (might be a repost/update)
-      }
+    if (rawMsg?.group?.ownerId) {
+      ownerForDuplicate = rawMsg.group.ownerId;
     }
 
     // Create Signal

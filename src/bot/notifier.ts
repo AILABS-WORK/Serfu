@@ -88,28 +88,61 @@ export const notifySignal = async (
 
     // Check if this is a duplicate
     if (duplicateCheck?.isDuplicate && duplicateCheck.firstSignal && metaWithLive) {
-      // Generate duplicate card
-      message = generateDuplicateSignalCard(
-        signal,
-        metaWithLive,
-        duplicateCheck.firstSignal,
-        duplicateCheck.firstGroupName || 'Unknown Group',
-        groupName,
-        userName
-      );
-      keyboard = {
-        inline_keyboard: [
-          [
-            { text: '📈 Chart', callback_data: `chart:${signal.id}` },
-            { text: '📊 Stats', callback_data: `stats:${signal.id}` },
+      const isDestination = signalWithGroup?.group?.type === 'destination';
+      if (isDestination) {
+        const firstSignal = await prisma.signal.findUnique({
+          where: { id: duplicateCheck.firstSignal.id },
+          include: { group: true, user: true },
+        });
+        const sourceGroupName = firstSignal?.group?.name || duplicateCheck.firstGroupName || 'Unknown Group';
+        const sourceUserName = firstSignal?.user?.username || firstSignal?.user?.firstName || 'Unknown User';
+        message = await generateFirstSignalCard(
+          firstSignal || signal,
+          metaWithLive,
+          sourceGroupName,
+          sourceUserName,
+          '🧭 *SIGNAL UPDATE*'
+        );
+        keyboard = {
+          inline_keyboard: [
+            [
+              { text: '📈 Chart', callback_data: `chart:${signal.id}` },
+              { text: '📊 Stats', callback_data: `stats:${signal.id}` },
+            ],
+            [
+              { text: '🐋 Analyze Holders', callback_data: `analyze_holders:${signal.id}` },
+            ],
+            [
+              { text: '⭐ Watch', callback_data: `watchlist_add:${signal.id}` },
+              { text: '🔄 Refresh', callback_data: `refresh:${signal.id}` },
+              { text: '🙈 Hide', callback_data: 'hide' },
+            ],
           ],
-          [
-            { text: '🔍 View First Call', callback_data: `signal:${duplicateCheck.firstSignal.id}` },
-            { text: '🔄 Refresh', callback_data: `refresh:${signal.id}` },
-            { text: '🙈 Hide', callback_data: 'hide' },
+        };
+      } else {
+        // Generate duplicate card for non-destination chats
+        message = generateDuplicateSignalCard(
+          signal,
+          metaWithLive,
+          duplicateCheck.firstSignal,
+          duplicateCheck.firstGroupName || 'Unknown Group',
+          groupName,
+          userName
+        );
+        keyboard = {
+          inline_keyboard: [
+            [
+              { text: '📈 Chart', callback_data: `chart:${signal.id}` },
+              { text: '📊 Stats', callback_data: `stats:${signal.id}` },
+            ],
+            [
+              { text: '🔍 View First Call', callback_data: `signal:${duplicateCheck.firstSignal.id}` },
+              { text: '🔄 Refresh', callback_data: `refresh:${signal.id}` },
+              { text: '🙈 Hide', callback_data: 'hide' },
+            ],
           ],
-        ],
-      };
+        };
+      }
     } else if (metaWithLive) {
       // Generate rich first signal card
       message = await generateFirstSignalCard(signal, metaWithLive, groupName, userName);

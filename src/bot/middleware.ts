@@ -469,26 +469,10 @@ export const ingestMiddleware: Middleware<Context> = async (ctx, next) => {
         userId = user.id;
       }
       
-      // Create or reuse channel record:
-      // - If existing claimed channel, reuse it
-      // - Else if sender exists, claim for sender
-      // - Else skip creation (needs /addchannel)
+      // Use claimed channel only; require /addchannel to link ownership
       let groupId: number | null = existing?.id || null;
       if (!groupId) {
-        if (senderId) {
-          try {
-            const group = await createOrUpdateGroup(BigInt(chatId), BigInt(senderId), {
-              name: message.chat?.title || `Channel ${chatId}`,
-              type: 'source',
-              chatType: 'channel',
-            });
-            groupId = group.id;
-          } catch (error) {
-            logger.debug(`Could not create channel for chat ${chatId}:`, error);
-          }
-        } else {
-          logger.debug(`Channel ${chatId} not claimed and no senderId; skipping group creation. Use /addchannel <id> to claim.`);
-        }
+        logger.debug(`Channel ${chatId} not claimed; skipping group linkage. Use /addchannel <id> to claim.`);
       }
       
       // Store message
@@ -546,23 +530,25 @@ export const ingestMiddleware: Middleware<Context> = async (ctx, next) => {
         userId = user.id;
       }
 
-      // For groups: Create group record
-      // Groups are user-specific, so we create them when a user interacts
+      // For groups: prefer claimed group (any owner); fallback to auto-create for sender
       const isGroup = message.chat.type === 'group' || message.chat.type === 'supergroup';
       
-      if (isGroup && senderId) {
-        try {
-          // Try to find or create group for this user
-          const chatTitle = (message.chat as any).title;
-          const group = await createOrUpdateGroup(BigInt(chatId), BigInt(senderId), {
-            name: chatTitle || undefined,
-            type: 'source', // Default to source, can be changed via command
-            chatType: message.chat.type,
-          });
-          groupId = group.id;
-        } catch (error) {
-          // If group creation fails (e.g., user doesn't exist yet), just log and continue
-          logger.debug(`Could not create group for chat ${chatId}:`, error);
+      if (isGroup) {
+        const existing = await getAnyGroupByChatId(BigInt(chatId));
+        if (existing) {
+          groupId = existing.id;
+        } else if (senderId) {
+          try {
+            const chatTitle = (message.chat as any).title;
+            const group = await createOrUpdateGroup(BigInt(chatId), BigInt(senderId), {
+              name: chatTitle || undefined,
+              type: 'source',
+              chatType: message.chat.type,
+            });
+            groupId = group.id;
+          } catch (error) {
+            logger.debug(`Could not create group for chat ${chatId}:`, error);
+          }
         }
       }
 
@@ -621,24 +607,12 @@ export const ingestMiddleware: Middleware<Context> = async (ctx, next) => {
       
       let groupId: number | null = null;
       
-      // Try to find existing claimed channel
+      // Try to find existing claimed channel only
       const existing = await getAnyGroupByChatId(BigInt(chatId));
       if (existing) {
         groupId = existing.id;
-      } else if (senderId) {
-         // Only create group if we have a real sender (not just a channel post without signer)
-         try {
-          const group = await createOrUpdateGroup(BigInt(chatId), BigInt(senderId), {
-            name: message.chat?.title || `Channel ${chatId}`,
-            type: 'source',
-            chatType: 'channel',
-          });
-          groupId = group.id;
-        } catch (error) {
-          logger.debug(`Could not create channel for chat ${chatId}:`, error);
-        }
       } else {
-         logger.debug(`Channel ${chatId} not claimed and no senderId in caption; skipping group creation.`);
+        logger.debug(`Channel ${chatId} not claimed; skipping group linkage. Use /addchannel <id> to claim.`);
       }
       
       const rawMessage = await createRawMessage({
@@ -688,19 +662,24 @@ export const ingestMiddleware: Middleware<Context> = async (ctx, next) => {
           userId = user.id;
         }
 
-        // For groups: Create group record
+        // For groups: prefer claimed group (any owner); fallback to auto-create for sender
         const isGroup = message.chat.type === 'group' || message.chat.type === 'supergroup';
         
-        if (isGroup && senderId) {
-          try {
-            const chatTitle = (message.chat as any).title;
-            const group = await createOrUpdateGroup(BigInt(chatId), BigInt(senderId), {
-              name: chatTitle || undefined,
-              type: 'source',
-            });
-            groupId = group.id;
-          } catch (error) {
-            logger.debug(`Could not create group for chat ${chatId}:`, error);
+        if (isGroup) {
+          const existing = await getAnyGroupByChatId(BigInt(chatId));
+          if (existing) {
+            groupId = existing.id;
+          } else if (senderId) {
+            try {
+              const chatTitle = (message.chat as any).title;
+              const group = await createOrUpdateGroup(BigInt(chatId), BigInt(senderId), {
+                name: chatTitle || undefined,
+                type: 'source',
+              });
+              groupId = group.id;
+            } catch (error) {
+              logger.debug(`Could not create group for chat ${chatId}:`, error);
+            }
           }
         }
   

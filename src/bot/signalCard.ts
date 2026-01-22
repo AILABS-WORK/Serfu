@@ -129,7 +129,8 @@ export const generateFirstSignalCard = async (
   signal: Signal,
   meta: TokenMeta,
   groupName: string,
-  userName: string
+  userName: string,
+  headerOverride?: string
 ): Promise<string> => {
   // Data prep
   const currentPrice = meta.livePrice ?? (meta.marketCap && meta.supply ? meta.marketCap / meta.supply : signal.entryPrice ?? null);
@@ -241,7 +242,7 @@ Organic: \`${organicBuys}\` (${formatNumber(organicVol)})
     ? `🔗 ${linkList.join(' • ')}`
     : '';
 
-  const header = `🚀 *NEW SIGNAL DETECTED*`;
+  const header = headerOverride || `🚀 *NEW SIGNAL DETECTED*`;
   const tokenIdent = `*${meta.name || 'Unknown'}* (${meta.symbol || 'N/A'})`;
   const caLine = `\`${signal.mint}\``;
   const displayUser = (userName === 'Unknown User' || !signal.userId) ? groupName : `@${userName}`;
