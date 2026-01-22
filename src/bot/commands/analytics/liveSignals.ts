@@ -6,8 +6,9 @@ import { UIHelper } from '../../../utils/ui';
 import { BotContext } from '../../../types/bot';
 import { LiveSignalsCache, CachedSignal } from './types';
 
-// Cache TTL: 5 minutes or until timeframe changes
-const CACHE_TTL_MS = 5 * 60 * 1000;
+// Cache TTL: Only cache for same timeframe, always fetch fresh prices
+// Prices should be updated every time button is clicked
+const CACHE_TTL_MS = 0; // No cache - always fetch fresh prices
 
 const formatCallerLabel = (sig: any) => {
   const user = sig.user?.username ? `@${sig.user.username}` : null;
@@ -206,22 +207,17 @@ export const handleLiveSignals = async (ctx: BotContext) => {
       loadingMsg = await ctx.reply('⏳ Loading live signals...');
     }
 
+    // ALWAYS fetch fresh prices when button is clicked - don't use cache for prices
+    // Only cache the signal list structure, but always refresh prices
     const cached = ctx.session.liveSignalsCache;
     const cacheFresh =
       cached &&
       cached.timeframe === timeframeLabel &&
       Date.now() - cached.fetchedAt < CACHE_TTL_MS;
 
-    let cache = cacheFresh
-      ? cached
-      : await buildCache(ctx, timeframeCutoff, timeframeLabel);
-    
-    // Force refresh if cache has no valid prices (all PnL are invalid)
-    const validPricesInCache = cache.signals.filter(s => isFinite(s.pnl) && s.currentPrice > 0).length;
-    if (cacheFresh && validPricesInCache === 0 && cache.signals.length > 0) {
-      logger.warn('[LiveSignals] Cache has no valid prices, forcing refresh');
-      cache = await buildCache(ctx, timeframeCutoff, timeframeLabel);
-    }
+    // Always rebuild cache to get fresh prices - user wants real-time data
+    logger.info('[LiveSignals] Fetching fresh prices (cache disabled for real-time updates)');
+    const cache = await buildCache(ctx, timeframeCutoff, timeframeLabel);
 
     ctx.session.liveSignalsCache = cache;
 
