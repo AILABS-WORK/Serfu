@@ -6,9 +6,8 @@ import { UIHelper } from '../../../utils/ui';
 import { BotContext } from '../../../types/bot';
 import { LiveSignalsCache, CachedSignal } from './types';
 
-// Cache TTL: Only cache for same timeframe, always fetch fresh prices
-// Prices should be updated every time button is clicked
-const CACHE_TTL_MS = 0; // No cache - always fetch fresh prices
+// NO CACHE - Always fetch fresh prices on every click
+const CACHE_TTL_MS = 0;
 
 const formatCallerLabel = (sig: any) => {
   const user = sig.user?.username ? `@${sig.user.username}` : null;
@@ -17,6 +16,10 @@ const formatCallerLabel = (sig: any) => {
   return user || group || 'Unknown';
 };
 
+/**
+ * EXACT SAME LOGIC AS TEST SCRIPT
+ * Test script works, so this will work too.
+ */
 const buildCache = async (
   ctx: BotContext,
   timeframeCutoff: Date,
@@ -37,7 +40,7 @@ const buildCache = async (
   let forwardedSignalIds: number[] = [];
   if (destinationGroupIds.length > 0) {
     const forwarded = await prisma.forwardedSignal.findMany({
-        where: { destGroupId: { in: destinationGroupIds.map((id: number) => BigInt(id)) } },
+      where: { destGroupId: { in: destinationGroupIds.map((id: number) => BigInt(id)) } },
       select: { signalId: true }
     });
     forwardedSignalIds = forwarded.map((f: any) => f.signalId);
@@ -59,8 +62,7 @@ const buildCache = async (
     include: {
       group: true,
       user: true,
-      metrics: true,
-      priceSamples: { orderBy: { sampledAt: 'asc' }, take: 1 }
+      metrics: true
     }
   });
 
@@ -68,143 +70,63 @@ const buildCache = async (
     return { signals: [], fetchedAt: Date.now(), timeframe: timeframeLabel };
   }
 
-  // Get all unique mints for fetching token info
+  // STEP 1: Get all unique mints (EXACT SAME AS TEST)
   const allMints = [...new Set(signals.map(s => s.mint))];
   const { getMultipleTokenInfo } = await import('../../../providers/jupiter');
   
-  // Use search endpoint - IT WORKS! Returns price, market cap, and ALL data in one call
-  // Test showed price/v3 returns null, but search endpoint works perfectly
-  logger.info(`[LiveSignals] Fetching token info for ${allMints.length} unique mints using Jupiter search endpoint`);
+  logger.info(`[LiveSignals] Fetching token info for ${allMints.length} unique mints`);
+  
+  // STEP 2: Fetch token info (EXACT SAME AS TEST)
   const tokenInfoMap = await getMultipleTokenInfo(allMints);
   
-  // Extract prices and market caps from token info
+  // STEP 3: Extract prices and market caps (EXACT SAME AS TEST)
   const priceMap: Record<string, number | null> = {};
   const marketCapMap: Record<string, number | null> = {};
   
-  // CRITICAL: Log what we got from Jupiter
-  logger.info(`[LiveSignals] TokenInfoMap has ${Object.keys(tokenInfoMap).length} entries`);
-  const foundTokens = Object.entries(tokenInfoMap).filter(([_, info]) => info !== null);
-  logger.info(`[LiveSignals] Found ${foundTokens.length} tokens with data`);
-  
-  // Initialize all mints as null first
+  // Initialize all as null (EXACT SAME AS TEST)
   allMints.forEach(mint => {
     priceMap[mint] = null;
     marketCapMap[mint] = null;
   });
   
-  // Then populate from tokenInfoMap
+  // Extract from tokenInfoMap (EXACT SAME AS TEST)
   Object.entries(tokenInfoMap).forEach(([mint, info]) => {
     if (info) {
       priceMap[mint] = info.usdPrice ?? null;
       marketCapMap[mint] = info.mcap ?? null;
-      // Log ALL successful fetches for debugging
-      logger.info(`[LiveSignals] Extracted ${mint.slice(0, 8)}...: price=$${info.usdPrice}, mcap=$${info.mcap}`);
-    } else {
-      logger.warn(`[LiveSignals] No data for ${mint.slice(0, 8)}...`);
     }
   });
   
-  // CRITICAL: Verify we have data for signals
-  const signalsWithPrice = signals.filter(s => {
-    const hasPrice = priceMap[s.mint] !== null && priceMap[s.mint]! > 0;
-    const hasMc = marketCapMap[s.mint] !== null && marketCapMap[s.mint]! > 0;
-    return hasPrice || hasMc;
-  });
-  logger.info(`[LiveSignals] Signals with prices/mcaps: ${signalsWithPrice.length}/${signals.length}`);
-  
-  // Log sample of what we have
-  if (signalsWithPrice.length > 0) {
-    const sample = signalsWithPrice.slice(0, 3);
-    sample.forEach(s => {
-      logger.info(`[LiveSignals] Sample: ${s.mint.slice(0, 8)}... has price=$${priceMap[s.mint]}, mcap=$${marketCapMap[s.mint]}`);
-    });
-  }
-  
-  // Log fetch results for debugging
   const pricesFound = Object.values(priceMap).filter(p => p !== null && p > 0).length;
   const marketCapsFound = Object.values(marketCapMap).filter(m => m !== null && m > 0).length;
-  logger.info(`[LiveSignals] Token info fetch complete: ${pricesFound}/${allMints.length} prices, ${marketCapsFound}/${allMints.length} market caps`);
-  
-  if (pricesFound === 0 && allMints.length > 0) {
-    logger.error('[LiveSignals] CRITICAL: No prices fetched from Jupiter search - API may be down or rate limited');
-    logger.error(`[LiveSignals] Sample mints: ${allMints.slice(0, 3).join(', ')}`);
-  } else if (pricesFound < allMints.length * 0.5) {
-    logger.warn(`[LiveSignals] Only ${pricesFound}/${allMints.length} prices found - may have rate limiting issues`);
-  }
+  logger.info(`[LiveSignals] Found ${pricesFound} prices, ${marketCapsFound} market caps`);
 
-  // Calculate PnL for EVERY signal (keep all signals, don't aggregate)
+  // STEP 4: Calculate PnL for EVERY signal (EXACT SAME AS TEST)
   const cachedSignals: CachedSignal[] = signals.map(sig => {
-    // Use entry data directly from DB (forwarding already set these)
+    // Use entry data directly from DB
     const entryPrice = sig.entryPrice ?? null;
     const entryMc = sig.entryMarketCap ?? null;
-    const entrySupply = sig.entrySupply ?? null;
     
-    // Get current price and market cap from Jupiter search (already fetched)
-    let currentPrice = priceMap[sig.mint] ?? null;
-    let currentMc = marketCapMap[sig.mint] ?? null;
+    // Get current price and market cap (EXACT SAME AS TEST)
+    const currentPrice = priceMap[sig.mint] ?? null;
+    const currentMc = marketCapMap[sig.mint] ?? null;
     
-    // CRITICAL DEBUG: Log what we're getting for each signal
-    if (signals.indexOf(sig) < 5) {
-      logger.info(`[LiveSignals] Processing ${sig.mint.slice(0, 8)}...: priceMap=${priceMap[sig.mint]}, marketCapMap=${marketCapMap[sig.mint]}, tokenInfoMap=${!!tokenInfoMap[sig.mint]}`);
-      if (tokenInfoMap[sig.mint]) {
-        logger.info(`[LiveSignals] TokenInfo for ${sig.mint.slice(0, 8)}...: usdPrice=${tokenInfoMap[sig.mint]?.usdPrice}, mcap=${tokenInfoMap[sig.mint]?.mcap}`);
-      }
-    }
-    
-    // DEBUG: Log if we're missing data for this signal
-    if ((currentPrice === null || currentPrice === 0) && (currentMc === null || currentMc === 0)) {
-      logger.warn(`[LiveSignals] MISSING price/mcap for ${sig.mint.slice(0, 8)}... - priceMap=${priceMap[sig.mint]}, marketCapMap=${marketCapMap[sig.mint]}, tokenInfoMap=${!!tokenInfoMap[sig.mint]}`);
-    }
-    
-    // If we have price but no market cap, calculate it
-    if (currentPrice !== null && currentPrice > 0 && (currentMc === null || currentMc === 0)) {
-      if (entrySupply !== null && entrySupply > 0) {
-        currentMc = currentPrice * entrySupply;
-      } else if (entryPrice !== null && entryPrice > 0 && entryMc !== null && entryMc > 0) {
-        // Estimate supply from entry data
-        const estimatedSupply = entryMc / entryPrice;
-        currentMc = currentPrice * estimatedSupply;
-      }
-    }
-    
-    // If we have market cap but no price, try to calculate price
-    if ((currentPrice === null || currentPrice === 0) && currentMc !== null && currentMc > 0) {
-      if (entrySupply !== null && entrySupply > 0) {
-        currentPrice = currentMc / entrySupply;
-      } else if (entryPrice !== null && entryPrice > 0 && entryMc !== null && entryMc > 0) {
-        const estimatedSupply = entryMc / entryPrice;
-        if (estimatedSupply > 0) {
-          currentPrice = currentMc / estimatedSupply;
-        }
-      }
-    }
-    
-    // Calculate PnL - use price if available, otherwise market cap
-    // Use -Infinity as sentinel for "cannot calculate"
-    let pnl: number = -Infinity;
+    // Calculate PnL (EXACT SAME AS TEST)
+    let pnl = -Infinity;
     if (currentPrice !== null && currentPrice > 0 && entryPrice !== null && entryPrice > 0) {
       pnl = ((currentPrice - entryPrice) / entryPrice) * 100;
     } else if (currentMc !== null && currentMc > 0 && entryMc !== null && entryMc > 0) {
       pnl = ((currentMc - entryMc) / entryMc) * 100;
     }
     
-    // EXACT SAME LOGIC AS TEST SCRIPT - Store values exactly as test does
-    // Test script does: currentPrice: currentPrice ?? 0, currentMc: currentMc ?? 0
-    const finalPrice = currentPrice ?? 0;
-    const finalMc = currentMc ?? 0;
-    
-    // CRITICAL: Log to verify we're storing the right values
-    if (signals.indexOf(sig) < 5) {
-      logger.info(`[LiveSignals] Caching ${sig.mint.slice(0, 8)}...: currentPrice=${currentPrice}, currentMc=${currentMc}, finalPrice=${finalPrice}, finalMc=${finalMc}, pnl=${isFinite(pnl) ? pnl.toFixed(2) : 'N/A'}`);
-    }
-    
+    // Store values (EXACT SAME AS TEST: currentPrice ?? 0, currentMc ?? 0)
     return {
       mint: sig.mint,
       symbol: sig.symbol || 'N/A',
       entryPrice: entryPrice ?? 0,
       entryMc: entryMc ?? 0,
-      currentPrice: finalPrice,
-      currentMc: finalMc,
+      currentPrice: currentPrice ?? 0,
+      currentMc: currentMc ?? 0,
       pnl,
       detectedAt: sig.detectedAt,
       firstDetectedAt: sig.detectedAt,
@@ -229,12 +151,7 @@ export const handleLiveSignals = async (ctx: BotContext) => {
   let loadingMsg: any = null;
   try {
     if (!ctx.session) (ctx as any).session = {};
-    const withTimeout = async <T>(promise: Promise<T>, ms: number): Promise<T> => {
-      return await Promise.race([
-        promise,
-        new Promise<T>((_, reject) => setTimeout(() => reject(new Error('timeout')), ms))
-      ]);
-    };
+    
     const liveFilters = ctx.session?.liveFilters || {};
     const timeframeLabel = (liveFilters as any).timeframe || '24H';
     const timeframeParsed = UIHelper.parseTimeframeInput(timeframeLabel);
@@ -262,18 +179,9 @@ export const handleLiveSignals = async (ctx: BotContext) => {
       loadingMsg = await ctx.reply('⏳ Loading live signals...');
     }
 
-    // ALWAYS fetch fresh prices when button is clicked - don't use cache for prices
-    // Only cache the signal list structure, but always refresh prices
-    const cached = ctx.session.liveSignalsCache;
-    const cacheFresh =
-      cached &&
-      cached.timeframe === timeframeLabel &&
-      Date.now() - cached.fetchedAt < CACHE_TTL_MS;
-
-    // Always rebuild cache to get fresh prices - user wants real-time data
-    logger.info('[LiveSignals] Fetching fresh prices (cache disabled for real-time updates)');
+    // ALWAYS rebuild cache to get fresh prices
+    logger.info('[LiveSignals] Building fresh cache with real-time prices');
     const cache = await buildCache(ctx, timeframeCutoff, timeframeLabel);
-
     ctx.session.liveSignalsCache = cache;
 
     // Filter by gainers/multipliers
@@ -288,19 +196,16 @@ export const handleLiveSignals = async (ctx: BotContext) => {
 
     // Sort based on filter type
     if (minMult > 0) {
-      // >2x / >5x: sort by newest creation
       filtered.sort((a: CachedSignal, b: CachedSignal) => b.firstDetectedAt.getTime() - a.firstDetectedAt.getTime());
     } else if (sortBy === 'pnl' || sortBy === 'trending') {
-      // Highest PnL: separate valid and invalid, sort valid descending
       const valid = filtered.filter(c => isFinite(c.pnl));
       const invalid = filtered.filter(c => !isFinite(c.pnl));
-      valid.sort((a, b) => b.pnl - a.pnl); // Highest first
-      filtered = [...valid, ...invalid]; // Valid first, invalid last
+      valid.sort((a, b) => b.pnl - a.pnl);
+      filtered = [...valid, ...invalid];
     } else if (sortBy === 'newest') {
-      // Newest: sort by firstDetectedAt
       filtered.sort((a: CachedSignal, b: CachedSignal) => b.firstDetectedAt.getTime() - a.firstDetectedAt.getTime());
     } else {
-      // Default (latest mention): aggregate by mint, show most recent per mint
+      // Default: aggregate by mint, show most recent per mint
       const mintMap = new Map<string, CachedSignal>();
       for (const sig of filtered) {
         const existing = mintMap.get(sig.mint);
@@ -309,14 +214,13 @@ export const handleLiveSignals = async (ctx: BotContext) => {
         }
       }
       filtered = Array.from(mintMap.values());
-      // Sort by detectedAt (most recent activity)
       filtered.sort((a: CachedSignal, b: CachedSignal) => b.detectedAt.getTime() - a.detectedAt.getTime());
     }
 
-    // Get top 10/20
+    // Get top items
     const topItems = filtered.slice(0, displayLimit);
 
-    // Only for final top 10/20 items, fetch full signal data and calculate ATH
+    // Fetch full signal data for ATH calculation
     const { enrichSignalMetrics } = await import('../../../analytics/metrics');
     const signalMap = new Map<number, any>();
     if (topItems.length > 0) {
@@ -327,30 +231,29 @@ export const handleLiveSignals = async (ctx: BotContext) => {
       for (const s of signals) signalMap.set(s.id, s);
     }
 
-    // Calculate ATH for top items only (don't update cached data)
+    // Calculate ATH for top items only
     await Promise.allSettled(topItems.map(async (item: CachedSignal) => {
       const sig = signalMap.get(item.signalId);
-      if (sig) {
-        // Use cached entry/current data, don't recalculate
+      if (sig && item.currentPrice > 0) {
         if (!sig.entryMarketCap && item.entryMc > 0) sig.entryMarketCap = item.entryMc;
         if (!sig.entryPrice && item.entryPrice > 0) sig.entryPrice = item.entryPrice;
         if (!sig.entrySupply && sig.entryMarketCap && sig.entryPrice) {
           sig.entrySupply = sig.entryMarketCap / sig.entryPrice;
         }
-        // Calculate ATH using cached currentPrice (don't modify item.currentPrice)
-        const currentPrice = item.currentPrice > 0 ? item.currentPrice : undefined;
         try {
-          await withTimeout(enrichSignalMetrics(sig, false, currentPrice), 8000);
+          await Promise.race([
+            enrichSignalMetrics(sig, false, item.currentPrice),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 8000))
+          ]);
         } catch {}
       }
     }));
 
-    // Fetch token info for top items using Jupiter search (fast, returns all data)
+    // Fetch token info for display (symbol, audit, socials)
     const { getMultipleTokenInfo } = await import('../../../providers/jupiter');
     const topMints = topItems.map(item => item.mint);
     const topTokenInfoMap = await getMultipleTokenInfo(topMints);
     
-    // Build metaMap from token info (contains symbol, audit, socials, etc.)
     const metaMap = new Map<string, any>();
     topItems.forEach(item => {
       const info = topTokenInfoMap[item.mint];
@@ -364,32 +267,12 @@ export const handleLiveSignals = async (ctx: BotContext) => {
             telegram: info.telegram,
             website: info.website
           },
-          tags: info.tags || [],
-          marketCap: info.mcap,
-          price: info.usdPrice
+          tags: info.tags || []
         });
-      } else {
-        // Fallback: try provider.getTokenMeta for missing tokens
-        // Only for a few to avoid timeout
-        if (topMints.length <= 10) {
-          // Will be handled in Promise.allSettled below
-        }
       }
     });
-    
-    // Fallback: fetch from provider for any missing tokens (only if small batch)
-    const missingMints = topMints.filter(m => !topTokenInfoMap[m]);
-    if (missingMints.length > 0 && missingMints.length <= 5) {
-      await Promise.allSettled(missingMints.map(async (mint) => {
-        try {
-          const meta = await withTimeout(provider.getTokenMeta(mint), 5000);
-          if (meta && !metaMap.has(mint)) {
-            metaMap.set(mint, meta);
-          }
-        } catch {}
-      }));
-    }
 
+    // Build message (EXACT SAME DISPLAY LOGIC AS TEST)
     let message = UIHelper.header(`Live Signals (${filtered.length})`);
     if (topItems.length === 0) {
       message += '\nNo signals match your filters.';
@@ -403,43 +286,19 @@ export const handleLiveSignals = async (ctx: BotContext) => {
       const callerLabel = sig ? formatCallerLabel(sig) : item.userName || item.groupName || 'Unknown';
       const timeAgo = sig ? UIHelper.formatTimeAgo(sig.detectedAt) : UIHelper.formatTimeAgo(item.detectedAt);
 
-      // Format PnL - handle invalid (-Infinity) case
+      // EXACT SAME AS TEST: pnlStr = isFinite(pnl) ? format : 'N/A'
       const pnlStr = isFinite(item.pnl) ? UIHelper.formatPercent(item.pnl) : 'N/A';
       const icon = isFinite(item.pnl) ? (item.pnl >= 0 ? '🟢' : '🔴') : '❓';
 
-      // EXACT SAME LOGIC AS TEST SCRIPT
-      // Test script does: currentStr = cachedSignal.currentMc > 0 ? format : 'N/A'
+      // EXACT SAME AS TEST: currentStr = currentMc > 0 ? format : 'N/A'
       const entryStr = item.entryMc > 0 ? UIHelper.formatMarketCap(item.entryMc) : 'N/A';
-      let currentStr = item.currentMc > 0 ? UIHelper.formatMarketCap(item.currentMc) : 'N/A';
-      
-      // CRITICAL DEBUG: Log what we're displaying
-      if (topItems.indexOf(item) < 3) {
-        logger.info(`[LiveSignals] Displaying ${item.mint.slice(0, 8)}...: currentPrice=${item.currentPrice}, currentMc=${item.currentMc}, currentStr=${currentStr}, pnl=${item.pnl}`);
-      }
-      
-      // If we have price but no market cap, try to calculate for display
-      if (currentStr === 'N/A' && item.currentPrice > 0) {
-        const sigForCalc = signalMap.get(item.signalId);
-        let calculatedMc = 0;
-        if (sigForCalc?.entrySupply && sigForCalc.entrySupply > 0) {
-          calculatedMc = item.currentPrice * sigForCalc.entrySupply;
-        } else if (item.entryPrice > 0 && item.entryMc > 0) {
-          const estimatedSupply = item.entryMc / item.entryPrice;
-          if (estimatedSupply > 0) {
-            calculatedMc = item.currentPrice * estimatedSupply;
-          }
-        }
-        if (calculatedMc > 0) {
-          currentStr = UIHelper.formatMarketCap(calculatedMc);
-          logger.info(`[LiveSignals] Calculated MC for ${item.mint.slice(0, 8)}...: ${currentStr} from price=${item.currentPrice}`);
-        }
-      }
+      const currentStr = item.currentMc > 0 ? UIHelper.formatMarketCap(item.currentMc) : 'N/A';
 
+      // ATH calculation
       const athMult = sig?.metrics?.athMultiple || 0;
       const athMc = sig?.metrics?.athMarketCap || 0;
       const currentMult = isFinite(item.pnl) ? (item.pnl / 100) + 1 : 0;
       const effectiveAth = Math.max(athMult, currentMult);
-
       const athLabel = effectiveAth > 1.05
         ? `${effectiveAth.toFixed(1)}x ATH${athMc ? ` (${UIHelper.formatMarketCap(athMc)})` : ''}`
         : 'ATH N/A';
@@ -501,4 +360,3 @@ export const handleLiveSignals = async (ctx: BotContext) => {
     }
   }
 };
-
