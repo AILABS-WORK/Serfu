@@ -673,26 +673,18 @@ export const getSignalLeaderboard = async (
     };
   }
 
-  // OPTIMIZED: Include signals with metrics (preferred) or with price samples (can calculate)
+  // Include all signals in timeframe so ATH can be computed for ranking
   const signals = await prisma.signal.findMany({
     where: {
       detectedAt: { gte: since },
       ...scopeFilter,
-      OR: [
-        { metrics: { isNot: null } },
-        { priceSamples: { some: {} } } // Has at least one price sample
-      ]
     },
     include: { 
       metrics: true, 
       group: true, 
       user: true,
       priceSamples: { orderBy: { sampledAt: 'asc' }, take: 1 } // Add for entryMarketCap fallback
-    },
-    orderBy: {
-        metrics: { athMultiple: 'desc' } // Will sort nulls last, which is fine
-    },
-    take: limit * 2 // Get more to filter and sort properly
+    }
   });
   
   // Calculate ATH for signals missing metrics or with stale metrics
@@ -709,7 +701,7 @@ export const getSignalLeaderboard = async (
   // Use batch enrichment for ATH
   await import('./metrics').then(m => m.enrichSignalsBatch(signalsToEnrich as any));
   
-  // Re-sort by ATH after enrichment
+  // Re-sort by ATH after enrichment across the full timeframe
   signals.sort((a, b) => {
     const aAth = a.metrics?.athMultiple || 0;
     const bAth = b.metrics?.athMultiple || 0;

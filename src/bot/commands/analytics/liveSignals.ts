@@ -157,6 +157,7 @@ const buildCache = async (
 export const handleLiveSignals = async (ctx: BotContext) => {
   let loadingMsg: any = null;
   try {
+    if (!ctx.session) (ctx as any).session = {};
     const liveFilters = ctx.session?.liveFilters || {};
     const timeframeLabel = (liveFilters as any).timeframe || '24H';
     const timeframeParsed = UIHelper.parseTimeframeInput(timeframeLabel);
