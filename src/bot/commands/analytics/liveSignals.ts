@@ -67,24 +67,37 @@ const buildCache = async (
     return { signals: [], fetchedAt: Date.now(), timeframe: timeframeLabel };
   }
 
-  // Get all unique mints for fetching prices
+  // Get all unique mints for fetching token info
   const allMints = [...new Set(signals.map(s => s.mint))];
-  const { getMultipleTokenPrices } = await import('../../../providers/jupiter');
+  const { getMultipleTokenInfo } = await import('../../../providers/jupiter');
   
-  // Use price/v3 batch endpoint - FASTEST! Supports comma-separated IDs (true batch)
-  logger.info(`[LiveSignals] Fetching prices for ${allMints.length} unique mints using Jupiter price/v3 batch endpoint`);
-  const priceMap = await getMultipleTokenPrices(allMints);
+  // Use search endpoint - IT WORKS! Returns price, market cap, and ALL data in one call
+  // Test showed price/v3 returns null, but search endpoint works perfectly
+  logger.info(`[LiveSignals] Fetching token info for ${allMints.length} unique mints using Jupiter search endpoint`);
+  const tokenInfoMap = await getMultipleTokenInfo(allMints);
+  
+  // Extract prices and market caps from token info
+  const priceMap: Record<string, number | null> = {};
+  const marketCapMap: Record<string, number | null> = {};
+  
+  Object.entries(tokenInfoMap).forEach(([mint, info]) => {
+    if (info) {
+      priceMap[mint] = info.usdPrice ?? null;
+      marketCapMap[mint] = info.mcap ?? null;
+    } else {
+      priceMap[mint] = null;
+      marketCapMap[mint] = null;
+    }
+  });
   
   // Log fetch results for debugging
   const pricesFound = Object.values(priceMap).filter(p => p !== null && p > 0).length;
-  logger.info(`[LiveSignals] Price fetch complete: ${pricesFound}/${allMints.length} prices found`);
+  const marketCapsFound = Object.values(marketCapMap).filter(m => m !== null && m > 0).length;
+  logger.info(`[LiveSignals] Token info fetch complete: ${pricesFound}/${allMints.length} prices, ${marketCapsFound}/${allMints.length} market caps`);
   
   if (pricesFound === 0 && allMints.length > 0) {
-    logger.warn('[LiveSignals] No prices fetched from Jupiter - API may be down or rate limited');
+    logger.warn('[LiveSignals] No prices fetched from Jupiter search - API may be down or rate limited');
   }
-  
-  // Market cap will be calculated from price × supply
-  const marketCapMap: Record<string, number | null> = {};
 
   // Calculate PnL for EVERY signal (keep all signals, don't aggregate)
   const cachedSignals: CachedSignal[] = signals.map(sig => {
@@ -93,9 +106,9 @@ const buildCache = async (
     const entryMc = sig.entryMarketCap ?? null;
     const entrySupply = sig.entrySupply ?? null;
     
-    // Get current price from Jupiter price/v3 batch (already fetched)
+    // Get current price and market cap from Jupiter search (already fetched)
     let currentPrice = priceMap[sig.mint] ?? null;
-    let currentMc: number | null = null;
+    let currentMc = marketCapMap[sig.mint] ?? null;
     
     // If we have price but no market cap, calculate it
     if (currentPrice !== null && currentPrice > 0 && (currentMc === null || currentMc === 0)) {
