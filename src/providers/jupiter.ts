@@ -268,15 +268,26 @@ export const getMultipleTokenInfo = async (mints: string[]): Promise<Record<stri
             
             const data: any = await res.json();
             if (!data || !data.length) {
-              logger.debug(`[Jupiter] No results for ${mint.slice(0, 8)}...`);
+              logger.warn(`[Jupiter] No results for ${mint.slice(0, 8)}...`);
               return null;
             }
             
             // Search endpoint returns array - find exact match
-            const t = data.find((token: any) => token.id === mint) || data[0];
+            const exactMatch = data.find((token: any) => token.id === mint);
+            const t = exactMatch || data[0];
             
-            // If first result matches, use it; otherwise log mismatch
-            if (t.id === mint) {
+            // CRITICAL: Log if we found exact match or using first result
+            if (!exactMatch && data.length > 0) {
+              logger.warn(`[Jupiter] No exact match for ${mint.slice(0, 8)}..., using first result: ${data[0].id?.slice(0, 8)}...`);
+            }
+            
+            // If we have a match (exact or first), use it
+            if (t && t.id) {
+              // If not exact match, log it
+              if (t.id !== mint) {
+                logger.warn(`[Jupiter] Mint mismatch for ${mint.slice(0, 8)}...: got ${t.id?.slice(0, 8)}..., skipping`);
+                return null;
+              }
               return { mint, info: {
                 id: t.id,
                 name: t.name,

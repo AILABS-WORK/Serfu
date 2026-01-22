@@ -81,19 +81,44 @@ const buildCache = async (
   const priceMap: Record<string, number | null> = {};
   const marketCapMap: Record<string, number | null> = {};
   
+  // CRITICAL: Log what we got from Jupiter
+  logger.info(`[LiveSignals] TokenInfoMap has ${Object.keys(tokenInfoMap).length} entries`);
+  const foundTokens = Object.entries(tokenInfoMap).filter(([_, info]) => info !== null);
+  logger.info(`[LiveSignals] Found ${foundTokens.length} tokens with data`);
+  
+  // Initialize all mints as null first
+  allMints.forEach(mint => {
+    priceMap[mint] = null;
+    marketCapMap[mint] = null;
+  });
+  
+  // Then populate from tokenInfoMap
   Object.entries(tokenInfoMap).forEach(([mint, info]) => {
     if (info) {
       priceMap[mint] = info.usdPrice ?? null;
       marketCapMap[mint] = info.mcap ?? null;
-      // Log first few successful fetches for debugging
-      if (Object.keys(priceMap).length <= 5) {
-        logger.info(`[LiveSignals] Fetched ${mint.slice(0, 8)}...: price=$${info.usdPrice}, mcap=$${info.mcap}`);
-      }
+      // Log ALL successful fetches for debugging
+      logger.info(`[LiveSignals] Extracted ${mint.slice(0, 8)}...: price=$${info.usdPrice}, mcap=$${info.mcap}`);
     } else {
-      priceMap[mint] = null;
-      marketCapMap[mint] = null;
+      logger.warn(`[LiveSignals] No data for ${mint.slice(0, 8)}...`);
     }
   });
+  
+  // CRITICAL: Verify we have data for signals
+  const signalsWithPrice = signals.filter(s => {
+    const hasPrice = priceMap[s.mint] !== null && priceMap[s.mint]! > 0;
+    const hasMc = marketCapMap[s.mint] !== null && marketCapMap[s.mint]! > 0;
+    return hasPrice || hasMc;
+  });
+  logger.info(`[LiveSignals] Signals with prices/mcaps: ${signalsWithPrice.length}/${signals.length}`);
+  
+  // Log sample of what we have
+  if (signalsWithPrice.length > 0) {
+    const sample = signalsWithPrice.slice(0, 3);
+    sample.forEach(s => {
+      logger.info(`[LiveSignals] Sample: ${s.mint.slice(0, 8)}... has price=$${priceMap[s.mint]}, mcap=$${marketCapMap[s.mint]}`);
+    });
+  }
   
   // Log fetch results for debugging
   const pricesFound = Object.values(priceMap).filter(p => p !== null && p > 0).length;
@@ -118,12 +143,17 @@ const buildCache = async (
     let currentPrice = priceMap[sig.mint] ?? null;
     let currentMc = marketCapMap[sig.mint] ?? null;
     
+    // CRITICAL DEBUG: Log what we're getting for each signal
+    if (signals.indexOf(sig) < 5) {
+      logger.info(`[LiveSignals] Processing ${sig.mint.slice(0, 8)}...: priceMap=${priceMap[sig.mint]}, marketCapMap=${marketCapMap[sig.mint]}, tokenInfoMap=${!!tokenInfoMap[sig.mint]}`);
+      if (tokenInfoMap[sig.mint]) {
+        logger.info(`[LiveSignals] TokenInfo for ${sig.mint.slice(0, 8)}...: usdPrice=${tokenInfoMap[sig.mint]?.usdPrice}, mcap=${tokenInfoMap[sig.mint]?.mcap}`);
+      }
+    }
+    
     // DEBUG: Log if we're missing data for this signal
     if ((currentPrice === null || currentPrice === 0) && (currentMc === null || currentMc === 0)) {
-      // Only log first few to avoid spam
-      if (signals.indexOf(sig) < 3) {
-        logger.debug(`[LiveSignals] Missing price/mcap for ${sig.mint.slice(0, 8)}... - tokenInfoMap has: ${!!tokenInfoMap[sig.mint]}`);
-      }
+      logger.warn(`[LiveSignals] MISSING price/mcap for ${sig.mint.slice(0, 8)}... - priceMap=${priceMap[sig.mint]}, marketCapMap=${marketCapMap[sig.mint]}, tokenInfoMap=${!!tokenInfoMap[sig.mint]}`);
     }
     
     // If we have price but no market cap, calculate it
