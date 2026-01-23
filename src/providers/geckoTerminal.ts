@@ -28,7 +28,8 @@ export class GeckoTerminalProvider {
       try {
         // Add delay between retries to avoid rate limits
         if (attempt > 0) {
-          const delay = Math.min(1000 * Math.pow(2, attempt - 1), 5000); // Exponential backoff, max 5s
+          const delay = Math.min(2000 * Math.pow(2, attempt - 1), 10000); // Exponential backoff: 2s, 4s, 8s (max 10s)
+          logger.warn(`GeckoTerminal rate limited for ${mint.slice(0, 8)}... (attempt ${attempt + 1}/${retries}), waiting ${delay/1000}s`);
           await new Promise(resolve => setTimeout(resolve, delay));
         }
         
@@ -95,9 +96,10 @@ export class GeckoTerminalProvider {
         const isTimeout = error.code === 'ECONNABORTED' || error.message?.includes('timeout');
         
         if (isRateLimit && attempt < retries - 1) {
-          const retryAfter = parseInt(error.response?.headers?.['retry-after'] || '5', 10);
-          logger.warn(`GeckoTerminal rate limited for ${mint} (attempt ${attempt + 1}/${retries}), waiting ${retryAfter}s`);
-          await new Promise(resolve => setTimeout(resolve, retryAfter * 1000));
+          const retryAfter = parseInt(error.response?.headers?.['retry-after'] || '10', 10); // Default to 10s if not specified
+          const backoffMs = Math.min(retryAfter * 1000, 10000); // Cap at 10s
+          logger.warn(`GeckoTerminal rate limited for ${mint.slice(0, 8)}... (attempt ${attempt + 1}/${retries}), waiting ${backoffMs/1000}s`);
+          await new Promise(resolve => setTimeout(resolve, backoffMs));
           continue; // Retry
         }
         

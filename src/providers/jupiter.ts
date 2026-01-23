@@ -228,11 +228,11 @@ export const getMultipleTokenInfo = async (mints: string[]): Promise<Record<stri
   });
   
   try {
-    // FIX RATE LIMITING: Reduce parallel requests and add delays
-    // Jupiter rate limits when we hit too many requests at once
-    const MAX_PARALLEL = 10; // Reduced from 50 to 10 to avoid rate limits
+    // FIX RATE LIMITING: Further reduce parallel requests based on logs showing 26 batches with many rate limits
+    // Logs show we're still hitting rate limits even with 10 parallel, so reduce more
+    const MAX_PARALLEL = 5; // Reduced from 10 to 5 - logs show 26 batches with many rate limits
     const REQUEST_TIMEOUT_MS = 15000; // 15 seconds per request
-    const DELAY_BETWEEN_BATCHES_MS = 500; // 500ms delay between batches to avoid rate limits
+    const DELAY_BETWEEN_BATCHES_MS = 1000; // Increased to 1000ms delay between batches
     const MAX_RETRIES = 2; // Retry failed requests up to 2 times
     
     logger.info(`[Jupiter] Fetching token info for ${mints.length} tokens using search endpoint (${MAX_PARALLEL} parallel, ${DELAY_BETWEEN_BATCHES_MS}ms delay between batches)`);

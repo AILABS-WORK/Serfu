@@ -70,8 +70,20 @@ const buildCache = async (
     return { signals: [], fetchedAt: Date.now(), timeframe: timeframeLabel };
   }
 
-  // STEP 1: Get all unique mints (EXACT SAME AS TEST)
-  const allMints = [...new Set(signals.map(s => s.mint))];
+  // CRITICAL: Deduplicate by mint BEFORE fetching prices to reduce API calls
+  // Keep only one signal per mint (most recent detection)
+  const mintMap = new Map<string, typeof signals[0]>();
+  for (const sig of signals) {
+    const existing = mintMap.get(sig.mint);
+    if (!existing || sig.detectedAt.getTime() > existing.detectedAt.getTime()) {
+      mintMap.set(sig.mint, sig);
+    }
+  }
+  const uniqueSignals = Array.from(mintMap.values());
+  logger.info(`[LiveSignals] Deduplicated ${signals.length} signals to ${uniqueSignals.length} unique mints`);
+
+  // STEP 1: Get all unique mints (now already unique, but keep for clarity)
+  const allMints = [...new Set(uniqueSignals.map(s => s.mint))];
   const { getMultipleTokenInfo } = await import('../../../providers/jupiter');
   
   logger.info(`[LiveSignals] Fetching token info for ${allMints.length} unique mints`);
@@ -143,8 +155,8 @@ const buildCache = async (
     });
   }
 
-    // STEP 4: Calculate PnL for EVERY signal (EXACT SAME AS TEST SCRIPT)
-    const cachedSignals: CachedSignal[] = signals.map(sig => {
+    // STEP 4: Calculate PnL for unique signals only (already deduplicated)
+    const cachedSignals: CachedSignal[] = uniqueSignals.map(sig => {
       // Use entry data directly from DB
       const entryPrice = sig.entryPrice ?? null;
       const entryMc = sig.entryMarketCap ?? null;
@@ -273,8 +285,8 @@ export const handleLiveSignals = async (ctx: BotContext) => {
       for (const s of signals) signalMap.set(s.id, s);
     }
 
-    // Calculate ATH for top items only
-    await Promise.allSettled(topItems.map(async (item: CachedSignal) => {
+    // Calculate ATH for top items only - process sequentially to avoid GeckoTerminal rate limits
+    for (const item of topItems) {
       const sig = signalMap.get(item.signalId);
       if (sig && item.currentPrice > 0) {
         if (!sig.entryMarketCap && item.entryMc > 0) sig.entryMarketCap = item.entryMc;
@@ -287,9 +299,11 @@ export const handleLiveSignals = async (ctx: BotContext) => {
             enrichSignalMetrics(sig, false, item.currentPrice),
             new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 8000))
           ]);
+          // Add small delay between ATH calculations to avoid GeckoTerminal rate limits
+          await new Promise(resolve => setTimeout(resolve, 200));
         } catch {}
       }
-    }));
+    }
 
     // Fetch token info for display (symbol, audit, socials)
     const { getMultipleTokenInfo } = await import('../../../providers/jupiter');
