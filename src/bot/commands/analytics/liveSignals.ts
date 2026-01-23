@@ -423,10 +423,10 @@ export const handleLiveSignals = async (ctx: BotContext, forceRefresh = false) =
       const hasX = meta?.socialLinks?.twitter ? '✅' : '❔';
 
       message += `\n${icon} *${displaySymbol}* (\`${item.mint.slice(0,4)}..${item.mint.slice(-4)}\`)\n`;
-      message += `💰 Entry: ${entryStr} ➔ Now: ${currentStr} (*${pnlStr}*) | ${athLabel}\n`;
-      message += `📉 Max DD: ${drawdownStr} | ⏱️ To ATH: ${timeToAthStr}\n`;
-      message += `🍬 Dex: ${dexPaid} | 📦 Mig: ${migrated} | 👥 Team: ${hasTeam} | 𝕏: ${hasX}\n`;
-      message += `⏱️ Latest: ${latestMentionAgo} | 🆕 Created: ${creationAgo} | 👤 ${callerLabel}\n`;
+      message += `💰 *Entry:* ${entryStr} ➔ *Now:* ${currentStr} (*${pnlStr}*)\n`;
+      message += `📈 *ATH:* ${athLabel} | 📉 *Max DD:* ${drawdownStr} | ⏱️ *To ATH:* ${timeToAthStr}\n`;
+      message += `🍬 *Dex:* ${dexPaid} | 📦 *Mig:* ${migrated} | 👥 *Team:* ${hasTeam} | 𝕏 *X:* ${hasX}\n`;
+      message += `⏱️ *Latest:* ${latestMentionAgo} | 🆕 *Created:* ${creationAgo} | 👤 *${callerLabel}*\n`;
       message += UIHelper.separator('LIGHT');
     }
 
