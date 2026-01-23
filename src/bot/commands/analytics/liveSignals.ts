@@ -8,7 +8,7 @@ import { LiveSignalsCache, CachedSignal } from './types';
 
 // Cache prices for 5 minutes - filtering should be fast using cached prices
 // Only refresh prices when cache is stale or user explicitly refreshes
-const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+const CACHE_TTL_MS = 1 * 60 * 1000; // 5 minutes
 
 const formatCallerLabel = (sig: any) => {
   const user = sig.user?.username ? `@${sig.user.username}` : null;
@@ -72,12 +72,24 @@ const buildCache = async (
   }
 
   // CRITICAL: Deduplicate by mint BEFORE fetching prices to reduce API calls
-  // Keep only one signal per mint (most recent detection)
+  // Keep only one signal per mint (most recent detection), but track first and latest detection times
   const mintMap = new Map<string, typeof signals[0]>();
+  const mintFirstDetected = new Map<string, Date>();
+  const mintLatestDetected = new Map<string, Date>();
+  
   for (const sig of signals) {
     const existing = mintMap.get(sig.mint);
     if (!existing || sig.detectedAt.getTime() > existing.detectedAt.getTime()) {
       mintMap.set(sig.mint, sig);
+    }
+    // Track first and latest detection times per mint
+    const firstDetected = mintFirstDetected.get(sig.mint);
+    const latestDetected = mintLatestDetected.get(sig.mint);
+    if (!firstDetected || sig.detectedAt.getTime() < firstDetected.getTime()) {
+      mintFirstDetected.set(sig.mint, sig.detectedAt);
+    }
+    if (!latestDetected || sig.detectedAt.getTime() > latestDetected.getTime()) {
+      mintLatestDetected.set(sig.mint, sig.detectedAt);
     }
   }
   const uniqueSignals = Array.from(mintMap.values());
@@ -174,17 +186,20 @@ const buildCache = async (
         pnl = ((currentMc - entryMc) / entryMc) * 100;
       }
       
-      // Store EXACT SAME AS TEST SCRIPT (lines 50-53)
+      // Store with first and latest detection times
+      const firstDetectedAt = mintFirstDetected.get(sig.mint) || sig.detectedAt;
+      const latestDetectedAt = mintLatestDetected.get(sig.mint) || sig.detectedAt;
+      
       return {
         mint: sig.mint,
         symbol: sig.symbol || 'N/A',
         entryPrice: entryPrice ?? 0,
         entryMc: entryMc ?? 0,
-        currentPrice: currentPrice ?? 0, // EXACT SAME: currentPrice ?? 0
-        currentMc: currentMc ?? 0, // EXACT SAME: currentMc ?? 0
+        currentPrice: currentPrice ?? 0,
+        currentMc: currentMc ?? 0,
         pnl,
-        detectedAt: sig.detectedAt,
-        firstDetectedAt: sig.detectedAt,
+        detectedAt: latestDetectedAt, // Latest mention time
+        firstDetectedAt, // Creation time
         groupId: sig.groupId ?? null,
         groupName: sig.group?.name || '',
         userId: sig.userId ?? null,
@@ -295,7 +310,7 @@ export const handleLiveSignals = async (ctx: BotContext, forceRefresh = false) =
     if (topItems.length > 0) {
       const signals = await prisma.signal.findMany({
         where: { id: { in: topItems.map(i => i.signalId) } },
-        include: { metrics: true, priceSamples: { orderBy: { sampledAt: 'asc' }, take: 1 }, group: true, user: true }
+        include: { metrics: true, priceSamples: { orderBy: { sampledAt: 'asc' } }, group: true, user: true }
       });
       for (const s of signals) signalMap.set(s.id, s);
     }
@@ -356,19 +371,20 @@ export const handleLiveSignals = async (ctx: BotContext, forceRefresh = false) =
 
       const displaySymbol = meta?.symbol || item.symbol || 'N/A';
       const callerLabel = sig ? formatCallerLabel(sig) : item.userName || item.groupName || 'Unknown';
-      const timeAgo = sig ? UIHelper.formatTimeAgo(sig.detectedAt) : UIHelper.formatTimeAgo(item.detectedAt);
-
-      // Display raw Jupiter data - show what we got, no N/A bullshit
-      const entryStr = item.entryMc > 0 ? UIHelper.formatMarketCap(item.entryMc) : '$0';
       
-      // Show raw Jupiter market cap - if it's 0, show $0, not N/A
+      // Time displays: latest mention (detectedAt) and creation (firstDetectedAt)
+      const latestMentionAgo = UIHelper.formatTimeAgo(item.detectedAt);
+      const creationAgo = UIHelper.formatTimeAgo(item.firstDetectedAt);
+
+      // Display raw Jupiter data
+      const entryStr = item.entryMc > 0 ? UIHelper.formatMarketCap(item.entryMc) : '$0';
       const currentStr = item.currentMc > 0 
         ? UIHelper.formatMarketCap(item.currentMc) 
         : item.currentMc === 0 
           ? '$0' 
           : 'N/A';
       
-      // Show raw Jupiter price for PnL calculation
+      // PnL calculation
       const pnlStr = isFinite(item.pnl) ? UIHelper.formatPercent(item.pnl) : 'N/A';
       const icon = isFinite(item.pnl) ? (item.pnl >= 0 ? '🟢' : '🔴') : '❓';
 
@@ -381,6 +397,26 @@ export const handleLiveSignals = async (ctx: BotContext, forceRefresh = false) =
         ? `${effectiveAth.toFixed(1)}x ATH${athMc ? ` (${UIHelper.formatMarketCap(athMc)})` : ''}`
         : 'ATH N/A';
 
+      // Max drawdown (from metrics, negative %)
+      const maxDrawdown = sig?.metrics?.maxDrawdown || 0;
+      const drawdownStr = maxDrawdown < 0 ? UIHelper.formatPercent(maxDrawdown) : 'N/A';
+
+      // Time to ATH (from metrics, in ms, convert to readable format)
+      const timeToAthMs = sig?.metrics?.timeToAth || null;
+      let timeToAthStr = 'N/A';
+      if (timeToAthMs !== null && timeToAthMs > 0) {
+        const minutes = Math.floor(timeToAthMs / 60000);
+        const hours = Math.floor(minutes / 60);
+        const days = Math.floor(hours / 24);
+        if (days > 0) {
+          timeToAthStr = `${days}d ${hours % 24}h`;
+        } else if (hours > 0) {
+          timeToAthStr = `${hours}h ${minutes % 60}m`;
+        } else {
+          timeToAthStr = `${minutes}m`;
+        }
+      }
+
       const dexPaid = (meta?.tags || []).some((t: string) => t.toLowerCase().includes('dex')) ? '✅' : '❔';
       const migrated = (meta?.audit?.devMigrations || 0) > 0 ? '✅' : '❔';
       const hasTeam = meta?.audit?.devBalancePercentage !== undefined ? (meta.audit.devBalancePercentage < 5 ? '✅' : '❌') : '❔';
@@ -388,8 +424,9 @@ export const handleLiveSignals = async (ctx: BotContext, forceRefresh = false) =
 
       message += `\n${icon} *${displaySymbol}* (\`${item.mint.slice(0,4)}..${item.mint.slice(-4)}\`)\n`;
       message += `💰 Entry: ${entryStr} ➔ Now: ${currentStr} (*${pnlStr}*) | ${athLabel}\n`;
+      message += `📉 Max DD: ${drawdownStr} | ⏱️ To ATH: ${timeToAthStr}\n`;
       message += `🍬 Dex: ${dexPaid} | 📦 Mig: ${migrated} | 👥 Team: ${hasTeam} | 𝕏: ${hasX}\n`;
-      message += `⏱️ ${timeAgo} ago | 👤 ${callerLabel}\n`;
+      message += `⏱️ Latest: ${latestMentionAgo} | 🆕 Created: ${creationAgo} | 👤 ${callerLabel}\n`;
       message += UIHelper.separator('LIGHT');
     }
 
@@ -410,6 +447,9 @@ export const handleLiveSignals = async (ctx: BotContext, forceRefresh = false) =
         { text: timeframeLabel === '24H' ? '✅ 24H' : '24H', callback_data: 'live_time:24H' },
         { text: timeframeLabel === '7D' ? '✅ 7D' : '7D', callback_data: 'live_time:7D' },
         { text: timeframeLabel === 'ALL' ? '✅ ALL' : 'ALL', callback_data: 'live_time:ALL' }
+      ],
+      [
+        { text: '⚙️ Custom', callback_data: 'live_time:custom' }
       ],
       [
         { text: '🔄 Refresh', callback_data: 'live_signals' },

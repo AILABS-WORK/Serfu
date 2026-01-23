@@ -228,20 +228,28 @@ export const getMultipleTokenInfo = async (mints: string[]): Promise<Record<stri
   });
   
   try {
-    // FIX RATE LIMITING: Further reduce parallel requests based on logs showing 26 batches with many rate limits
-    // Logs show we're still hitting rate limits even with 10 parallel, so reduce more
-    const MAX_PARALLEL = 5; // Reduced from 10 to 5 - logs show 26 batches with many rate limits
+    // OPTIMIZE: Increase parallel requests for speed, with adaptive rate limiting
+    // Start aggressive, reduce if we hit rate limits
+    let MAX_PARALLEL = 15; // Start with 15 parallel (was 5)
     const REQUEST_TIMEOUT_MS = 15000; // 15 seconds per request
-    const DELAY_BETWEEN_BATCHES_MS = 1000; // Increased to 1000ms delay between batches
+    let DELAY_BETWEEN_BATCHES_MS = 300; // Reduced to 300ms (was 1000ms) for speed
     const MAX_RETRIES = 2; // Retry failed requests up to 2 times
+    let rateLimitCount = 0; // Track rate limits to adapt
     
     logger.info(`[Jupiter] Fetching token info for ${mints.length} tokens using search endpoint (${MAX_PARALLEL} parallel, ${DELAY_BETWEEN_BATCHES_MS}ms delay between batches)`);
     
-    // Process all tokens in parallel batches with delays
+    // Process all tokens in parallel batches with adaptive rate limiting
     for (let i = 0; i < mints.length; i += MAX_PARALLEL) {
       const batch = mints.slice(i, i + MAX_PARALLEL);
       const batchNum = Math.floor(i / MAX_PARALLEL) + 1;
       const totalBatches = Math.ceil(mints.length / MAX_PARALLEL);
+      
+      // Adaptive rate limiting: if we hit too many rate limits, slow down
+      if (rateLimitCount > batchNum * 0.3 && MAX_PARALLEL > 8) {
+        MAX_PARALLEL = Math.max(8, Math.floor(MAX_PARALLEL * 0.8));
+        DELAY_BETWEEN_BATCHES_MS = Math.min(1000, DELAY_BETWEEN_BATCHES_MS * 1.5);
+        logger.warn(`[Jupiter] Adapting: reducing to ${MAX_PARALLEL} parallel, ${DELAY_BETWEEN_BATCHES_MS}ms delay (rate limit count: ${rateLimitCount})`);
+      }
       
       // Add delay between batches (except first batch)
       if (i > 0) {
@@ -269,6 +277,7 @@ export const getMultipleTokenInfo = async (mints: string[]): Promise<Record<stri
               
               if (!res.ok) {
                 if (res.status === 429) {
+                  rateLimitCount++; // Track rate limits for adaptive throttling
                   // Rate limited - retry with exponential backoff
                   if (retryCount < MAX_RETRIES) {
                     const backoffMs = Math.pow(2, retryCount) * 1000; // 1s, 2s, 4s

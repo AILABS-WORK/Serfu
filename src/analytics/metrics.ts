@@ -277,6 +277,55 @@ export const enrichSignalMetrics = async (
             const athMarketCap = entrySupply ? maxHigh * entrySupply : 0;
             const timeToAth = maxAt - entryTimestamp;
 
+            // Calculate max drawdown from entry to ATH (STOP after ATH is hit)
+            // Use price samples or OHLCV candles, only up to ATH time
+            let maxDrawdown = 0;
+            const entryMcValue = entryMc || (entrySupply ? entryPriceValue * entrySupply : 0);
+            
+            if (entryMcValue > 0 && entrySupply) {
+                // Get price samples up to ATH time (or current if ATH not hit yet)
+                const samplesUpToAth = await prisma.priceSample.findMany({
+                    where: {
+                        signalId: sig.id,
+                        sampledAt: { lte: new Date(maxAt) } // Only up to ATH time
+                    },
+                    orderBy: { sampledAt: 'asc' }
+                });
+
+                // Calculate drawdown: track peak and find max drop from peak
+                let peakMc = entryMcValue;
+                let minMc = entryMcValue;
+                
+                for (const sample of samplesUpToAth) {
+                    const sampleMc = sample.marketCap || (sample.price * entrySupply);
+                    if (sampleMc > peakMc) {
+                        peakMc = sampleMc;
+                        minMc = sampleMc; // Reset min when new peak is reached
+                    } else if (sampleMc < minMc) {
+                        minMc = sampleMc;
+                    }
+                    
+                    // Calculate drawdown from peak: (min - peak) / peak * 100
+                    if (peakMc > 0) {
+                        const drawdown = ((minMc - peakMc) / peakMc) * 100;
+                        if (drawdown < maxDrawdown) { // More negative = worse drawdown
+                            maxDrawdown = drawdown;
+                        }
+                    }
+                }
+                
+                // Also check current price if ATH hasn't been hit yet (current is ATH)
+                if (maxAt === nowTimestamp && currentPrice > 0 && entrySupply) {
+                    const currentMc = currentPrice * entrySupply;
+                    if (currentMc < peakMc && peakMc > 0) {
+                        const drawdown = ((currentMc - peakMc) / peakMc) * 100;
+                        if (drawdown < maxDrawdown) {
+                            maxDrawdown = drawdown;
+                        }
+                    }
+                }
+            }
+
             if (sig.metrics) {
                 // UPDATE
                 await prisma.signalMetric.update({
@@ -287,6 +336,7 @@ export const enrichSignalMetrics = async (
                         athMarketCap,
                         athAt: new Date(maxAt),
                         timeToAth,
+                        maxDrawdown,
                         updatedAt: new Date()
                     }
                 });
@@ -296,6 +346,7 @@ export const enrichSignalMetrics = async (
                 sig.metrics.athMarketCap = athMarketCap;
                 sig.metrics.athAt = new Date(maxAt);
                 sig.metrics.timeToAth = timeToAth;
+                sig.metrics.maxDrawdown = maxDrawdown;
                 sig.metrics.updatedAt = new Date();
             } else {
                 // CREATE
@@ -309,7 +360,7 @@ export const enrichSignalMetrics = async (
                         athMarketCap,
                         athAt: new Date(maxAt),
                         timeToAth,
-                        maxDrawdown: 0
+                        maxDrawdown
                     }
                 });
                 sig.metrics = newMetrics;

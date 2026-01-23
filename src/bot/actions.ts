@@ -299,10 +299,24 @@ Max Drawdown: ${(dd * 100).toFixed(2)}%
   // --- LIVE SIGNALS & FILTERS ---
   
   bot.action('live_signals', async (ctx) => {
+      // Answer callback immediately to prevent timeout
+      await ctx.answerCbQuery().catch(() => {});
+      
       // Check if this is a refresh (user clicked refresh button) or initial load
-      // If callback query exists and message exists, it's likely a refresh
       const isRefresh = !!(ctx.callbackQuery && ctx.callbackQuery.message);
-      await handleLiveSignals(ctx, isRefresh);
+      
+      // Process in background with longer timeout for large timeframes
+      handleLiveSignals(ctx, isRefresh).catch((err) => {
+          logger.error('Error in live_signals handler:', err);
+          if (ctx.callbackQuery && ctx.callbackQuery.message) {
+              ctx.telegram.editMessageText(
+                  (ctx.callbackQuery.message as any).chat.id,
+                  (ctx.callbackQuery.message as any).message_id,
+                  undefined,
+                  '❌ Error loading signals. This may take longer for large timeframes. Try a smaller timeframe or click Refresh again.'
+              ).catch(() => {});
+          }
+      });
   });
 
   bot.action(/^live_filter:(.*)$/, async (ctx) => {
@@ -321,9 +335,12 @@ Max Drawdown: ${(dd * 100).toFixed(2)}%
               ctx.session.liveFilters.onlyGainers = !ctx.session.liveFilters.onlyGainers;
           }
 
+          // Answer callback immediately
+          await ctx.answerCbQuery('Filter updated').catch(() => {});
           // Reload view
-          await handleLiveSignals(ctx);
-          await ctx.answerCbQuery('Filter updated');
+          handleLiveSignals(ctx).catch((err) => {
+              logger.error('Error reloading live signals after filter:', err);
+          });
       } catch (error) {
           logger.error('Filter action error:', error);
           ctx.answerCbQuery('Error updating filter');
@@ -342,9 +359,12 @@ Max Drawdown: ${(dd * 100).toFixed(2)}%
               (ctx.session.liveFilters as any).sortBy = sortBy;
           }
 
+          // Answer callback immediately
+          await ctx.answerCbQuery(`Sorted by ${sortBy}`).catch(() => {});
           // Reload view
-          await handleLiveSignals(ctx);
-          await ctx.answerCbQuery(`Sorted by ${sortBy}`);
+          handleLiveSignals(ctx).catch((err) => {
+              logger.error('Error reloading live signals after sort:', err);
+          });
       } catch (error) {
           logger.error('Sort action error:', error);
           ctx.answerCbQuery('Error updating sort');
@@ -358,13 +378,25 @@ Max Drawdown: ${(dd * 100).toFixed(2)}%
           if (!ctx.session.liveFilters) ctx.session.liveFilters = {};
           if (tf === 'custom') {
               (ctx as any).session.pendingInput = { type: 'live_timeframe' };
-              await ctx.reply('Enter live signals timeframe (e.g., 1H, 6H, 24H, 7D):');
+              await ctx.reply('Enter custom timeframe:\n• Hours: 1h, 6h, 12h\n• Days: 1d, 3d, 7d\n• Weeks: 1w, 2w\n• Months: 1m, 3m\n\nExamples: 1h, 1d, 1w, 1m');
               await ctx.answerCbQuery();
               return;
           }
           (ctx.session.liveFilters as any).timeframe = tf;
-          await handleLiveSignals(ctx);
-          await ctx.answerCbQuery('Timeframe updated');
+          // Answer callback immediately
+          await ctx.answerCbQuery('Timeframe updated').catch(() => {});
+          // Reload view (may take longer for large timeframes)
+          handleLiveSignals(ctx).catch((err) => {
+              logger.error('Error reloading live signals after timeframe change:', err);
+              if (ctx.callbackQuery && ctx.callbackQuery.message) {
+                  ctx.telegram.editMessageText(
+                      (ctx.callbackQuery.message as any).chat.id,
+                      (ctx.callbackQuery.message as any).message_id,
+                      undefined,
+                      '❌ Error loading signals. Large timeframes may take longer. Try a smaller timeframe or click Refresh.'
+                  ).catch(() => {});
+              }
+          });
       } catch (error) {
           logger.error('Timeframe action error:', error);
           ctx.answerCbQuery('Error updating timeframe');
