@@ -6,8 +6,9 @@ import { UIHelper } from '../../../utils/ui';
 import { BotContext } from '../../../types/bot';
 import { LiveSignalsCache, CachedSignal } from './types';
 
-// NO CACHE - Always fetch fresh prices on every click
-const CACHE_TTL_MS = 0;
+// Cache prices for 5 minutes - filtering should be fast using cached prices
+// Only refresh prices when cache is stale or user explicitly refreshes
+const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
 const formatCallerLabel = (sig: any) => {
   const user = sig.user?.username ? `@${sig.user.username}` : null;
@@ -201,7 +202,7 @@ const buildCache = async (
   };
 };
 
-export const handleLiveSignals = async (ctx: BotContext) => {
+export const handleLiveSignals = async (ctx: BotContext, forceRefresh = false) => {
   let loadingMsg: any = null;
   try {
     if (!ctx.session) (ctx as any).session = {};
@@ -218,25 +219,39 @@ export const handleLiveSignals = async (ctx: BotContext) => {
     const onlyGainers = liveFilters.onlyGainers || false;
     const displayLimit = (liveFilters as any).expand ? 20 : 10;
 
-    if (ctx.callbackQuery && ctx.callbackQuery.message) {
-      loadingMsg = ctx.callbackQuery.message;
-      try {
-        await ctx.telegram.editMessageText(
-          loadingMsg.chat.id,
-          loadingMsg.message_id,
-          undefined,
-          '⏳ Loading live signals...',
-          { parse_mode: 'Markdown' }
-        );
-      } catch {}
+    // Use cached prices if available and fresh - only rebuild if stale, timeframe changed, or forced refresh
+    const cached = ctx.session.liveSignalsCache;
+    const cacheFresh = !forceRefresh && 
+      cached && 
+      cached.timeframe === timeframeLabel && 
+      Date.now() - cached.fetchedAt < CACHE_TTL_MS;
+    
+    let cache: LiveSignalsCache;
+    if (cacheFresh) {
+      logger.info('[LiveSignals] Using cached prices - filtering will be fast');
+      cache = cached;
+      // No loading message needed - instant filtering
     } else {
-      loadingMsg = await ctx.reply('⏳ Loading live signals...');
+      // Show loading message only when rebuilding cache
+      if (ctx.callbackQuery && ctx.callbackQuery.message) {
+        loadingMsg = ctx.callbackQuery.message;
+        try {
+          await ctx.telegram.editMessageText(
+            loadingMsg.chat.id,
+            loadingMsg.message_id,
+            undefined,
+            '⏳ Loading live signals...',
+            { parse_mode: 'Markdown' }
+          );
+        } catch {}
+      } else {
+        loadingMsg = await ctx.reply('⏳ Loading live signals...');
+      }
+      
+      logger.info('[LiveSignals] Building fresh cache with real-time prices');
+      cache = await buildCache(ctx, timeframeCutoff, timeframeLabel);
+      ctx.session.liveSignalsCache = cache;
     }
-
-    // ALWAYS rebuild cache to get fresh prices
-    logger.info('[LiveSignals] Building fresh cache with real-time prices');
-    const cache = await buildCache(ctx, timeframeCutoff, timeframeLabel);
-    ctx.session.liveSignalsCache = cache;
 
     // Filter by gainers/multipliers
     let filtered = cache.signals.filter((c: CachedSignal) => {

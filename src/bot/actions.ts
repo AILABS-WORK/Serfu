@@ -299,7 +299,10 @@ Max Drawdown: ${(dd * 100).toFixed(2)}%
   // --- LIVE SIGNALS & FILTERS ---
   
   bot.action('live_signals', async (ctx) => {
-      await handleLiveSignals(ctx);
+      // Check if this is a refresh (user clicked refresh button) or initial load
+      // If callback query exists and message exists, it's likely a refresh
+      const isRefresh = !!(ctx.callbackQuery && ctx.callbackQuery.message);
+      await handleLiveSignals(ctx, isRefresh);
   });
 
   bot.action(/^live_filter:(.*)$/, async (ctx) => {
