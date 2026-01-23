@@ -138,7 +138,8 @@ export const generateFirstSignalCard = async (
   const derivedSupply =
     meta.supply ??
     signal.entrySupply ??
-    (signal.entryMarketCap && signal.entryPrice ? signal.entryMarketCap / signal.entryPrice : undefined);
+    (signal.entryMarketCap && signal.entryPrice ? signal.entryMarketCap / signal.entryPrice : undefined) ??
+    (meta.launchpad === 'pump.fun' || signal.mint.endsWith('pump') ? 1_000_000_000 : undefined);
   const currentPrice = meta.livePrice ?? (meta.marketCap && derivedSupply ? meta.marketCap / derivedSupply : signal.entryPrice ?? null);
   const currentMc =
     meta.liveMarketCap ??
@@ -305,7 +306,8 @@ export const generateDuplicateSignalCard = (
   const derivedSupply =
     meta.supply ??
     signal.entrySupply ??
-    (signal.entryMarketCap && signal.entryPrice ? signal.entryMarketCap / signal.entryPrice : undefined);
+    (signal.entryMarketCap && signal.entryPrice ? signal.entryMarketCap / signal.entryPrice : undefined) ??
+    (meta.launchpad === 'pump.fun' || signal.mint.endsWith('pump') ? 1_000_000_000 : undefined);
   const currentPrice = meta.livePrice ?? (meta.marketCap && derivedSupply ? meta.marketCap / derivedSupply : signal.entryPrice ?? null);
   const currentMc =
     meta.liveMarketCap ??

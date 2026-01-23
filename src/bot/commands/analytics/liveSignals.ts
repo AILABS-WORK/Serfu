@@ -99,12 +99,25 @@ const buildCache = async (
 
   // STEP 1: Get all unique mints (now already unique, but keep for clarity)
   const allMints = [...new Set(uniqueSignals.map(s => s.mint))];
-  const { getMultipleTokenPrices } = await import('../../../providers/jupiter');
+  const { getMultipleTokenPrices, getJupiterTokenInfo } = await import('../../../providers/jupiter');
   
   logger.info(`[LiveSignals] Fetching prices for ${allMints.length} unique mints using price/v3 (batch)`);
   
   // STEP 2: Fetch prices using price/v3 (FASTEST - batch with comma-separated IDs)
   const priceMap = await getMultipleTokenPrices(allMints);
+
+  // Fallback for missing prices: Jupiter search endpoint (per-mint)
+  const missingMints = allMints.filter(m => !priceMap[m] || priceMap[m]! <= 0);
+  for (const mint of missingMints) {
+    try {
+      const info = await getJupiterTokenInfo(mint);
+      if (info?.usdPrice && info.usdPrice > 0) {
+        priceMap[mint] = info.usdPrice;
+      }
+    } catch {
+      // ignore
+    }
+  }
   
   const pricesFound = Object.values(priceMap).filter(p => p !== null && p > 0).length;
   logger.info(`[LiveSignals] Jupiter price/v3 returned ${pricesFound}/${allMints.length} prices`);
@@ -129,7 +142,13 @@ const buildCache = async (
   // Calculate market cap from price * entrySupply for each signal
   uniqueSignals.forEach(sig => {
     const price = priceMap[sig.mint];
-    const entrySupply = sig.entrySupply;
+    let entrySupply = sig.entrySupply;
+    if (!entrySupply && sig.entryMarketCap && sig.entryPrice) {
+      entrySupply = sig.entryMarketCap / sig.entryPrice;
+    }
+    if (!entrySupply && sig.mint.endsWith('pump')) {
+      entrySupply = 1_000_000_000;
+    }
     
     if (price !== null && price > 0 && entrySupply !== null && entrySupply > 0) {
       marketCapMap[sig.mint] = price * entrySupply;
@@ -325,9 +344,8 @@ export const handleLiveSignals = async (ctx: BotContext, forceRefresh = false) =
       for (const s of signals) signalMap.set(s.id, s);
     }
 
-    // Calculate ATH for top items only - process in small batches with longer delays to avoid GeckoTerminal rate limits
-    // CRITICAL: This uses GeckoTerminal OHLCV to calculate ATH, max drawdown, and time to ATH
-    logger.info(`[LiveSignals] Starting ATH calculation for ${topItems.length} top items using GeckoTerminal OHLCV`);
+    // Calculate ATH for top items only
+    logger.info(`[LiveSignals] Starting ATH calculation for ${topItems.length} top items using Bitquery ATH`);
     
     // Update loading message to show progress
     if (loadingMsg && topItems.length > 0) {
@@ -336,7 +354,7 @@ export const handleLiveSignals = async (ctx: BotContext, forceRefresh = false) =
           loadingMsg.chat.id,
           loadingMsg.message_id,
           undefined,
-          `⏳ Calculating ATH for ${topItems.length} signals using GeckoTerminal...`,
+          `⏳ Calculating ATH for ${topItems.length} signals using Bitquery...`,
           { parse_mode: 'Markdown' }
         );
       } catch {}
@@ -354,7 +372,7 @@ export const handleLiveSignals = async (ctx: BotContext, forceRefresh = false) =
       const batch = topItems.slice(i, i + BATCH_SIZE);
       const batchNum = Math.floor(i / BATCH_SIZE) + 1;
       const totalBatches = Math.ceil(topItems.length / BATCH_SIZE);
-      logger.info(`[LiveSignals] Processing ATH batch ${batchNum}/${totalBatches} (${batch.length} tokens) using GeckoTerminal`);
+      logger.info(`[LiveSignals] Processing ATH batch ${batchNum}/${totalBatches} (${batch.length} tokens) using Bitquery`);
       
       // Update loading message with progress
       if (loadingMsg && batchNum % 2 === 0) { // Update every 2 batches to avoid spam
@@ -379,7 +397,7 @@ export const handleLiveSignals = async (ctx: BotContext, forceRefresh = false) =
             sig.entrySupply = sig.entryMarketCap / sig.entryPrice;
           }
           
-          logger.info(`[LiveSignals] Calculating ATH for ${item.mint.slice(0, 8)}... using GeckoTerminal OHLCV`);
+          logger.info(`[LiveSignals] Calculating ATH for ${item.mint.slice(0, 8)}... using Bitquery ATH`);
           try {
             const beforeUpdatedAt = sig.metrics?.updatedAt?.getTime() ?? 0;
             const beforeAth = sig.metrics?.athMultiple ?? null;
@@ -466,7 +484,7 @@ export const handleLiveSignals = async (ctx: BotContext, forceRefresh = false) =
     }
     
     // CRITICAL: Re-fetch signals to get updated metrics from DB (including ATH market cap)
-    // This ensures we have the latest ATH data calculated by GeckoTerminal
+    // This ensures we have the latest ATH data calculated by Bitquery
     if (topItems.length > 0) {
       logger.info(`[LiveSignals] Re-fetching ${topItems.length} signals to get updated ATH metrics from DB`);
       const updatedSignals = await prisma.signal.findMany({
@@ -561,7 +579,7 @@ export const handleLiveSignals = async (ctx: BotContext, forceRefresh = false) =
         ? item.entryMc
         : (item.currentMc > 0 && currentMult > 0 ? item.currentMc / currentMult : 0);
       
-      // Calculate ATH market cap - prioritize stored value from DB (calculated by GeckoTerminal)
+      // Calculate ATH market cap - prioritize stored value from DB (calculated by Bitquery)
       let athMc = storedAthMc && storedAthMc > 0 ? storedAthMc : 0;
       
       // If not stored, calculate from ATH price and supply

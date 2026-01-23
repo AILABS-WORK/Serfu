@@ -106,16 +106,24 @@ export const processMessage = async (message: RawMessage) => {
 
     try {
       const quote = await provider.getQuote(mint); // Prefer Jupiter (inside provider)
-      entryPrice = quote.price;
-      entryProvider = quote.source;
-      if (entryPrice && entrySupply) {
-        entryMarketCap = entryPrice * entrySupply;
-      } else if (meta.marketCap) {
-        entryMarketCap = meta.marketCap;
+      if (quote.price && quote.price > 0) {
+        entryPrice = quote.price;
+        entryProvider = quote.source;
+        if (entryPrice && entrySupply) {
+          entryMarketCap = entryPrice * entrySupply;
+        } else if (meta.marketCap) {
+          entryMarketCap = meta.marketCap;
+        }
+      } else {
+        throw new Error('Entry price unavailable');
       }
     } catch (err) {
       logger.warn(`Failed to fetch entry price for ${mint}:`, err);
       trackingStatus = 'ENTRY_PENDING';
+      entryPrice = null;
+      if (!entryMarketCap && meta.marketCap) {
+        entryMarketCap = meta.marketCap;
+      }
     }
 
     // Get group and user IDs from the raw message
@@ -263,9 +271,12 @@ export const processMessage = async (message: RawMessage) => {
     let liveMarketCap: number | null = null;
     try {
       const freshQuote = await provider.getQuote(mint); // Fresh price for notification
-      livePrice = freshQuote.price;
-      if (meta.supply) {
-        liveMarketCap = freshQuote.price * meta.supply;
+      if (freshQuote.price && freshQuote.price > 0) {
+        livePrice = freshQuote.price;
+        const supply = meta.supply || entrySupply || (entryMarketCap && entryPrice ? entryMarketCap / entryPrice : null);
+        if (supply) {
+          liveMarketCap = freshQuote.price * supply;
+        }
       }
     } catch (err) {
       logger.debug(`Could not fetch live price for ${mint}:`, err);
