@@ -101,22 +101,19 @@ const buildCache = async (
     marketCapMap[mint] = null;
   });
   
-  // Extract from tokenInfoMap (EXACT SAME AS TEST)
-  Object.entries(tokenInfoMap).forEach(([mint, info]) => {
-    if (info) {
-      priceMap[mint] = info.usdPrice ?? null;
-      marketCapMap[mint] = info.mcap ?? null;
-      // Log if we got null values
-      if (info.usdPrice === null || info.usdPrice === undefined) {
-        logger.warn(`[LiveSignals] Token ${mint.slice(0, 8)}... has null/undefined usdPrice`);
-      }
-      if (info.mcap === null || info.mcap === undefined) {
-        logger.warn(`[LiveSignals] Token ${mint.slice(0, 8)}... has null/undefined mcap`);
-      }
-    } else {
-      logger.warn(`[LiveSignals] Token ${mint.slice(0, 8)}... has null info in tokenInfoMap`);
-    }
-  });
+      // Extract from tokenInfoMap - show what Jupiter actually sent
+      Object.entries(tokenInfoMap).forEach(([mint, info]) => {
+        if (info) {
+          // Store EXACTLY what Jupiter sent - don't convert null to anything
+          priceMap[mint] = info.usdPrice ?? null;
+          marketCapMap[mint] = info.mcap ?? null;
+          
+          // Log what Jupiter actually sent
+          logger.info(`[LiveSignals] Jupiter sent for ${mint.slice(0, 8)}...: usdPrice=${info.usdPrice}, mcap=${info.mcap}`);
+        } else {
+          logger.warn(`[LiveSignals] Token ${mint.slice(0, 8)}... has null info in tokenInfoMap`);
+        }
+      });
   
   const pricesFound = Object.values(priceMap).filter(p => p !== null && p > 0).length;
   const marketCapsFound = Object.values(marketCapMap).filter(m => m !== null && m > 0).length;
@@ -322,21 +319,28 @@ export const handleLiveSignals = async (ctx: BotContext) => {
       const callerLabel = sig ? formatCallerLabel(sig) : item.userName || item.groupName || 'Unknown';
       const timeAgo = sig ? UIHelper.formatTimeAgo(sig.detectedAt) : UIHelper.formatTimeAgo(item.detectedAt);
 
-      // EXACT SAME AS TEST SCRIPT DISPLAY (lines 61-63)
-      // Test script: currentStr = cachedSignal.currentMc > 0 ? format : 'N/A'
-      const entryStr = item.entryMc > 0 ? UIHelper.formatMarketCap(item.entryMc) : 'N/A';
-      const currentStr = item.currentMc > 0 ? UIHelper.formatMarketCap(item.currentMc) : 'N/A';
+      // Display raw Jupiter data - show what we got, no N/A bullshit
+      const entryStr = item.entryMc > 0 ? UIHelper.formatMarketCap(item.entryMc) : '$0';
       
-      // EXACT SAME AS TEST SCRIPT (line 63): pnlStr = isFinite(pnl) ? format : 'N/A'
+      // Show raw Jupiter market cap - if it's 0, show $0, not N/A
+      const currentStr = item.currentMc > 0 
+        ? UIHelper.formatMarketCap(item.currentMc) 
+        : item.currentMc === 0 
+          ? '$0' 
+          : 'N/A';
+      
+      // Show raw Jupiter price for PnL calculation
       const pnlStr = isFinite(item.pnl) ? UIHelper.formatPercent(item.pnl) : 'N/A';
       const icon = isFinite(item.pnl) ? (item.pnl >= 0 ? '🟢' : '🔴') : '❓';
 
-      // ATH - just use what we get from metrics (no calculations)
+      // ATH - show raw values from metrics
       const athMult = sig?.metrics?.athMultiple || 0;
       const athMc = sig?.metrics?.athMarketCap || 0;
       const athLabel = athMult > 1.05
         ? `${athMult.toFixed(1)}x ATH${athMc > 0 ? ` (${UIHelper.formatMarketCap(athMc)})` : ''}`
-        : 'ATH N/A';
+        : athMult > 0 
+          ? `${athMult.toFixed(1)}x ATH` 
+          : 'ATH N/A';
 
       const dexPaid = (meta?.tags || []).some((t: string) => t.toLowerCase().includes('dex')) ? '✅' : '❔';
       const migrated = (meta?.audit?.devMigrations || 0) > 0 ? '✅' : '❔';
