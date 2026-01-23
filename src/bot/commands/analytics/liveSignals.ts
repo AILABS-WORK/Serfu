@@ -384,6 +384,19 @@ export const handleLiveSignals = async (ctx: BotContext, forceRefresh = false) =
         }
       }
     }
+    
+    // Re-fetch signals to get updated metrics from DB (including ATH market cap)
+    if (topItems.length > 0) {
+      const updatedSignals = await prisma.signal.findMany({
+        where: { id: { in: topItems.map(i => i.signalId) } },
+        include: { metrics: true, group: true, user: true }
+      });
+      // Update signalMap with fresh metrics
+      for (const s of updatedSignals) {
+        signalMap.set(s.id, s);
+      }
+      logger.info(`[LiveSignals] Re-fetched ${updatedSignals.length} signals with updated metrics`);
+    }
 
     // Fetch token info for display (symbol, audit, socials)
     const { getMultipleTokenInfo } = await import('../../../providers/jupiter');
@@ -440,19 +453,50 @@ export const handleLiveSignals = async (ctx: BotContext, forceRefresh = false) =
 
       // ATH - use previous method: max of stored ATH and current multiple
       const athMult = sig?.metrics?.athMultiple || 0;
-      const athMc = sig?.metrics?.athMarketCap || 0;
+      // Calculate ATH market cap - prioritize stored value, then calculate from available data
+      let athMc = sig?.metrics?.athMarketCap || 0;
+      if (athMc <= 0) {
+        // Try to calculate from ATH price and entry supply
+        if (sig?.metrics?.athPrice && sig?.entrySupply && sig.entrySupply > 0) {
+          athMc = sig.metrics.athPrice * sig.entrySupply;
+        } else if (sig?.metrics?.athPrice && item.entryMc && item.entryPrice && item.entryPrice > 0) {
+          // Fallback: calculate supply from entry data, then ATH market cap
+          const estimatedSupply = item.entryMc / item.entryPrice;
+          if (estimatedSupply > 0) {
+            athMc = sig.metrics.athPrice * estimatedSupply;
+          }
+        } else if (athMult > 0 && item.entryMc && item.entryMc > 0) {
+          // Last fallback: calculate from entry market cap and ATH multiple
+          athMc = item.entryMc * athMult;
+        }
+      }
+      
       const currentMult = isFinite(item.pnl) ? (item.pnl / 100) + 1 : 0;
       const effectiveAth = Math.max(athMult, currentMult);
       const athLabel = effectiveAth > 1.05
-        ? `${effectiveAth.toFixed(1)}x ATH${athMc ? ` (${UIHelper.formatMarketCap(athMc)})` : ''}`
+        ? `${effectiveAth.toFixed(1)}x ATH${athMc > 0 ? ` (${UIHelper.formatMarketCap(athMc)})` : ''}`
         : 'ATH N/A';
 
       // Max drawdown (from metrics, negative % or 0 if no drawdown)
       const maxDrawdown = sig?.metrics?.maxDrawdown ?? null;
       let drawdownStr = 'N/A';
+      let drawdownMcStr = '';
       if (maxDrawdown !== null && maxDrawdown !== undefined) {
         if (maxDrawdown < 0) {
           drawdownStr = UIHelper.formatPercent(maxDrawdown);
+          // Calculate max drawdown market cap
+          const maxDrawdownMc = (sig?.metrics as any)?.maxDrawdownMarketCap;
+          if (maxDrawdownMc && maxDrawdownMc > 0) {
+            drawdownMcStr = ` (${UIHelper.formatMarketCap(maxDrawdownMc)})`;
+          } else if (sig?.entrySupply && (sig?.metrics as any)?.maxDrawdownPrice) {
+            // Calculate from drawdown price and supply
+            const ddMc = (sig.metrics as any).maxDrawdownPrice * sig.entrySupply;
+            if (ddMc > 0) drawdownMcStr = ` (${UIHelper.formatMarketCap(ddMc)})`;
+          } else if (item.entryMc && maxDrawdown < 0) {
+            // Fallback: calculate from entry MC and drawdown percentage
+            const ddMc = item.entryMc * (1 + (maxDrawdown / 100));
+            if (ddMc > 0) drawdownMcStr = ` (${UIHelper.formatMarketCap(ddMc)})`;
+          }
         } else if (maxDrawdown === 0) {
           drawdownStr = '0%'; // No drawdown
         } else {
@@ -475,6 +519,22 @@ export const handleLiveSignals = async (ctx: BotContext, forceRefresh = false) =
           timeToAthStr = `${minutes}m`;
         }
       }
+      
+      // Time from max drawdown to ATH
+      const timeFromDrawdownToAthMs = (sig?.metrics as any)?.timeFromDrawdownToAth || null;
+      let timeFromDrawdownToAthStr = 'N/A';
+      if (timeFromDrawdownToAthMs !== null && timeFromDrawdownToAthMs > 0) {
+        const minutes = Math.floor(timeFromDrawdownToAthMs / 60000);
+        const hours = Math.floor(minutes / 60);
+        const days = Math.floor(hours / 24);
+        if (days > 0) {
+          timeFromDrawdownToAthStr = `${days}d ${hours % 24}h`;
+        } else if (hours > 0) {
+          timeFromDrawdownToAthStr = `${hours}h ${minutes % 60}m`;
+        } else {
+          timeFromDrawdownToAthStr = `${minutes}m`;
+        }
+      }
 
       const dexPaid = (meta?.tags || []).some((t: string) => t.toLowerCase().includes('dex')) ? '✅' : '❔';
       const migrated = (meta?.audit?.devMigrations || 0) > 0 ? '✅' : '❔';
@@ -483,7 +543,10 @@ export const handleLiveSignals = async (ctx: BotContext, forceRefresh = false) =
 
       message += `\n${icon} *${displaySymbol}* (\`${item.mint.slice(0,4)}..${item.mint.slice(-4)}\`)\n`;
       message += `💰 *Entry:* ${entryStr} ➔ *Now:* ${currentStr} (*${pnlStr}*)\n`;
-      message += `📈 *ATH:* ${athLabel} | 📉 *Max DD:* ${drawdownStr} | ⏱️ *To ATH:* ${timeToAthStr}\n`;
+      message += `📈 *ATH:* ${athLabel} | 📉 *Max DD:* ${drawdownStr}${drawdownMcStr} | ⏱️ *To ATH:* ${timeToAthStr}\n`;
+      if (timeFromDrawdownToAthStr !== 'N/A') {
+        message += `📊 *DD→ATH:* ${timeFromDrawdownToAthStr}\n`;
+      }
       message += `🍬 *Dex:* ${dexPaid} | 📦 *Mig:* ${migrated} | 👥 *Team:* ${hasTeam} | 𝕏 *X:* ${hasX}\n`;
       message += `⏱️ *Latest:* ${latestMentionAgo} | 🆕 *Created:* ${creationAgo} | 👤 *${callerLabel}*\n`;
       message += UIHelper.separator('LIGHT');

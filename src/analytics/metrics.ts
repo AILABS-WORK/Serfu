@@ -281,30 +281,45 @@ export const enrichSignalMetrics = async (
             maxAt = sig.metrics.athAt?.getTime?.() || maxAt;
         }
 
-        // Calculate ATH multiple
+            // Calculate ATH multiple
         if (maxHigh > 0 && entryPriceValue > 0) {
             const athMultiple = maxHigh / entryPriceValue;
 
-            // Update or create metrics for this signal
-            const athMarketCap = entrySupply ? maxHigh * entrySupply : 0;
+            // Calculate ATH market cap - use entrySupply if available, otherwise calculate from entryMarketCap
+            let athMarketCap = 0;
+            if (entrySupply && entrySupply > 0) {
+                athMarketCap = maxHigh * entrySupply;
+            } else if (sig.entryMarketCap && sig.entryMarketCap > 0) {
+                // Fallback: calculate from entry market cap and ATH multiple
+                athMarketCap = sig.entryMarketCap * athMultiple;
+            }
+            
             const timeToAth = maxAt - entryTimestamp;
 
             // Calculate max drawdown: find lowest price between entry and ATH, compare to entry
             // Max drawdown = percentage decrease from entry price to lowest price in that period
             let maxDrawdown = 0;
+            let maxDrawdownPrice = entryPriceValue; // Price at max drawdown
+            let maxDrawdownAt = entryTimestamp; // Time of max drawdown
+            
             if (allCandles.length > 0) {
                 // Filter candles to only those between entry and ATH time
                 const candlesUpToAth = allCandles.filter(c => c.timestamp >= entryTimestamp && c.timestamp <= maxAt);
                 
                 // Find the lowest price (using candle.low) in the timeframe between entry and ATH
                 let lowestPrice = entryPriceValue; // Start with entry price
+                let lowestPriceAt = entryTimestamp;
                 
                 for (const candle of candlesUpToAth) {
                     // Use the low of the candle to find the absolute lowest price
                     if (candle.low < lowestPrice) {
                         lowestPrice = candle.low;
+                        lowestPriceAt = candle.timestamp;
                     }
                 }
+                
+                maxDrawdownPrice = lowestPrice;
+                maxDrawdownAt = lowestPriceAt;
                 
                 // Calculate max drawdown: percentage decrease from entry to lowest price
                 if (entryPriceValue > 0) {
@@ -318,10 +333,32 @@ export const enrichSignalMetrics = async (
                     // If current is below entry, that's a drawdown
                     if (simpleDrawdown < 0) {
                         maxDrawdown = simpleDrawdown;
+                        maxDrawdownPrice = currentPrice;
+                        maxDrawdownAt = nowTimestamp;
                     }
                 }
             }
+            
+            // Calculate max drawdown market cap
+            let maxDrawdownMarketCap = 0;
+            if (entrySupply && entrySupply > 0) {
+                maxDrawdownMarketCap = maxDrawdownPrice * entrySupply;
+            } else if (sig.entryMarketCap && sig.entryMarketCap > 0 && entryPriceValue > 0) {
+                // Fallback: calculate from entry market cap and drawdown price ratio
+                const drawdownMultiple = maxDrawdownPrice / entryPriceValue;
+                maxDrawdownMarketCap = sig.entryMarketCap * drawdownMultiple;
+            }
+            
+            // Calculate time from max drawdown to ATH (only if drawdown happened before ATH)
+            let timeFromDrawdownToAth: number | null = null;
+            if (maxDrawdownAt < maxAt && maxDrawdown < 0) {
+                timeFromDrawdownToAth = maxAt - maxDrawdownAt;
+            }
 
+            // Store max drawdown market cap and time from drawdown to ATH in a JSON field or calculate on-the-fly
+            // For now, we'll store them in the metrics object (we can add DB fields later if needed)
+            // But we'll calculate them on-the-fly in the display since they're derived from existing data
+            
             if (sig.metrics) {
                 // UPDATE
                 await prisma.signalMetric.update({
@@ -336,7 +373,7 @@ export const enrichSignalMetrics = async (
                         updatedAt: new Date()
                     }
                 });
-                // Update in-memory
+                // Update in-memory (store derived values for display)
                 sig.metrics.athMultiple = athMultiple;
                 sig.metrics.athPrice = maxHigh;
                 sig.metrics.athMarketCap = athMarketCap;
@@ -344,6 +381,11 @@ export const enrichSignalMetrics = async (
                 sig.metrics.timeToAth = timeToAth;
                 sig.metrics.maxDrawdown = maxDrawdown;
                 sig.metrics.updatedAt = new Date();
+                // Store derived values for display (not in DB schema yet, but available in memory)
+                (sig.metrics as any).maxDrawdownPrice = maxDrawdownPrice;
+                (sig.metrics as any).maxDrawdownAt = new Date(maxDrawdownAt);
+                (sig.metrics as any).maxDrawdownMarketCap = maxDrawdownMarketCap;
+                (sig.metrics as any).timeFromDrawdownToAth = timeFromDrawdownToAth;
             } else {
                 // CREATE
                 const newMetrics = await prisma.signalMetric.create({
@@ -360,6 +402,11 @@ export const enrichSignalMetrics = async (
                     }
                 });
                 sig.metrics = newMetrics;
+                // Store derived values for display
+                (sig.metrics as any).maxDrawdownPrice = maxDrawdownPrice;
+                (sig.metrics as any).maxDrawdownAt = new Date(maxDrawdownAt);
+                (sig.metrics as any).maxDrawdownMarketCap = maxDrawdownMarketCap;
+                (sig.metrics as any).timeFromDrawdownToAth = timeFromDrawdownToAth;
             }
         }
     } catch (err) {
