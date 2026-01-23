@@ -445,8 +445,8 @@ export const handleLiveSignals = async (ctx: BotContext, forceRefresh = false) =
       for (const s of updatedSignals) {
         signalMap.set(s.id, s);
         // Log ATH data for debugging
-        if (s.metrics?.athMultiple) {
-          logger.debug(`[LiveSignals] Signal ${s.id}: ATH=${s.metrics.athMultiple.toFixed(2)}x, ATH MC=${s.metrics.athMarketCap ? UIHelper.formatMarketCap(s.metrics.athMarketCap) : 'N/A'}`);
+        if (s.metrics) {
+          logger.info(`[LiveSignals] Signal ${s.id} (${s.mint.slice(0, 8)}...): ATH=${s.metrics.athMultiple?.toFixed(2) || 'N/A'}x, ATH Price=${s.metrics.athPrice || 'N/A'}, ATH MC=${s.metrics.athMarketCap ? UIHelper.formatMarketCap(s.metrics.athMarketCap) : 'N/A'}, MaxDD=${s.metrics.maxDrawdown || 'N/A'}, TimeToAth=${s.metrics.timeToAth ? `${Math.floor(s.metrics.timeToAth / 60000)}m` : 'N/A'}`);
         }
       }
       logger.info(`[LiveSignals] Re-fetched ${updatedSignals.length} signals with updated metrics (ready to display)`);
@@ -512,22 +512,33 @@ export const handleLiveSignals = async (ctx: BotContext, forceRefresh = false) =
 
       // ATH - use previous method: max of stored ATH and current multiple
       const athMult = sig?.metrics?.athMultiple || 0;
-      // Calculate ATH market cap - prioritize stored value, then calculate from available data
-      let athMc = sig?.metrics?.athMarketCap || 0;
-      if (athMc <= 0) {
-        // Try to calculate from ATH price and entry supply
-        if (sig?.metrics?.athPrice && sig?.entrySupply && sig.entrySupply > 0) {
-          athMc = sig.metrics.athPrice * sig.entrySupply;
-        } else if (sig?.metrics?.athPrice && item.entryMc && item.entryPrice && item.entryPrice > 0) {
-          // Fallback: calculate supply from entry data, then ATH market cap
+      const athPrice = sig?.metrics?.athPrice || 0;
+      const storedAthMc = sig?.metrics?.athMarketCap || null;
+      
+      // Calculate ATH market cap - prioritize stored value from DB (calculated by GeckoTerminal)
+      let athMc = storedAthMc && storedAthMc > 0 ? storedAthMc : 0;
+      
+      // If not stored, calculate from ATH price and supply
+      if (athMc <= 0 && athPrice > 0) {
+        if (sig?.entrySupply && sig.entrySupply > 0) {
+          athMc = athPrice * sig.entrySupply;
+        } else if (item.entryMc && item.entryPrice && item.entryPrice > 0) {
+          // Calculate supply from entry data
           const estimatedSupply = item.entryMc / item.entryPrice;
           if (estimatedSupply > 0) {
-            athMc = sig.metrics.athPrice * estimatedSupply;
+            athMc = athPrice * estimatedSupply;
           }
-        } else if (athMult > 0 && item.entryMc && item.entryMc > 0) {
-          // Last fallback: calculate from entry market cap and ATH multiple
-          athMc = item.entryMc * athMult;
         }
+      }
+      
+      // Last fallback: use ATH multiple * entry market cap
+      if (athMc <= 0 && athMult > 0 && item.entryMc && item.entryMc > 0) {
+        athMc = item.entryMc * athMult;
+      }
+      
+      // Log for debugging
+      if (sig?.metrics) {
+        logger.debug(`[LiveSignals] Display ATH for ${item.mint.slice(0, 8)}...: mult=${athMult.toFixed(2)}, price=${athPrice}, storedMc=${storedAthMc}, calculatedMc=${athMc}`);
       }
       
       const currentMult = isFinite(item.pnl) ? (item.pnl / 100) + 1 : 0;
@@ -538,8 +549,10 @@ export const handleLiveSignals = async (ctx: BotContext, forceRefresh = false) =
 
       // Max drawdown (from metrics, negative % or 0 if no drawdown)
       const maxDrawdown = sig?.metrics?.maxDrawdown ?? null;
+      const maxDrawdownPrice = (sig?.metrics as any)?.maxDrawdownPrice;
       let drawdownStr = 'N/A';
       let drawdownMcStr = '';
+      
       if (maxDrawdown !== null && maxDrawdown !== undefined) {
         if (maxDrawdown < 0) {
           drawdownStr = UIHelper.formatPercent(maxDrawdown);
@@ -547,10 +560,19 @@ export const handleLiveSignals = async (ctx: BotContext, forceRefresh = false) =
           const maxDrawdownMc = (sig?.metrics as any)?.maxDrawdownMarketCap;
           if (maxDrawdownMc && maxDrawdownMc > 0) {
             drawdownMcStr = ` (${UIHelper.formatMarketCap(maxDrawdownMc)})`;
-          } else if (sig?.entrySupply && (sig?.metrics as any)?.maxDrawdownPrice) {
+          } else if (maxDrawdownPrice && maxDrawdownPrice > 0) {
             // Calculate from drawdown price and supply
-            const ddMc = (sig.metrics as any).maxDrawdownPrice * sig.entrySupply;
-            if (ddMc > 0) drawdownMcStr = ` (${UIHelper.formatMarketCap(ddMc)})`;
+            if (sig?.entrySupply && sig.entrySupply > 0) {
+              const ddMc = maxDrawdownPrice * sig.entrySupply;
+              if (ddMc > 0) drawdownMcStr = ` (${UIHelper.formatMarketCap(ddMc)})`;
+            } else if (item.entryMc && item.entryPrice && item.entryPrice > 0) {
+              // Calculate supply from entry data
+              const estimatedSupply = item.entryMc / item.entryPrice;
+              if (estimatedSupply > 0) {
+                const ddMc = maxDrawdownPrice * estimatedSupply;
+                if (ddMc > 0) drawdownMcStr = ` (${UIHelper.formatMarketCap(ddMc)})`;
+              }
+            }
           } else if (item.entryMc && maxDrawdown < 0) {
             // Fallback: calculate from entry MC and drawdown percentage
             const ddMc = item.entryMc * (1 + (maxDrawdown / 100));
@@ -562,11 +584,16 @@ export const handleLiveSignals = async (ctx: BotContext, forceRefresh = false) =
           drawdownStr = 'N/A'; // Invalid positive value
         }
       }
+      
+      // Log for debugging
+      if (sig?.metrics) {
+        logger.debug(`[LiveSignals] Display DD for ${item.mint.slice(0, 8)}...: maxDD=${maxDrawdown}, price=${maxDrawdownPrice}, str=${drawdownStr}`);
+      }
 
       // Time to ATH (from metrics, in ms, convert to readable format)
       const timeToAthMs = sig?.metrics?.timeToAth || null;
       let timeToAthStr = 'N/A';
-      if (timeToAthMs !== null && timeToAthMs > 0) {
+      if (timeToAthMs !== null && timeToAthMs !== undefined && timeToAthMs > 0) {
         const minutes = Math.floor(timeToAthMs / 60000);
         const hours = Math.floor(minutes / 60);
         const days = Math.floor(hours / 24);
@@ -574,9 +601,16 @@ export const handleLiveSignals = async (ctx: BotContext, forceRefresh = false) =
           timeToAthStr = `${days}d ${hours % 24}h`;
         } else if (hours > 0) {
           timeToAthStr = `${hours}h ${minutes % 60}m`;
-        } else {
+        } else if (minutes > 0) {
           timeToAthStr = `${minutes}m`;
+        } else {
+          timeToAthStr = '<1m';
         }
+      }
+      
+      // Log for debugging
+      if (sig?.metrics) {
+        logger.debug(`[LiveSignals] Display timeToAth for ${item.mint.slice(0, 8)}...: ${timeToAthMs}ms = ${timeToAthStr}`);
       }
       
       // Time from max drawdown to ATH
