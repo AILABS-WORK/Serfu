@@ -28,8 +28,8 @@ export class GeckoTerminalProvider {
       try {
         // Add delay between retries to avoid rate limits
         if (attempt > 0) {
-          // Longer delays for rate limits: 5s, 10s, 15s
-          const delay = Math.min(5000 + (attempt - 1) * 5000, 15000);
+          // Longer delays for rate limits: 10s, 20s, 30s (increased from 5s, 10s, 15s)
+          const delay = Math.min(10000 + (attempt - 1) * 10000, 30000);
           logger.warn(`GeckoTerminal rate limited for ${mint.slice(0, 8)}... (attempt ${attempt + 1}/${retries}), waiting ${delay/1000}s`);
           await new Promise(resolve => setTimeout(resolve, delay));
         }
@@ -49,7 +49,7 @@ export class GeckoTerminalProvider {
         const url = `${GECKO_BASE_URL}/networks/solana/pools/${poolAddress}/ohlcv/${timeframe}`;
         const response = await axios.get(url, {
           params: { limit },
-          timeout: 10000, // 10 second timeout
+          timeout: 15000, // 15 second timeout (increased from 10s)
           headers: {
             'Accept': 'application/json',
             'User-Agent': 'Serfu/1.0'
@@ -98,8 +98,8 @@ export class GeckoTerminalProvider {
         const isTimeout = error.code === 'ECONNABORTED' || error.message?.includes('timeout');
         
         if (isRateLimit && attempt < retries - 1) {
-          const retryAfter = parseInt(error.response?.headers?.['retry-after'] || '10', 10); // Default to 10s if not specified
-          const backoffMs = Math.max(retryAfter * 1000, 10000); // Minimum 10s, use retry-after if longer
+          const retryAfter = parseInt(error.response?.headers?.['retry-after'] || '15', 10); // Default to 15s if not specified
+          const backoffMs = Math.max(retryAfter * 1000, 15000); // Minimum 15s, use retry-after if longer
           logger.warn(`GeckoTerminal rate limited for ${mint.slice(0, 8)}... (attempt ${attempt + 1}/${retries}), waiting ${backoffMs/1000}s`);
           await new Promise(resolve => setTimeout(resolve, backoffMs));
           continue; // Retry

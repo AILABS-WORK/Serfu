@@ -298,24 +298,67 @@ export const handleLiveSignals = async (ctx: BotContext, forceRefresh = false) =
       for (const s of signals) signalMap.set(s.id, s);
     }
 
-    // Calculate ATH for top items only - process sequentially to avoid GeckoTerminal rate limits
-    for (const item of topItems) {
-      const sig = signalMap.get(item.signalId);
-      if (sig && item.currentPrice > 0) {
-        if (!sig.entryMarketCap && item.entryMc > 0) sig.entryMarketCap = item.entryMc;
-        if (!sig.entryPrice && item.entryPrice > 0) sig.entryPrice = item.entryPrice;
-        if (!sig.entrySupply && sig.entryMarketCap && sig.entryPrice) {
-          sig.entrySupply = sig.entryMarketCap / sig.entryPrice;
+    // Calculate ATH for top items only - process in small batches with longer delays to avoid GeckoTerminal rate limits
+    const BATCH_SIZE = 3; // Process 3 tokens at a time
+    const DELAY_BETWEEN_BATCHES_MS = 3000; // 3 seconds between batches
+    const DELAY_BETWEEN_ITEMS_MS = 1000; // 1 second between items in same batch
+    
+    const failedTokens: Array<{ item: CachedSignal; sig: any }> = [];
+    
+    // First pass: process in batches
+    for (let i = 0; i < topItems.length; i += BATCH_SIZE) {
+      const batch = topItems.slice(i, i + BATCH_SIZE);
+      
+      for (const item of batch) {
+        const sig = signalMap.get(item.signalId);
+        if (sig && item.currentPrice > 0) {
+          if (!sig.entryMarketCap && item.entryMc > 0) sig.entryMarketCap = item.entryMc;
+          if (!sig.entryPrice && item.entryPrice > 0) sig.entryPrice = item.entryPrice;
+          if (!sig.entrySupply && sig.entryMarketCap && sig.entryPrice) {
+            sig.entrySupply = sig.entryMarketCap / sig.entryPrice;
+          }
+          try {
+            await Promise.race([
+              enrichSignalMetrics(sig, false, item.currentPrice),
+              new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 15000))
+            ]);
+            // Delay between items in same batch
+            if (item !== batch[batch.length - 1]) {
+              await new Promise(resolve => setTimeout(resolve, DELAY_BETWEEN_ITEMS_MS));
+            }
+          } catch (err) {
+            logger.debug(`ATH calculation failed for ${item.mint.slice(0, 8)}...: ${err}`);
+            failedTokens.push({ item, sig });
+          }
         }
+      }
+      
+      // Delay between batches (except after last batch)
+      if (i + BATCH_SIZE < topItems.length) {
+        await new Promise(resolve => setTimeout(resolve, DELAY_BETWEEN_BATCHES_MS));
+      }
+    }
+    
+    // Retry failed tokens with longer delays
+    if (failedTokens.length > 0) {
+      logger.info(`[LiveSignals] Retrying ${failedTokens.length} failed ATH calculations with longer delays`);
+      const RETRY_DELAY_MS = 5000; // 5 seconds between retries
+      
+      for (let i = 0; i < failedTokens.length; i++) {
+        const { item, sig } = failedTokens[i];
         try {
           await Promise.race([
             enrichSignalMetrics(sig, false, item.currentPrice),
-            new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 12000))
+            new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 20000))
           ]);
-          // Add longer delay between ATH calculations to avoid GeckoTerminal rate limits
-          await new Promise(resolve => setTimeout(resolve, 500));
+          logger.debug(`[LiveSignals] Retry successful for ${item.mint.slice(0, 8)}...`);
         } catch (err) {
-          logger.debug(`ATH calculation failed for ${item.mint.slice(0, 8)}...: ${err}`);
+          logger.debug(`[LiveSignals] Retry failed for ${item.mint.slice(0, 8)}...: ${err}`);
+        }
+        
+        // Delay between retries (except after last one)
+        if (i < failedTokens.length - 1) {
+          await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
         }
       }
     }
