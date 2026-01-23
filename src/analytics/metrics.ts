@@ -119,7 +119,7 @@ export const enrichSignalMetrics = async (
     try {
         // OPTIMIZATION: Skip OHLCV if we have no activity since last update (volume check)
         // This prevents recalculating ATH for dead tokens with no volume
-        if (!force && sig.metrics?.updatedAt) {
+        if (!force && sig.metrics?.updatedAt && !metricsUncomputed) {
             const latestSample = await prisma.priceSample.findFirst({
                 where: {
                     signalId: sig.id,
@@ -139,6 +139,7 @@ export const enrichSignalMetrics = async (
             }
         }
         const entryTimestamp = (sig.entryPriceAt || sig.detectedAt).getTime();
+        logger.debug(`[Metrics] Entry window for ${sig.mint.slice(0, 8)}...: entryPriceAt=${sig.entryPriceAt?.toISOString?.() || 'N/A'}, detectedAt=${sig.detectedAt.toISOString()}, entryTimestamp=${entryTimestamp}`);
         
         // Determine Entry Data (Price & Supply)
         let entryPrice = sig.entryPrice;

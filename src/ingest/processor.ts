@@ -210,7 +210,9 @@ export const processMessage = async (message: RawMessage) => {
       name: meta.name,
       symbol: meta.symbol,
       entryPrice,
-      entryPriceAt: reuseEntryData && earliestSignal?.entryPriceAt ? earliestSignal.entryPriceAt : (entryPrice ? new Date() : null),
+      entryPriceAt: reuseEntryData
+        ? (earliestSignal?.entryPriceAt || earliestSignal?.detectedAt || (entryPrice ? new Date() : null))
+        : (entryPrice ? new Date() : null),
       entryPriceProvider: entryProvider,
       entryMarketCap,
       entrySupply,
