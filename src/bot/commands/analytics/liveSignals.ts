@@ -444,9 +444,11 @@ export const handleLiveSignals = async (ctx: BotContext, forceRefresh = false) =
       // Update signalMap with fresh metrics
       for (const s of updatedSignals) {
         signalMap.set(s.id, s);
-        // Log ATH data for debugging
+        // Log ATH data for debugging - show what's actually in the DB
         if (s.metrics) {
-          logger.info(`[LiveSignals] Signal ${s.id} (${s.mint.slice(0, 8)}...): ATH=${s.metrics.athMultiple?.toFixed(2) || 'N/A'}x, ATH Price=${s.metrics.athPrice || 'N/A'}, ATH MC=${s.metrics.athMarketCap ? UIHelper.formatMarketCap(s.metrics.athMarketCap) : 'N/A'}, MaxDD=${s.metrics.maxDrawdown || 'N/A'}, TimeToAth=${s.metrics.timeToAth ? `${Math.floor(s.metrics.timeToAth / 60000)}m` : 'N/A'}`);
+          logger.info(`[LiveSignals] Signal ${s.id} (${s.mint.slice(0, 8)}...): ATH=${s.metrics.athMultiple?.toFixed(2) || 'N/A'}x, ATH Price=${s.metrics.athPrice || 'N/A'}, ATH MC=${s.metrics.athMarketCap ? UIHelper.formatMarketCap(s.metrics.athMarketCap) : 'N/A'}, MaxDD=${s.metrics.maxDrawdown || 'N/A'}, TimeToAth=${s.metrics.timeToAth ? `${Math.floor(s.metrics.timeToAth / 60000)}m` : 'N/A'}, EntrySupply=${s.entrySupply || 'N/A'}, EntryMC=${s.entryMarketCap ? UIHelper.formatMarketCap(s.entryMarketCap) : 'N/A'}`);
+        } else {
+          logger.warn(`[LiveSignals] Signal ${s.id} (${s.mint.slice(0, 8)}...) has NO metrics after re-fetch!`);
         }
       }
       logger.info(`[LiveSignals] Re-fetched ${updatedSignals.length} signals with updated metrics (ready to display)`);
@@ -549,34 +551,21 @@ export const handleLiveSignals = async (ctx: BotContext, forceRefresh = false) =
 
       // Max drawdown (from metrics, negative % or 0 if no drawdown)
       const maxDrawdown = sig?.metrics?.maxDrawdown ?? null;
-      const maxDrawdownPrice = (sig?.metrics as any)?.maxDrawdownPrice;
       let drawdownStr = 'N/A';
       let drawdownMcStr = '';
       
       if (maxDrawdown !== null && maxDrawdown !== undefined) {
         if (maxDrawdown < 0) {
           drawdownStr = UIHelper.formatPercent(maxDrawdown);
-          // Calculate max drawdown market cap
-          const maxDrawdownMc = (sig?.metrics as any)?.maxDrawdownMarketCap;
-          if (maxDrawdownMc && maxDrawdownMc > 0) {
-            drawdownMcStr = ` (${UIHelper.formatMarketCap(maxDrawdownMc)})`;
-          } else if (maxDrawdownPrice && maxDrawdownPrice > 0) {
-            // Calculate from drawdown price and supply
-            if (sig?.entrySupply && sig.entrySupply > 0) {
-              const ddMc = maxDrawdownPrice * sig.entrySupply;
-              if (ddMc > 0) drawdownMcStr = ` (${UIHelper.formatMarketCap(ddMc)})`;
-            } else if (item.entryMc && item.entryPrice && item.entryPrice > 0) {
-              // Calculate supply from entry data
-              const estimatedSupply = item.entryMc / item.entryPrice;
-              if (estimatedSupply > 0) {
-                const ddMc = maxDrawdownPrice * estimatedSupply;
-                if (ddMc > 0) drawdownMcStr = ` (${UIHelper.formatMarketCap(ddMc)})`;
-              }
-            }
-          } else if (item.entryMc && maxDrawdown < 0) {
-            // Fallback: calculate from entry MC and drawdown percentage
+          // Calculate max drawdown market cap on-the-fly
+          // Since maxDrawdownMarketCap is not in DB schema, calculate from maxDrawdown percentage
+          if (item.entryMc && item.entryMc > 0 && maxDrawdown < 0) {
+            // maxDrawdown is negative %, so: drawdownMc = entryMc * (1 + maxDrawdown/100)
+            // Example: -20% drawdown means 80% of entry = entryMc * 0.8
             const ddMc = item.entryMc * (1 + (maxDrawdown / 100));
-            if (ddMc > 0) drawdownMcStr = ` (${UIHelper.formatMarketCap(ddMc)})`;
+            if (ddMc > 0) {
+              drawdownMcStr = ` (${UIHelper.formatMarketCap(ddMc)})`;
+            }
           }
         } else if (maxDrawdown === 0) {
           drawdownStr = '0%'; // No drawdown
@@ -587,7 +576,7 @@ export const handleLiveSignals = async (ctx: BotContext, forceRefresh = false) =
       
       // Log for debugging
       if (sig?.metrics) {
-        logger.debug(`[LiveSignals] Display DD for ${item.mint.slice(0, 8)}...: maxDD=${maxDrawdown}, price=${maxDrawdownPrice}, str=${drawdownStr}`);
+        logger.debug(`[LiveSignals] Display DD for ${item.mint.slice(0, 8)}...: maxDD=${maxDrawdown}, str=${drawdownStr}${drawdownMcStr}`);
       }
 
       // Time to ATH (from metrics, in ms, convert to readable format)
@@ -613,19 +602,27 @@ export const handleLiveSignals = async (ctx: BotContext, forceRefresh = false) =
         logger.debug(`[LiveSignals] Display timeToAth for ${item.mint.slice(0, 8)}...: ${timeToAthMs}ms = ${timeToAthStr}`);
       }
       
-      // Time from max drawdown to ATH
-      const timeFromDrawdownToAthMs = (sig?.metrics as any)?.timeFromDrawdownToAth || null;
+      // Time from max drawdown to ATH - calculate on-the-fly since not in DB schema
+      // If we have timeToAth and maxDrawdown occurred, we can estimate
       let timeFromDrawdownToAthStr = 'N/A';
-      if (timeFromDrawdownToAthMs !== null && timeFromDrawdownToAthMs > 0) {
-        const minutes = Math.floor(timeFromDrawdownToAthMs / 60000);
+      const timeToAthMs = sig?.metrics?.timeToAth || null;
+      
+      // If we have timeToAth and maxDrawdown < 0, we can show time to ATH as recovery time
+      // (This is an approximation - actual drawdown-to-ATH time would need to be stored)
+      if (timeToAthMs !== null && timeToAthMs > 0 && maxDrawdown !== null && maxDrawdown < 0) {
+        // For now, show time to ATH as the recovery window
+        // In the future, we'd need to store maxDrawdownAt timestamp in DB
+        const minutes = Math.floor(timeToAthMs / 60000);
         const hours = Math.floor(minutes / 60);
         const days = Math.floor(hours / 24);
         if (days > 0) {
           timeFromDrawdownToAthStr = `${days}d ${hours % 24}h`;
         } else if (hours > 0) {
           timeFromDrawdownToAthStr = `${hours}h ${minutes % 60}m`;
-        } else {
+        } else if (minutes > 0) {
           timeFromDrawdownToAthStr = `${minutes}m`;
+        } else {
+          timeFromDrawdownToAthStr = '<1m';
         }
       }
 
@@ -693,3 +690,4 @@ export const handleLiveSignals = async (ctx: BotContext, forceRefresh = false) =
     }
   }
 };
+
