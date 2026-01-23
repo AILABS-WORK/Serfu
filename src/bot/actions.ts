@@ -382,10 +382,16 @@ Max Drawdown: ${(dd * 100).toFixed(2)}%
               await ctx.answerCbQuery();
               return;
           }
+          // Clear cache when timeframe changes to force rebuild
+          const oldTimeframe = (ctx.session.liveFilters as any).timeframe;
           (ctx.session.liveFilters as any).timeframe = tf;
+          if (oldTimeframe !== tf && ctx.session.liveSignalsCache) {
+              logger.info(`[LiveSignals] Timeframe changed from ${oldTimeframe} to ${tf} - clearing cache`);
+              ctx.session.liveSignalsCache = undefined; // Force cache rebuild
+          }
           // Answer callback immediately
           await ctx.answerCbQuery('Timeframe updated').catch(() => {});
-          // Reload view (may take longer for large timeframes)
+          // Reload view (may take longer for large timeframes like ALL)
           handleLiveSignals(ctx).catch((err) => {
               logger.error('Error reloading live signals after timeframe change:', err);
               if (ctx.callbackQuery && ctx.callbackQuery.message) {

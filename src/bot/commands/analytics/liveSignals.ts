@@ -224,12 +224,25 @@ export const handleLiveSignals = async (ctx: BotContext, forceRefresh = false) =
       cached.timeframe === timeframeLabel && 
       Date.now() - cached.fetchedAt < CACHE_TTL_MS;
     
+    // Log cache status for debugging
+    if (cached) {
+      logger.info(`[LiveSignals] Cache check: timeframe=${cached.timeframe} vs requested=${timeframeLabel}, age=${Date.now() - cached.fetchedAt}ms, fresh=${cacheFresh}`);
+    }
+    
     let cache: LiveSignalsCache;
     if (cacheFresh) {
       logger.info('[LiveSignals] Using cached prices - filtering will be fast');
       cache = cached;
       // No loading message needed - instant filtering
     } else {
+      // Cache is stale or timeframe changed - rebuild
+      if (cached && cached.timeframe !== timeframeLabel) {
+        logger.info(`[LiveSignals] Timeframe changed from ${cached.timeframe} to ${timeframeLabel} - rebuilding cache`);
+      } else if (cached && Date.now() - cached.fetchedAt >= CACHE_TTL_MS) {
+        logger.info(`[LiveSignals] Cache expired (age: ${Date.now() - cached.fetchedAt}ms) - rebuilding`);
+      } else if (forceRefresh) {
+        logger.info('[LiveSignals] Force refresh requested - rebuilding cache');
+      }
       // Show loading message only when rebuilding cache
       if (ctx.callbackQuery && ctx.callbackQuery.message) {
         loadingMsg = ctx.callbackQuery.message;
@@ -251,7 +264,7 @@ export const handleLiveSignals = async (ctx: BotContext, forceRefresh = false) =
       ctx.session.liveSignalsCache = cache;
     }
 
-    // Filter by gainers/multipliers
+    // Filter by gainers/multipliers - works with ANY timeframe including ALL
     let filtered = cache.signals.filter((c: CachedSignal) => {
       if (onlyGainers && c.pnl <= 0) return false;
       if (minMult > 0) {
@@ -261,18 +274,26 @@ export const handleLiveSignals = async (ctx: BotContext, forceRefresh = false) =
       return true;
     });
 
-    // Sort based on filter type
+    logger.info(`[LiveSignals] After filtering: ${filtered.length}/${cache.signals.length} signals (sortBy=${sortBy}, minMult=${minMult}, onlyGainers=${onlyGainers})`);
+
+    // Sort based on filter type - works with ANY timeframe including ALL
     if (minMult > 0) {
+      // >2x / >5x: sort by newest creation (firstDetectedAt)
       filtered.sort((a: CachedSignal, b: CachedSignal) => b.firstDetectedAt.getTime() - a.firstDetectedAt.getTime());
+      logger.info(`[LiveSignals] Sorted by newest (minMult filter)`);
     } else if (sortBy === 'pnl' || sortBy === 'trending') {
-      const valid = filtered.filter(c => isFinite(c.pnl));
-      const invalid = filtered.filter(c => !isFinite(c.pnl));
-      valid.sort((a, b) => b.pnl - a.pnl);
+      // Highest PnL / Trending: separate valid and invalid, sort valid descending
+      const valid = filtered.filter(c => isFinite(c.pnl) && c.pnl !== -Infinity);
+      const invalid = filtered.filter(c => !isFinite(c.pnl) || c.pnl === -Infinity);
+      valid.sort((a, b) => b.pnl - a.pnl); // Highest PnL first
       filtered = [...valid, ...invalid];
+      logger.info(`[LiveSignals] Sorted by PnL: ${valid.length} valid, ${invalid.length} invalid`);
     } else if (sortBy === 'newest') {
+      // Newest: sort by firstDetectedAt (creation time)
       filtered.sort((a: CachedSignal, b: CachedSignal) => b.firstDetectedAt.getTime() - a.firstDetectedAt.getTime());
+      logger.info(`[LiveSignals] Sorted by newest (firstDetectedAt)`);
     } else {
-      // Default: aggregate by mint, show most recent per mint
+      // Default (activity): aggregate by mint, show most recent per mint
       const mintMap = new Map<string, CachedSignal>();
       for (const sig of filtered) {
         const existing = mintMap.get(sig.mint);
@@ -282,6 +303,7 @@ export const handleLiveSignals = async (ctx: BotContext, forceRefresh = false) =
       }
       filtered = Array.from(mintMap.values());
       filtered.sort((a: CachedSignal, b: CachedSignal) => b.detectedAt.getTime() - a.detectedAt.getTime());
+      logger.info(`[LiveSignals] Sorted by activity (latest mention): ${filtered.length} unique mints`);
     }
 
     // Get top items
