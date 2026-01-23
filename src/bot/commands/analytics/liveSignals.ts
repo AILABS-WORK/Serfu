@@ -77,17 +77,22 @@ const buildCache = async (
   logger.info(`[LiveSignals] Fetching token info for ${allMints.length} unique mints`);
   
   // STEP 2: Fetch token info (EXACT SAME AS TEST)
+  logger.info(`[LiveSignals] About to fetch ${allMints.length} tokens from Jupiter`);
   const tokenInfoMap = await getMultipleTokenInfo(allMints);
   
   // CRITICAL DEBUG: Log what we got from Jupiter
   const tokensWithData = Object.entries(tokenInfoMap).filter(([_, info]) => info !== null);
+  const tokensWithoutData = allMints.filter(mint => !tokenInfoMap[mint] || tokenInfoMap[mint] === null);
   logger.info(`[LiveSignals] Jupiter returned data for ${tokensWithData.length}/${allMints.length} tokens`);
+  if (tokensWithoutData.length > 0) {
+    logger.warn(`[LiveSignals] ${tokensWithoutData.length} tokens had no data from Jupiter. Sample: ${tokensWithoutData.slice(0, 5).map(m => m.slice(0, 8) + '...').join(', ')}`);
+  }
   
   // Log sample of what we got
   if (tokensWithData.length > 0) {
-    const sample = tokensWithData.slice(0, 3);
+    const sample = tokensWithData.slice(0, 5);
     sample.forEach(([mint, info]) => {
-      logger.info(`[LiveSignals] Sample token ${mint.slice(0, 8)}...: price=$${info?.usdPrice}, mcap=$${info?.mcap}`);
+      logger.info(`[LiveSignals] ✅ Token ${mint.slice(0, 8)}...: price=$${info?.usdPrice}, mcap=$${info?.mcap}`);
     });
   }
   
@@ -108,10 +113,15 @@ const buildCache = async (
           priceMap[mint] = info.usdPrice ?? null;
           marketCapMap[mint] = info.mcap ?? null;
           
-          // Log what Jupiter actually sent
-          logger.info(`[LiveSignals] Jupiter sent for ${mint.slice(0, 8)}...: usdPrice=${info.usdPrice}, mcap=${info.mcap}`);
+          // Only log first few to avoid spam
+          if (Object.keys(priceMap).length <= 5) {
+            logger.info(`[LiveSignals] Extracted ${mint.slice(0, 8)}...: price=${priceMap[mint]}, mcap=${marketCapMap[mint]}`);
+          }
         } else {
-          logger.warn(`[LiveSignals] Token ${mint.slice(0, 8)}... has null info in tokenInfoMap`);
+          // Only log first few missing tokens
+          if (Object.keys(priceMap).length <= 5) {
+            logger.warn(`[LiveSignals] Token ${mint.slice(0, 8)}... has null info in tokenInfoMap`);
+          }
         }
       });
   

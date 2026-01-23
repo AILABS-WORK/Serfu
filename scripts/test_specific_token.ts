@@ -1,7 +1,8 @@
 import 'dotenv/config';
 import { getMultipleTokenInfo } from '../src/providers/jupiter';
 
-const testMint = 'BPLEyoTtmPSa9ExmFEEvJP3s2uBZNCm6Z2gWH8Bqpump';
+// Test with penguin token that shows N/A in live signals but works in signal card
+const testMint = '9xK2Cj2tKq1jzyjr6BtdqHxe2niTtshxF4Y7PTHMpump';
 
 async function testSpecificToken() {
   console.log(`\n=== Testing Token: ${testMint} ===\n`);
