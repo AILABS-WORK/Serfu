@@ -9,6 +9,12 @@ import { forwardSignalToDestination } from '../bot/forwarder';
 import { checkDuplicateCA } from '../bot/signalCard';
 import { detectEvents, sendEventAlerts } from '../bot/eventAlerts';
 
+const detectChain = (address: string): 'solana' | 'bsc' => {
+  if (/^0x[a-fA-F0-9]{40}$/.test(address)) return 'bsc';
+  if (/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(address)) return 'solana';
+  return 'solana';
+};
+
 export const processMessage = async (message: RawMessage) => {
   const { rawText, chatId, messageId } = message;
   
@@ -206,6 +212,7 @@ export const processMessage = async (message: RawMessage) => {
       messageId,
       senderId: message.senderId,
       mint,
+      chain: detectChain(mint),
       category: 'General', // TODO: Parse category from text
       name: meta.name,
       symbol: meta.symbol,

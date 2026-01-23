@@ -42,6 +42,7 @@ model Signal {
   messageId         Int      @map("message_id") // Origin message
   senderId          BigInt?  @map("sender_id") // Telegram user ID
   category          String?
+  chain             String   @default("solana")
   mint              String
   name              String?
   symbol            String?
@@ -214,11 +215,25 @@ model User {
   userMetrics          UserMetric[]
   ownedGroups          Group[]                   @relation("OwnedGroups") // Groups this user owns/manages
   notificationSettings UserNotificationSettings? @relation("NotificationSettings")
+  settings             UserSettings?            @relation("UserSettings")
   watchlist            Watchlist[]
   strategyPresets      StrategyPreset[]
 
   @@index([userId])
   @@map("users")
+}
+
+model UserSettings {
+  id              Int     @id @default(autoincrement())
+  userId          Int     @unique @map("user_id")
+  preferredChain  String  @default("both")
+  showRiskScores  Boolean @default(true)
+  showSmartAlerts Boolean @default(true)
+  compactMode     Boolean @default(false)
+
+  user User @relation(fields: [userId], references: [id], name: "UserSettings")
+
+  @@map("user_settings")
 }
 
 model StrategyPreset {

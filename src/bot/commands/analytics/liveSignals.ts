@@ -24,7 +24,8 @@ const formatCallerLabel = (sig: any) => {
 const buildCache = async (
   ctx: BotContext,
   timeframeCutoff: Date,
-  timeframeLabel: string
+  timeframeLabel: string,
+  chain: 'solana' | 'bsc' | 'both'
 ): Promise<LiveSignalsCache> => {
   const ownerTelegramId = ctx.from?.id ? BigInt(ctx.from.id) : null;
   if (!ownerTelegramId) {
@@ -48,13 +49,14 @@ const buildCache = async (
   }
 
   if (ownedChatIds.length === 0 && forwardedSignalIds.length === 0) {
-    return { signals: [], fetchedAt: Date.now(), timeframe: timeframeLabel };
+    return { signals: [], fetchedAt: Date.now(), timeframe: timeframeLabel, chain };
   }
 
   const signals = await prisma.signal.findMany({
     where: {
       detectedAt: { gte: timeframeCutoff },
       trackingStatus: { in: ['ACTIVE', 'ENTRY_PENDING'] },
+      ...(chain !== 'both' ? { chain } : {}),
       OR: [
         { chatId: { in: ownedChatIds } },
         { id: { in: forwardedSignalIds } }
@@ -68,7 +70,7 @@ const buildCache = async (
   });
 
   if (signals.length === 0) {
-    return { signals: [], fetchedAt: Date.now(), timeframe: timeframeLabel };
+    return { signals: [], fetchedAt: Date.now(), timeframe: timeframeLabel, chain };
   }
 
   // CRITICAL: Deduplicate by mint BEFORE fetching prices to reduce API calls
@@ -196,7 +198,8 @@ const buildCache = async (
   return {
     signals: cachedSignals,
     fetchedAt: Date.now(),
-    timeframe: timeframeLabel
+    timeframe: timeframeLabel,
+    chain
   };
 };
 
@@ -207,6 +210,7 @@ export const handleLiveSignals = async (ctx: BotContext, forceRefresh = false) =
     
     const liveFilters = ctx.session?.liveFilters || {};
     const timeframeLabel = (liveFilters as any).timeframe || '24H';
+    const chain = (liveFilters as any).chain || 'both';
     const timeframeParsed = UIHelper.parseTimeframeInput(timeframeLabel);
     const timeframeCutoff = timeframeLabel === 'ALL'
       ? new Date(0)
@@ -218,26 +222,27 @@ export const handleLiveSignals = async (ctx: BotContext, forceRefresh = false) =
     const displayLimit = (liveFilters as any).expand ? 20 : 10;
 
     // Use cached prices if available and fresh - only rebuild if stale, timeframe changed, or forced refresh
-    const cached = ctx.session.liveSignalsCache;
+    const cached = ctx.session.liveSignalsCache as LiveSignalsCache | undefined;
     const cacheFresh = !forceRefresh && 
       cached && 
       cached.timeframe === timeframeLabel && 
+      cached.chain === chain &&
       Date.now() - cached.fetchedAt < CACHE_TTL_MS;
     
     // Log cache status for debugging
     if (cached) {
-      logger.info(`[LiveSignals] Cache check: timeframe=${cached.timeframe} vs requested=${timeframeLabel}, age=${Date.now() - cached.fetchedAt}ms, fresh=${cacheFresh}`);
+      logger.info(`[LiveSignals] Cache check: timeframe=${cached.timeframe} vs requested=${timeframeLabel}, chain=${cached.chain} vs requested=${chain}, age=${Date.now() - cached.fetchedAt}ms, fresh=${cacheFresh}`);
     }
     
     let cache: LiveSignalsCache;
     if (cacheFresh) {
       logger.info('[LiveSignals] Using cached prices - filtering will be fast');
-      cache = cached;
+      cache = cached as LiveSignalsCache;
       // No loading message needed - instant filtering
     } else {
       // Cache is stale or timeframe changed - rebuild
-      if (cached && cached.timeframe !== timeframeLabel) {
-        logger.info(`[LiveSignals] Timeframe changed from ${cached.timeframe} to ${timeframeLabel} - rebuilding cache`);
+      if (cached && (cached.timeframe !== timeframeLabel || cached.chain !== chain)) {
+        logger.info(`[LiveSignals] Cache changed - rebuilding (timeframe=${timeframeLabel}, chain=${chain})`);
       } else if (cached && Date.now() - cached.fetchedAt >= CACHE_TTL_MS) {
         logger.info(`[LiveSignals] Cache expired (age: ${Date.now() - cached.fetchedAt}ms) - rebuilding`);
       } else if (forceRefresh) {
@@ -260,7 +265,7 @@ export const handleLiveSignals = async (ctx: BotContext, forceRefresh = false) =
       }
       
       logger.info('[LiveSignals] Building fresh cache with real-time prices');
-      cache = await buildCache(ctx, timeframeCutoff, timeframeLabel);
+      cache = await buildCache(ctx, timeframeCutoff, timeframeLabel, chain);
       ctx.session.liveSignalsCache = cache;
     }
 
@@ -376,12 +381,26 @@ export const handleLiveSignals = async (ctx: BotContext, forceRefresh = false) =
           
           logger.info(`[LiveSignals] Calculating ATH for ${item.mint.slice(0, 8)}... using GeckoTerminal OHLCV`);
           try {
+            const beforeUpdatedAt = sig.metrics?.updatedAt?.getTime() ?? 0;
+            const beforeAth = sig.metrics?.athMultiple ?? null;
+            const beforeTimeToAth = sig.metrics?.timeToAth ?? null;
             await Promise.race([
               enrichSignalMetrics(sig, false, item.currentPrice),
               new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 15000))
             ]);
-            athCalculated++;
-            logger.info(`[LiveSignals] ✅ ATH calculated for ${item.mint.slice(0, 8)}... (${athCalculated}/${topItems.length})`);
+            const afterUpdatedAt = sig.metrics?.updatedAt?.getTime() ?? 0;
+            const afterAth = sig.metrics?.athMultiple ?? null;
+            const afterTimeToAth = sig.metrics?.timeToAth ?? null;
+            const metricsUpdated = afterUpdatedAt > beforeUpdatedAt
+              || (afterAth !== null && afterAth !== beforeAth)
+              || (afterTimeToAth !== null && afterTimeToAth !== beforeTimeToAth);
+            if (metricsUpdated) {
+              athCalculated++;
+              logger.info(`[LiveSignals] ✅ ATH calculated for ${item.mint.slice(0, 8)}... (${athCalculated}/${topItems.length})`);
+            } else {
+              logger.warn(`[LiveSignals] ⚠️ ATH metrics unchanged for ${item.mint.slice(0, 8)}... (no candles or update)`);
+              failedTokens.push({ item, sig });
+            }
             
             // Delay between items in same batch
             if (item !== batch[batch.length - 1]) {
@@ -414,13 +433,26 @@ export const handleLiveSignals = async (ctx: BotContext, forceRefresh = false) =
         const { item, sig } = failedTokens[i];
         logger.debug(`[LiveSignals] Retrying ATH for ${item.mint.slice(0, 8)}... (attempt ${i + 1}/${failedTokens.length})`);
         try {
+          const beforeUpdatedAt = sig.metrics?.updatedAt?.getTime() ?? 0;
+          const beforeAth = sig.metrics?.athMultiple ?? null;
+          const beforeTimeToAth = sig.metrics?.timeToAth ?? null;
           await Promise.race([
             enrichSignalMetrics(sig, false, item.currentPrice),
             new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 20000))
           ]);
-          retrySuccess++;
-          athCalculated++;
-          logger.debug(`[LiveSignals] ✅ Retry successful for ${item.mint.slice(0, 8)}...`);
+          const afterUpdatedAt = sig.metrics?.updatedAt?.getTime() ?? 0;
+          const afterAth = sig.metrics?.athMultiple ?? null;
+          const afterTimeToAth = sig.metrics?.timeToAth ?? null;
+          const metricsUpdated = afterUpdatedAt > beforeUpdatedAt
+            || (afterAth !== null && afterAth !== beforeAth)
+            || (afterTimeToAth !== null && afterTimeToAth !== beforeTimeToAth);
+          if (metricsUpdated) {
+            retrySuccess++;
+            athCalculated++;
+            logger.debug(`[LiveSignals] ✅ Retry successful for ${item.mint.slice(0, 8)}...`);
+          } else {
+            logger.warn(`[LiveSignals] ⚠️ Retry metrics unchanged for ${item.mint.slice(0, 8)}...`);
+          }
         } catch (err) {
           logger.warn(`[LiveSignals] ❌ Retry failed for ${item.mint.slice(0, 8)}...: ${err}`);
         }
@@ -518,6 +550,16 @@ export const handleLiveSignals = async (ctx: BotContext, forceRefresh = false) =
       const athMult = sig?.metrics?.athMultiple || 0;
       const athPrice = sig?.metrics?.athPrice || 0;
       const storedAthMc = sig?.metrics?.athMarketCap || null;
+      let currentMult = 0;
+      if (item.entryMc > 0 && item.currentMc > 0) {
+        currentMult = item.currentMc / item.entryMc;
+      } else if (item.entryPrice > 0 && item.currentPrice > 0) {
+        currentMult = item.currentPrice / item.entryPrice;
+      }
+      const effectiveAth = Math.max(athMult, currentMult);
+      const inferredEntryMc = item.entryMc > 0
+        ? item.entryMc
+        : (item.currentMc > 0 && currentMult > 0 ? item.currentMc / currentMult : 0);
       
       // Calculate ATH market cap - prioritize stored value from DB (calculated by GeckoTerminal)
       let athMc = storedAthMc && storedAthMc > 0 ? storedAthMc : 0;
@@ -535,18 +577,28 @@ export const handleLiveSignals = async (ctx: BotContext, forceRefresh = false) =
         }
       }
       
+      // If current multiple exceeds stored ATH, recalc ATH MC from effectiveAth
+      if (effectiveAth > athMult && inferredEntryMc > 0) {
+        athMc = inferredEntryMc * effectiveAth;
+      }
+      
       // Last fallback: use ATH multiple * entry market cap
-      if (athMc <= 0 && athMult > 0 && item.entryMc && item.entryMc > 0) {
-        athMc = item.entryMc * athMult;
+      if (athMc <= 0 && athMult > 0 && inferredEntryMc > 0) {
+        athMc = inferredEntryMc * athMult;
+      }
+      
+      // Final fallback: if effectiveAth is available, use it for ATH MC
+      if (athMc <= 0 && effectiveAth > 1 && inferredEntryMc > 0) {
+        athMc = inferredEntryMc * effectiveAth;
       }
       
       // Log for debugging
       if (sig?.metrics) {
-        logger.debug(`[LiveSignals] Display ATH for ${item.mint.slice(0, 8)}...: mult=${athMult.toFixed(2)}, price=${athPrice}, storedMc=${storedAthMc}, calculatedMc=${athMc}`);
+        logger.debug(`[LiveSignals] Display ATH for ${item.mint.slice(0, 8)}...: mult=${athMult.toFixed(2)}, current=${currentMult.toFixed(2)}, effective=${effectiveAth.toFixed(2)}, price=${athPrice}, storedMc=${storedAthMc}, calculatedMc=${athMc}`);
       }
       
-      const athLabel = athMult > 1.05
-        ? `${athMult.toFixed(1)}x ATH${athMc > 0 ? ` (${UIHelper.formatMarketCap(athMc)})` : ''}`
+      const athLabel = effectiveAth >= 1
+        ? `${effectiveAth.toFixed(1)}x ATH${athMc > 0 ? ` (${UIHelper.formatMarketCap(athMc)})` : ''}`
         : 'ATH N/A';
 
       // Max drawdown (from metrics, negative % or 0 if no drawdown)
@@ -610,11 +662,13 @@ export const handleLiveSignals = async (ctx: BotContext, forceRefresh = false) =
       let timeFromDrawdownToAthStr = 'N/A';
       const storedTimeFromDdToAth = sig?.metrics?.timeFromDrawdownToAth ?? null;
       
-      if (storedTimeFromDdToAth !== null && storedTimeFromDdToAth > 0) {
+      if (storedTimeFromDdToAth !== null && storedTimeFromDdToAth >= 0) {
         const minutes = Math.floor(storedTimeFromDdToAth / 60000);
         const hours = Math.floor(minutes / 60);
         const days = Math.floor(hours / 24);
-        if (days > 0) {
+        if (storedTimeFromDdToAth === 0) {
+          timeFromDrawdownToAthStr = '<1m';
+        } else if (days > 0) {
           timeFromDrawdownToAthStr = `${days}d ${hours % 24}h`;
         } else if (hours > 0) {
           timeFromDrawdownToAthStr = `${hours}h ${minutes % 60}m`;
@@ -655,12 +709,19 @@ export const handleLiveSignals = async (ctx: BotContext, forceRefresh = false) =
       message += UIHelper.separator('LIGHT');
     }
 
+    const chainRow = [
+      { text: chain === 'both' ? '✅ Both' : 'Both', callback_data: 'live_chain:both' },
+      { text: chain === 'solana' ? '✅ SOL' : 'SOL', callback_data: 'live_chain:solana' },
+      { text: chain === 'bsc' ? '✅ BSC' : 'BSC', callback_data: 'live_chain:bsc' }
+    ];
+
     const filters = [
       [
         { text: '🔥 Trending', callback_data: 'live_sort:trending' },
         { text: '🆕 Newest', callback_data: 'live_sort:newest' },
         { text: '💰 Highest PnL', callback_data: 'live_sort:pnl' }
       ],
+      chainRow,
       [
         { text: minMult === 2 ? '✅ > 2x' : '🚀 > 2x', callback_data: 'live_filter:2x' },
         { text: minMult === 5 ? '✅ > 5x' : '🌕 > 5x', callback_data: 'live_filter:5x' },

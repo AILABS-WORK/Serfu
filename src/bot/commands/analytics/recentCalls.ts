@@ -48,6 +48,8 @@ export const handleRecentCalls = async (ctx: Context, window: string = '7D') => 
     const storedWindow = (ctx as any).session.recent.timeframe;
     const effectiveWindow = window || storedWindow || '7D';
     (ctx as any).session.recent.timeframe = effectiveWindow;
+    if (!(ctx as any).session.recent.chain) (ctx as any).session.recent.chain = 'both';
+    const chain = (ctx as any).session.recent.chain || 'both';
 
     let loadingMsg: any = null;
     if (ctx.callbackQuery && ctx.callbackQuery.message) {
@@ -71,6 +73,7 @@ export const handleRecentCalls = async (ctx: Context, window: string = '7D') => 
           { chatId: { in: ownedChatIds } },
           { id: { in: forwardedSignalIds } }
         ],
+        ...(chain !== 'both' ? { chain } : {}),
         ...(since ? { detectedAt: { gte: since } } : {})
       },
       orderBy: { detectedAt: 'desc' },
@@ -155,6 +158,11 @@ export const handleRecentCalls = async (ctx: Context, window: string = '7D') => 
       parse_mode: 'Markdown',
       reply_markup: {
         inline_keyboard: [
+          [
+            { text: chain === 'both' ? '✅ Both' : 'Both', callback_data: 'recent_chain:both' },
+            { text: chain === 'solana' ? '✅ SOL' : 'SOL', callback_data: 'recent_chain:solana' },
+            { text: chain === 'bsc' ? '✅ BSC' : 'BSC', callback_data: 'recent_chain:bsc' }
+          ],
           [
             { text: '1D', callback_data: 'recent_window:1D' },
             { text: '3D', callback_data: 'recent_window:3D' },

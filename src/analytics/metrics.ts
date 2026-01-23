@@ -1,6 +1,6 @@
 import { prisma } from '../db';
 import { logger } from '../utils/logger';
-import { geckoTerminal } from '../providers/geckoTerminal';
+import { bitquery } from '../providers/bitquery';
 import { Signal, SignalMetric, PriceSample } from '../generated/client';
 
 export type SignalWithRelations = Signal & {
@@ -154,6 +154,15 @@ export const enrichSignalMetrics = async (
             if (!entrySupply && entryPrice && entryMc) entrySupply = entryMc / entryPrice;
         }
 
+        // If we have entry price + market cap but no supply, derive it
+        if (!entrySupply && entryPrice && entryPrice > 0 && entryMc > 0) {
+            entrySupply = entryMc / entryPrice;
+        }
+        // Fallback: derive supply from current market cap when entry MC is missing
+        if (!entrySupply && currentPriceOverride && currentPriceOverride > 0 && sig.metrics?.currentMarketCap && sig.metrics.currentMarketCap > 0) {
+            entrySupply = sig.metrics.currentMarketCap / currentPriceOverride;
+        }
+
         if (!entrySupply || entrySupply <= 0 || !entryPrice || entryPrice <= 0) {
             // Last ditch: derive price if we have MC and Supply, or Supply if we have MC and Price
             if (entryMc > 0 && entrySupply! > 0) entryPrice = entryMc / entrySupply!;
@@ -171,118 +180,26 @@ export const enrichSignalMetrics = async (
 
         const currentPrice = currentPriceOverride ?? sig.metrics?.currentPrice ?? 0;
 
-        // Boundary-based OHLCV strategy:
-        // - Minute candles from entry to next hour boundary
-        // - Hourly candles from hour boundary to next day boundary
-        // - Daily candles from day boundary to now
-        const entryDate = new Date(entryTimestamp);
-        const hourBoundary = new Date(entryDate);
-        hourBoundary.setMinutes(0, 0, 0);
-        hourBoundary.setHours(hourBoundary.getHours() + 1);
-        const hourBoundaryTs = hourBoundary.getTime();
+        logger.debug(`[Metrics] Starting Bitquery price extremes fetch for ${sig.mint.slice(0, 8)}... (entry: ${entryPriceValue}, current: ${currentPrice})`);
 
-        const dayBoundary = new Date(entryDate);
-        dayBoundary.setHours(0, 0, 0, 0);
-        dayBoundary.setDate(dayBoundary.getDate() + 1);
-        const dayBoundaryTs = dayBoundary.getTime();
+        const extremes = await bitquery.getPriceExtremes(sig.mint, new Date(entryTimestamp));
+        maxHigh = extremes.maxPrice || 0;
+        maxAt = extremes.maxAt?.getTime?.() || entryTimestamp;
 
-        let candlesFound = 0;
-        const allCandles: Array<{ timestamp: number; high: number; low: number }> = [];
-
-        logger.debug(`[Metrics] Starting GeckoTerminal OHLCV fetch for ${sig.mint.slice(0, 8)}... (entry: ${entryPriceValue}, current: ${currentPrice})`);
-
-        // Minute candles: entry -> hour boundary
-        if (nowTimestamp > entryTimestamp) {
-            const minuteEnd = Math.min(hourBoundaryTs, nowTimestamp);
-            if (minuteEnd > entryTimestamp) {
-                const minutesNeeded = Math.ceil((minuteEnd - entryTimestamp) / (60 * 1000)) + 2;
-                const minuteLimit = Math.min(1000, minutesNeeded);
-                try {
-                    logger.debug(`[Metrics] Fetching GeckoTerminal minute candles for ${sig.mint.slice(0, 8)}... (limit: ${minuteLimit})`);
-                    const minuteCandles = await geckoTerminal.getOHLCV(sig.mint, 'minute', minuteLimit);
-                    logger.debug(`[Metrics] Got ${minuteCandles.length} minute candles for ${sig.mint.slice(0, 8)}...`);
-                    const postEntryMinutes = minuteCandles.filter(
-                        (c) => c.timestamp >= entryTimestamp && c.timestamp < minuteEnd
-                    );
-                    candlesFound += postEntryMinutes.length;
-                    for (const candle of postEntryMinutes) {
-                        allCandles.push({ timestamp: candle.timestamp, high: candle.high, low: candle.low });
-                        if (candle.high > maxHigh) {
-                            maxHigh = candle.high;
-                            maxAt = candle.timestamp;
-                        }
-                    }
-                } catch (err) {
-                    logger.debug(`GeckoTerminal minute candles failed for ${sig.mint}: ${err}`);
-                }
-            }
-        }
-
-        // Hourly candles: hour boundary -> day boundary
-        if (nowTimestamp > hourBoundaryTs) {
-            const hourEnd = Math.min(dayBoundaryTs, nowTimestamp);
-            if (hourEnd > hourBoundaryTs) {
-                const hoursNeeded = Math.ceil((hourEnd - hourBoundaryTs) / (60 * 60 * 1000)) + 2;
-                const hourLimit = Math.min(1000, hoursNeeded);
-                try {
-                    logger.debug(`[Metrics] Fetching GeckoTerminal hourly candles for ${sig.mint.slice(0, 8)}... (limit: ${hourLimit})`);
-                    const hourlyCandles = await geckoTerminal.getOHLCV(sig.mint, 'hour', hourLimit);
-                    logger.debug(`[Metrics] Got ${hourlyCandles.length} hourly candles for ${sig.mint.slice(0, 8)}...`);
-                    const hourlyInRange = hourlyCandles.filter(
-                        (c) => c.timestamp >= hourBoundaryTs && c.timestamp < hourEnd
-                    );
-                    candlesFound += hourlyInRange.length;
-                    for (const candle of hourlyInRange) {
-                        allCandles.push({ timestamp: candle.timestamp, high: candle.high, low: candle.low });
-                        if (candle.high > maxHigh) {
-                            maxHigh = candle.high;
-                            maxAt = candle.timestamp;
-                        }
-                    }
-                } catch (err) {
-                    logger.debug(`GeckoTerminal hourly candles failed for ${sig.mint}: ${err}`);
-                }
-            }
-        }
-
-        // Daily candles: day boundary -> now
-        if (nowTimestamp > dayBoundaryTs) {
-            const daysNeeded = Math.ceil((nowTimestamp - dayBoundaryTs) / (24 * 60 * 60 * 1000)) + 2;
-            const dayLimit = Math.min(1000, daysNeeded);
-                try {
-                    logger.debug(`[Metrics] Fetching GeckoTerminal daily candles for ${sig.mint.slice(0, 8)}... (limit: ${dayLimit})`);
-                    const dailyCandles = await geckoTerminal.getOHLCV(sig.mint, 'day', dayLimit);
-                    logger.debug(`[Metrics] Got ${dailyCandles.length} daily candles for ${sig.mint.slice(0, 8)}...`);
-                const dailyInRange = dailyCandles.filter((c) => c.timestamp >= dayBoundaryTs);
-                candlesFound += dailyInRange.length;
-                for (const candle of dailyInRange) {
-                    allCandles.push({ timestamp: candle.timestamp, high: candle.high, low: candle.low });
-                    if (candle.high > maxHigh) {
-                        maxHigh = candle.high;
-                        maxAt = candle.timestamp;
-                    }
-                }
-            } catch (err) {
-                logger.debug(`GeckoTerminal daily candles failed for ${sig.mint}: ${err}`);
-            }
-        }
-
-        logger.debug(`[Metrics] Total candles found for ${sig.mint.slice(0, 8)}...: ${candlesFound} (from GeckoTerminal)`);
-        
-        if (candlesFound === 0) {
-            logger.debug(`[Metrics] No candles found for ${sig.mint.slice(0, 8)}..., using cached ATH if available`);
+        if (maxHigh <= 0) {
+            logger.debug(`[Metrics] No Bitquery ATH for ${sig.mint.slice(0, 8)}..., using cached ATH if available`);
             if (!sig.metrics?.athPrice || sig.metrics.athPrice <= 0) {
                 logger.debug(`[Metrics] No cached ATH for ${sig.mint.slice(0, 8)}..., skipping`);
                 return;
             }
             maxHigh = sig.metrics.athPrice;
             maxAt = sig.metrics.athAt?.getTime?.() || entryTimestamp;
-        } else {
-            // Ensure ATH is never below entry price when OHLCV exists
-            if (maxHigh < entryPriceValue) {
-                maxHigh = entryPriceValue;
-                maxAt = entryTimestamp;
-            }
+        }
+
+        // Ensure ATH is never below entry price
+        if (maxHigh < entryPriceValue) {
+            maxHigh = entryPriceValue;
+            maxAt = entryTimestamp;
         }
 
         // Do not override candle-derived ATH with current or cached values when candles exist
@@ -310,46 +227,20 @@ export const enrichSignalMetrics = async (
             let maxDrawdownPrice = entryPriceValue; // Price at max drawdown
             let maxDrawdownAt = entryTimestamp; // Time of max drawdown
             
-            if (allCandles.length > 0) {
-                // Filter candles to ONLY those between entry and ATH time (same candles used for ATH)
-                // Stop checking after ATH time - drawdown can only occur before ATH
-                const candlesUpToAth = allCandles.filter(c => 
-                    c.timestamp >= entryTimestamp && c.timestamp <= maxAt
-                );
-                
-                // Find the lowest price (using candle.low) in the timeframe between entry and ATH
-                // Start with entry price as baseline
-                let lowestPrice = entryPriceValue;
-                let lowestPriceAt = entryTimestamp;
-                
-                // Use the same candles that were used for ATH calculation
-                for (const candle of candlesUpToAth) {
-                    // Use the low of the candle to find the absolute lowest price
-                    // This is the max drawdown point (lowest point before ATH)
-                    if (candle.low < lowestPrice) {
-                        lowestPrice = candle.low;
-                        lowestPriceAt = candle.timestamp;
+                    // Use Bitquery min/max. Drawdown must occur before ATH.
+                    if (extremes.minPrice > 0 && extremes.minAt && extremes.minAt.getTime() <= maxAt) {
+                        const lowestPrice = extremes.minPrice;
+                        const lowestPriceAt = extremes.minAt.getTime();
+                        maxDrawdownPrice = lowestPrice;
+                        maxDrawdownAt = lowestPriceAt;
+                        if (entryPriceValue > 0 && lowestPrice < entryPriceValue) {
+                            maxDrawdown = ((lowestPrice - entryPriceValue) / entryPriceValue) * 100;
+                        }
+                    } else if (currentPrice > 0 && entryPriceValue > 0 && currentPrice < entryPriceValue) {
+                        maxDrawdown = ((currentPrice - entryPriceValue) / entryPriceValue) * 100;
+                        maxDrawdownPrice = currentPrice;
+                        maxDrawdownAt = nowTimestamp;
                     }
-                }
-                
-                // Set max drawdown values
-                maxDrawdownPrice = lowestPrice;
-                maxDrawdownAt = lowestPriceAt;
-                
-                // Calculate max drawdown: percentage decrease from entry to lowest price
-                // This is always negative (or 0 if no drawdown)
-                if (entryPriceValue > 0) {
-                    maxDrawdown = ((lowestPrice - entryPriceValue) / entryPriceValue) * 100;
-                }
-            } else {
-                // If no OHLCV data, calculate simple drawdown from entry to current price
-                // But only if current is below entry (drawdown)
-                if (currentPrice > 0 && entryPriceValue > 0 && currentPrice < entryPriceValue) {
-                    maxDrawdown = ((currentPrice - entryPriceValue) / entryPriceValue) * 100;
-                    maxDrawdownPrice = currentPrice;
-                    maxDrawdownAt = nowTimestamp;
-                }
-            }
             
             // Calculate max drawdown market cap
             let maxDrawdownMarketCap = 0;

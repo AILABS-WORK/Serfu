@@ -17,12 +17,14 @@ import {
   handleGroupStatsCommand,
   handleUserStatsCommand,
 } from './commands/analytics';
+import { handleAnalyzeCommand } from './commands/analyze';
 import {
   handleGroupLeaderboardCommand,
   handleUserLeaderboardCommand,
 } from './commands/analytics/leaderboards';
 import { handleSettingsCommand } from './commands/settings';
 import { getJupiterPrice, getJupiterTokenInfo } from '../providers/jupiter';
+import { handleSmartMoneyCommand, handleWalletCommand, handleWhalesCommand } from './commands/wallets';
 
 export const setupBot = () => {
   const token = process.env.BOT_TOKEN;
@@ -180,6 +182,10 @@ export const setupBot = () => {
 
   // Analytics Commands
   bot.command('analytics', handleAnalyticsCommand);
+  bot.command('analyze', handleAnalyzeCommand);
+  bot.command('wallet', handleWalletCommand);
+  bot.command('whales', handleWhalesCommand);
+  bot.command('smartmoney', handleSmartMoneyCommand);
   bot.command('groupstats', (ctx) => {
     const args = ctx.message.text?.split(' ').slice(1);
     handleGroupStatsCommand(ctx, args?.[0]);

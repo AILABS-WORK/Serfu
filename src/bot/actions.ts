@@ -371,6 +371,30 @@ Max Drawdown: ${(dd * 100).toFixed(2)}%
       }
   });
 
+  bot.action(/^live_chain:(.*)$/, async (ctx) => {
+      try {
+          const chain = ctx.match[1];
+          if (!ctx.session) ctx.session = {};
+          if (!ctx.session.liveFilters) ctx.session.liveFilters = {};
+
+          if (['both', 'solana', 'bsc'].includes(chain)) {
+              (ctx.session.liveFilters as any).chain = chain;
+          }
+
+          if (ctx.session.liveSignalsCache) {
+              ctx.session.liveSignalsCache = undefined;
+          }
+
+          await ctx.answerCbQuery('Chain filter updated').catch(() => {});
+          handleLiveSignals(ctx).catch((err) => {
+              logger.error('Error reloading live signals after chain change:', err);
+          });
+      } catch (error) {
+          logger.error('Chain filter action error:', error);
+          ctx.answerCbQuery('Error updating chain filter');
+      }
+  });
+
   bot.action(/^live_time:(.*)$/, async (ctx) => {
       try {
           const tf = ctx.match[1];
@@ -454,6 +478,17 @@ Max Drawdown: ${(dd * 100).toFixed(2)}%
       ctx.session.distributions.timeframe = tf;
       await handleDistributions(ctx as any, 'mcap');
       await ctx.answerCbQuery();
+  });
+
+  bot.action(/^dist_chain:(.*)$/, async (ctx) => {
+      const chain = ctx.match[1];
+      if (!ctx.session) ctx.session = {} as any;
+      if (!(ctx.session as any).distributions) (ctx.session as any).distributions = {};
+      if (['both', 'solana', 'bsc'].includes(chain)) {
+          (ctx.session as any).distributions.chain = chain;
+      }
+      await ctx.answerCbQuery('Chain updated').catch(() => {});
+      handleDistributions(ctx as any).catch(err => logger.error('Dist chain error', err));
   });
 
   bot.action('dist_target', async (ctx) => {
@@ -1082,6 +1117,18 @@ Max Drawdown: ${(dd * 100).toFixed(2)}%
       await handleRecentCalls(ctx as any, tf);
       await ctx.answerCbQuery();
   });
+
+  bot.action(/^recent_chain:(.*)$/, async (ctx) => {
+      const chain = ctx.match[1];
+      if (!ctx.session) ctx.session = {} as any;
+      if (!(ctx.session as any).recent) (ctx.session as any).recent = {};
+      if (['both', 'solana', 'bsc'].includes(chain)) {
+          (ctx.session as any).recent.chain = chain;
+      }
+      await ctx.answerCbQuery('Chain updated').catch(() => {});
+      const recent = (ctx.session as any).recent || {};
+      await handleRecentCalls(ctx as any, recent.timeframe || '7D');
+  });
   
   bot.action('analytics_groups', async (ctx) => {
       const ownerTelegramId = ctx.from?.id ? BigInt(ctx.from.id) : null;
@@ -1269,6 +1316,23 @@ Max Drawdown: ${(dd * 100).toFixed(2)}%
   bot.action(/^leaderboard_signals:(.*)$/, async (ctx) => {
       const window = ctx.match[1] as '1D' | '3D' | '7D' | '30D' | 'ALL' | string;
       await handleSignalLeaderboardCommand(ctx as any, window);
+  });
+
+  bot.action(/^leaderboard_chain:(.*)$/, async (ctx) => {
+      const chain = ctx.match[1];
+      if (!ctx.session) ctx.session = {} as any;
+      if (['both', 'solana', 'bsc'].includes(chain)) {
+          (ctx.session as any).leaderboardChain = chain;
+      }
+
+      const view = (ctx.session as any).leaderboardView || { type: 'GROUP', window: '30D' };
+      if (view.type === 'USER') {
+          await handleUserLeaderboardCommand(ctx as any, view.window);
+      } else if (view.type === 'SIGNAL') {
+          await handleSignalLeaderboardCommand(ctx as any, view.window);
+      } else {
+          await handleGroupLeaderboardCommand(ctx as any, view.window);
+      }
   });
 
   bot.action(/^leaderboard_custom:(GROUP|USER|SIGNAL)$/, async (ctx) => {

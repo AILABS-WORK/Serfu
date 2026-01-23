@@ -13,11 +13,12 @@ export const handleDistributions = async (ctx: Context, view: string = 'mcap') =
     if (!(ctx as any).session) (ctx as any).session = {};
     const session = (ctx as any).session;
     if (!session.distributions) {
-      session.distributions = { timeframe: '30D', targetType: 'OVERALL' };
+      session.distributions = { timeframe: '30D', targetType: 'OVERALL', chain: 'both' };
     }
     const timeframe = session.distributions.timeframe || '30D';
     const targetType = session.distributions.targetType || 'OVERALL';
     const targetId = session.distributions.targetId;
+    const chain = session.distributions.chain || 'both';
     let targetLabel = 'Overall';
     if (targetType === 'GROUP' && targetId) {
       const group = await prisma.group.findUnique({ where: { id: targetId } });
@@ -48,7 +49,7 @@ export const handleDistributions = async (ctx: Context, view: string = 'mcap') =
       loadingMsg = await ctx.reply('⏳ Loading distributions...');
     }
 
-    const stats = await getDistributionStats(ownerTelegramId, timeframe, { type: targetType, id: targetId });
+    const stats = await getDistributionStats(ownerTelegramId, timeframe, { type: targetType, id: targetId }, chain);
 
     if (stats.totalSignals === 0) {
       const emptyMessage = 'No data available for distributions yet.';
@@ -101,8 +102,15 @@ export const handleDistributions = async (ctx: Context, view: string = 'mcap') =
         message += `💡 *BEST RANGE (Win Rate):* ${bestBucket.label.trim()} (${wr.toFixed(0)}% WR)\n`;
       }
 
+      const chainRow = [
+        { text: chain === 'both' ? '✅ Both' : 'Both', callback_data: 'dist_chain:both' },
+        { text: chain === 'solana' ? '✅ SOL' : 'SOL', callback_data: 'dist_chain:solana' },
+        { text: chain === 'bsc' ? '✅ BSC' : 'BSC', callback_data: 'dist_chain:bsc' }
+      ];
+
       keyboard = [
         [{ text: `🎯 Target: ${targetType === 'OVERALL' ? 'Overall' : targetType === 'GROUP' ? 'Group' : 'User'}`, callback_data: 'dist_target' }],
+        chainRow,
         [
           { text: timeframe === '1D' ? '✅ 1D' : '1D', callback_data: 'dist_time:1D' },
           { text: timeframe === '7D' ? '✅ 7D' : '7D', callback_data: 'dist_time:7D' },

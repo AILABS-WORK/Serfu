@@ -8,9 +8,13 @@ type TimeWindow = '1D' | '3D' | '7D' | '30D' | 'ALL' | string;
 
 export const handleGroupLeaderboardCommand = async (ctx: Context, window: TimeWindow = '30D') => {
   try {
+    if (!(ctx as any).session) (ctx as any).session = {};
+    const session = (ctx as any).session;
+    const chain = session.leaderboardChain || 'both';
+    session.leaderboardView = { type: 'GROUP', window };
     const ownerTelegramId = ctx.from?.id ? BigInt(ctx.from.id) : undefined;
     logger.info(`[Leaderboard] Fetching group leaderboard for window ${window}, owner ${ownerTelegramId}`);
-    const statsList = await getLeaderboard('GROUP', window, 'SCORE', 10, ownerTelegramId);
+    const statsList = await getLeaderboard('GROUP', window, 'SCORE', 10, ownerTelegramId, chain);
     logger.info(`[Leaderboard] Got ${statsList.length} groups for ${window}`);
 
     if (statsList.length === 0) {
@@ -30,9 +34,16 @@ export const handleGroupLeaderboardCommand = async (ctx: Context, window: TimeWi
       }
     });
 
+    const chainRow = [
+      { text: chain === 'both' ? '✅ Both' : 'Both', callback_data: 'leaderboard_chain:both' },
+      { text: chain === 'solana' ? '✅ SOL' : 'SOL', callback_data: 'leaderboard_chain:solana' },
+      { text: chain === 'bsc' ? '✅ BSC' : 'BSC', callback_data: 'leaderboard_chain:bsc' }
+    ];
+
     const keyboard = {
       inline_keyboard: [
         ...entityButtons,
+        chainRow,
         [
           { text: '1D', callback_data: 'leaderboard_groups:1D' },
           { text: '3D', callback_data: 'leaderboard_groups:3D' },
@@ -59,9 +70,13 @@ export const handleGroupLeaderboardCommand = async (ctx: Context, window: TimeWi
 
 export const handleUserLeaderboardCommand = async (ctx: Context, window: TimeWindow = '30D') => {
   try {
+    if (!(ctx as any).session) (ctx as any).session = {};
+    const session = (ctx as any).session;
+    const chain = session.leaderboardChain || 'both';
+    session.leaderboardView = { type: 'USER', window };
     const ownerTelegramId = ctx.from?.id ? BigInt(ctx.from.id) : undefined;
     logger.info(`[Leaderboard] Fetching user leaderboard for window ${window}, owner ${ownerTelegramId}`);
-    const statsList = await getLeaderboard('USER', window, 'SCORE', 10, ownerTelegramId);
+    const statsList = await getLeaderboard('USER', window, 'SCORE', 10, ownerTelegramId, chain);
     logger.info(`[Leaderboard] Got ${statsList.length} users for ${window}`);
 
     if (statsList.length === 0) {
@@ -81,9 +96,16 @@ export const handleUserLeaderboardCommand = async (ctx: Context, window: TimeWin
       }
     });
 
+    const chainRow = [
+      { text: chain === 'both' ? '✅ Both' : 'Both', callback_data: 'leaderboard_chain:both' },
+      { text: chain === 'solana' ? '✅ SOL' : 'SOL', callback_data: 'leaderboard_chain:solana' },
+      { text: chain === 'bsc' ? '✅ BSC' : 'BSC', callback_data: 'leaderboard_chain:bsc' }
+    ];
+
     const keyboard = {
       inline_keyboard: [
         ...entityButtons,
+        chainRow,
         [
           { text: '1D', callback_data: 'leaderboard_users:1D' },
           { text: '3D', callback_data: 'leaderboard_users:3D' },
@@ -111,9 +133,13 @@ export const handleUserLeaderboardCommand = async (ctx: Context, window: TimeWin
 
 export const handleSignalLeaderboardCommand = async (ctx: Context, window: TimeWindow = '30D') => {
   try {
+    if (!(ctx as any).session) (ctx as any).session = {};
+    const session = (ctx as any).session;
+    const chain = session.leaderboardChain || 'both';
+    session.leaderboardView = { type: 'SIGNAL', window };
     const ownerTelegramId = ctx.from?.id ? BigInt(ctx.from.id) : undefined;
     logger.info(`[Leaderboard] Fetching signal leaderboard for window ${window}, owner ${ownerTelegramId}`);
-    const signals = await getSignalLeaderboard(window, 10, ownerTelegramId);
+    const signals = await getSignalLeaderboard(window, 10, ownerTelegramId, chain);
     logger.info(`[Leaderboard] Got ${signals.length} signals for ${window}`);
 
     if (signals.length === 0) {
@@ -162,9 +188,16 @@ export const handleSignalLeaderboardCommand = async (ctx: Context, window: TimeW
       }
     });
 
+    const chainRow = [
+      { text: chain === 'both' ? '✅ Both' : 'Both', callback_data: 'leaderboard_chain:both' },
+      { text: chain === 'solana' ? '✅ SOL' : 'SOL', callback_data: 'leaderboard_chain:solana' },
+      { text: chain === 'bsc' ? '✅ BSC' : 'BSC', callback_data: 'leaderboard_chain:bsc' }
+    ];
+
     const keyboard = {
       inline_keyboard: [
         ...signalButtons,
+        chainRow,
         [
           { text: '1D', callback_data: 'leaderboard_signals:1D' },
           { text: '3D', callback_data: 'leaderboard_signals:3D' },

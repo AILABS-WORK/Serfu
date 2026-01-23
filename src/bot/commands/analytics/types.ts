@@ -19,5 +19,6 @@ export interface LiveSignalsCache {
   signals: CachedSignal[];
   fetchedAt: number;
   timeframe: string;
+  chain: 'solana' | 'bsc' | 'both';
 }
 

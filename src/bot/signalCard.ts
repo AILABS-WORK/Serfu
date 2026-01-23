@@ -2,6 +2,7 @@ import { Signal, Prisma } from '../generated/client';
 import { TokenMeta } from '../providers/types';
 import { prisma } from '../db';
 import { analyzeHolders, WhaleAlert } from '../analytics/holders';
+import { getBasicTokenAnalysis } from '../analytics/tokenSniffer';
 import { UIHelper } from '../utils/ui';
 
 // Formatting helpers
@@ -134,8 +135,15 @@ export const generateFirstSignalCard = async (
   sourceLineOverride?: string
 ): Promise<string> => {
   // Data prep
-  const currentPrice = meta.livePrice ?? (meta.marketCap && meta.supply ? meta.marketCap / meta.supply : signal.entryPrice ?? null);
-  const currentMc = meta.liveMarketCap ?? meta.marketCap ?? (currentPrice && meta.supply ? currentPrice * meta.supply : undefined);
+  const derivedSupply =
+    meta.supply ??
+    signal.entrySupply ??
+    (signal.entryMarketCap && signal.entryPrice ? signal.entryMarketCap / signal.entryPrice : undefined);
+  const currentPrice = meta.livePrice ?? (meta.marketCap && derivedSupply ? meta.marketCap / derivedSupply : signal.entryPrice ?? null);
+  const currentMc =
+    meta.liveMarketCap ??
+    (currentPrice && derivedSupply ? currentPrice * derivedSupply : undefined) ??
+    meta.marketCap;
   const entryMcVal = signal.entryMarketCap ?? (signal.entryPrice && signal.entrySupply ? signal.entryPrice * signal.entrySupply : null);
   
   const mcDelta = calcPercentDelta(currentMc ?? null, entryMcVal);
@@ -185,18 +193,39 @@ export const generateFirstSignalCard = async (
     // Ignore holder fetch errors to not break card
   }
 
-  let alertBlock = '';
-  if (whaleAlerts.length > 0) {
-    alertBlock = '\n⚠️ *WHALE ALERT*\n';
-    whaleAlerts.slice(0, 3).forEach(alert => {
-        alertBlock += `• Top Holder #${alert.rankInCurrent} also held *${alert.matchedSignalName}* (${alert.matchedAthMultiple.toFixed(1)}x)\n`;
-    });
+  const basicAnalysis = await getBasicTokenAnalysis(signal.mint);
+
+  const alertLines: string[] = [];
+  whaleAlerts.forEach(alert => {
+    alertLines.push(`• Top Holder #${alert.rankInCurrent} also held *${alert.matchedSignalName}* (${alert.matchedAthMultiple.toFixed(1)}x)`);
+  });
+
+  if (basicAnalysis.riskScore >= 60) {
+    alertLines.push(`• High risk score: ${basicAnalysis.riskScore}/100 (${basicAnalysis.riskLevel})`);
   }
+  if (basicAnalysis.devHoldingsPercent > 5) {
+    alertLines.push(`• Dev holds ${basicAnalysis.devHoldingsPercent.toFixed(1)}% of supply`);
+  }
+  if (basicAnalysis.top10Concentration > 70) {
+    alertLines.push(`• Top 10 holders control ${basicAnalysis.top10Concentration.toFixed(1)}%`);
+  }
+
+  const missingSocials: string[] = [];
+  if (!basicAnalysis.hasWebsite) missingSocials.push('website');
+  if (!basicAnalysis.hasTwitter) missingSocials.push('twitter');
+  if (!basicAnalysis.hasTelegram) missingSocials.push('telegram');
+  if (missingSocials.length > 0) {
+    alertLines.push(`• Missing socials: ${missingSocials.join(', ')}`);
+  }
+
+  const alertBlock = alertLines.length > 0
+    ? `\n⚠️ *SMART ALERTS*\n${alertLines.join('\n')}`
+    : '';
 
   const securityBlock = `
 🛡️ *SECURITY*
 🔒 Auth: Mint ${isMintDisabled} • Freeze ${isFreezeDisabled}
-✅ Verified: ${meta.isVerified ? 'Yes' : 'No'} • Risk: ${audit.isSus ? '⚠️ Sus' : 'Low'}
+✅ Verified: ${meta.isVerified ? 'Yes' : 'No'} • Risk: ${basicAnalysis.riskScore}/100 (${basicAnalysis.riskLevel})
 👑 Top Holders: ${audit.topHoldersPercentage !== undefined ? `${audit.topHoldersPercentage.toFixed(1)}%` : '—'}
 👨‍💻 Dev Balance: ${audit.devBalancePercentage !== undefined ? `${audit.devBalancePercentage.toFixed(1)}%` : '—'} • Migrations: ${audit.devMigrations ?? '—'}
   `.trim();
@@ -273,8 +302,15 @@ export const generateDuplicateSignalCard = (
   currentGroupName: string,
   currentUserName: string
 ): string => {
-  const currentPrice = meta.livePrice ?? (meta.marketCap && meta.supply ? meta.marketCap / meta.supply : signal.entryPrice ?? null);
-  const currentMc = meta.liveMarketCap ?? meta.marketCap ?? (currentPrice && meta.supply ? currentPrice * meta.supply : undefined);
+  const derivedSupply =
+    meta.supply ??
+    signal.entrySupply ??
+    (signal.entryMarketCap && signal.entryPrice ? signal.entryMarketCap / signal.entryPrice : undefined);
+  const currentPrice = meta.livePrice ?? (meta.marketCap && derivedSupply ? meta.marketCap / derivedSupply : signal.entryPrice ?? null);
+  const currentMc =
+    meta.liveMarketCap ??
+    (currentPrice && derivedSupply ? currentPrice * derivedSupply : undefined) ??
+    meta.marketCap;
   const firstMc = firstSignal.entryMarketCap || null;
   const mcChange = calcPercentDelta(currentMc ?? null, firstMc);
   const displayUser = (currentUserName === 'Unknown User' || !signal.userId) ? currentGroupName : `@${currentUserName}`;

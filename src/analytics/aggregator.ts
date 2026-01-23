@@ -1,7 +1,8 @@
 import { prisma } from '../db';
 import { Prisma, Signal, SignalMetric } from '../generated/client';
 import { logger } from '../utils/logger';
-import { geckoTerminal } from '../providers/geckoTerminal';
+import { getMultipleTokenPrices } from '../providers/jupiter';
+import { bitquery } from '../providers/bitquery';
 
 export interface EntityStats {
   id: number;
@@ -78,6 +79,92 @@ const getDateFilter = (timeframe: TimeFrame) => {
 };
 
 const WIN_MULTIPLE = 1.4;
+
+const deriveEntryPrice = (s: SignalWithMetrics): number => {
+  if (s.entryPrice && s.entryPrice > 0) return s.entryPrice;
+  if (s.entryMarketCap && s.entrySupply && s.entrySupply > 0) return s.entryMarketCap / s.entrySupply;
+  return 0;
+};
+
+const refreshAthForSignals = async (signals: SignalWithMetrics[]) => {
+  if (signals.length === 0) return;
+  const uniqueMints = [...new Set(signals.map(s => s.mint))];
+  const priceMap = await getMultipleTokenPrices(uniqueMints);
+  const now = Date.now();
+
+  const mintsToRefresh = new Set<string>();
+  for (const s of signals) {
+    const currentPrice = priceMap[s.mint] ?? 0;
+    if (currentPrice <= 0) continue;
+    const entryPrice = deriveEntryPrice(s);
+    if (entryPrice <= 0) continue;
+
+    const athPrice = s.metrics?.athPrice || 0;
+    const metricsAge = s.metrics?.updatedAt ? now - s.metrics.updatedAt.getTime() : Infinity;
+
+    if (!s.metrics || athPrice <= 0) {
+      mintsToRefresh.add(s.mint);
+      continue;
+    }
+
+    if (currentPrice > athPrice * 1.01) {
+      mintsToRefresh.add(s.mint);
+      continue;
+    }
+
+    if (metricsAge > 2 * 60 * 1000 && currentPrice > athPrice * 0.95) {
+      mintsToRefresh.add(s.mint);
+    }
+  }
+
+  if (mintsToRefresh.size === 0) return;
+
+  const athMap = await bitquery.getBulkTokenATH([...mintsToRefresh]);
+  for (const s of signals) {
+    const ath = athMap.get(s.mint);
+    if (!ath || ath.athPrice <= 0) continue;
+
+    const entryPrice = deriveEntryPrice(s);
+    if (entryPrice <= 0) continue;
+
+    const athMultiple = ath.athPrice / entryPrice;
+    let athMarketCap = 0;
+    if (s.entrySupply && s.entrySupply > 0) {
+      athMarketCap = ath.athPrice * s.entrySupply;
+    } else if (s.entryMarketCap && s.entryMarketCap > 0) {
+      athMarketCap = s.entryMarketCap * athMultiple;
+    } else if (ath.athMarketCap > 0) {
+      athMarketCap = ath.athMarketCap;
+    }
+
+    await prisma.signalMetric.upsert({
+      where: { signalId: s.id },
+      update: {
+        athMultiple,
+        athPrice: ath.athPrice,
+        athMarketCap,
+        updatedAt: new Date()
+      },
+      create: {
+        signalId: s.id,
+        currentPrice: entryPrice,
+        currentMultiple: 1.0,
+        athMultiple,
+        athPrice: ath.athPrice,
+        athMarketCap,
+        athAt: s.detectedAt,
+        timeToAth: 0
+      }
+    });
+
+    if (s.metrics) {
+      s.metrics.athMultiple = athMultiple;
+      s.metrics.athPrice = ath.athPrice;
+      s.metrics.athMarketCap = athMarketCap;
+      s.metrics.updatedAt = new Date();
+    }
+  }
+};
 
 const calculateStats = (signals: SignalWithMetrics[]): EntityStats => {
   if (!signals.length) {
@@ -169,45 +256,12 @@ const calculateStats = (signals: SignalWithMetrics[]): EntityStats => {
   }
 
   for (const s of signals) {
-    // OPTIMIZED: Calculate ATH from price samples if metrics missing or incomplete
-    let mult = 0;
-    let dd = 0;
-    let athAt: Date | null = null;
-    
-    if (s.metrics) {
-      // Use cached metrics if available
-      mult = s.metrics.athMultiple || 0;
-      dd = s.metrics.maxDrawdown || 0;
-      athAt = s.metrics.athAt || null;
-    } else if (s.priceSamples && s.priceSamples.length > 0 && s.entryMarketCap) {
-      // Calculate from price samples (fallback for missing metrics)
-      const entryMc = s.entryMarketCap || 0;
-      let maxMc = entryMc;
-      let maxMcAt: Date | null = null;
-      
-      for (const sample of s.priceSamples) {
-        if (sample.marketCap && sample.marketCap > maxMc) {
-          maxMc = sample.marketCap;
-          maxMcAt = sample.sampledAt;
-        }
-      }
-      
-      if (maxMc > entryMc && entryMc > 0) {
-        mult = maxMc / entryMc;
-        athAt = maxMcAt || s.detectedAt;
-      } else {
-        mult = 1; // No gain from entry
-      }
-      
-      // Estimate drawdown from price samples (rough approximation)
-      const latestSample = s.priceSamples[s.priceSamples.length - 1];
-      if (latestSample?.marketCap && maxMc > 0) {
-        dd = (latestSample.marketCap - maxMc) / maxMc;
-      }
-    } else {
-      // No metrics and no samples - skip for accuracy
-      continue;
-    }
+    // Cache-only metrics: skip signals without metrics
+    if (!s.metrics) continue;
+
+    let mult = s.metrics.athMultiple || 0;
+    let dd = s.metrics.maxDrawdown || 0;
+    let athAt: Date | null = s.metrics.athAt || null;
     multiples.push(mult);
     totalMult += mult;
     if (mult >= WIN_MULTIPLE) wins++;
@@ -448,7 +502,7 @@ const calculateStats = (signals: SignalWithMetrics[]): EntityStats => {
 // AGGREGATION HELPERS
 // ----------------------------------------------------------------------------
 
-export const getGroupStats = async (groupId: number, timeframe: TimeFrame): Promise<EntityStats | null> => {
+export const getGroupStats = async (groupId: number, timeframe: TimeFrame, chain: 'solana' | 'bsc' | 'both' = 'both'): Promise<EntityStats | null> => {
   // 1. Get the target group
   const group = await prisma.group.findUnique({ where: { id: groupId } });
   if (!group) return null;
@@ -469,7 +523,8 @@ export const getGroupStats = async (groupId: number, timeframe: TimeFrame): Prom
   const signals = await prisma.signal.findMany({
     where: {
       groupId: { in: groupIds },
-      detectedAt: { gte: since }
+      detectedAt: { gte: since },
+      ...(chain !== 'both' ? { chain } : {})
     },
     include: { 
       metrics: true, 
@@ -477,14 +532,9 @@ export const getGroupStats = async (groupId: number, timeframe: TimeFrame): Prom
     }
   });
 
-  // Enrich signals using centralized logic
-  const { enrichSignalsBatch, enrichSignalsWithCurrentPrice } = await import('./metrics');
-  
-  // Batch enrich ATH metrics for stale/missing signals
-  await enrichSignalsBatch(signals as any);
-  
-  // Enrich with current price for accurate Paper Hands / Diamond Hands logic
-  await enrichSignalsWithCurrentPrice(signals as any);
+  await refreshAthForSignals(signals as any);
+
+  // Cache-only: do not enrich here (background job updates metrics)
 
   // Calculate stats using fully enriched signals
   const stats = calculateStats(signals);
@@ -494,7 +544,7 @@ export const getGroupStats = async (groupId: number, timeframe: TimeFrame): Prom
   return stats;
 };
 
-export const getUserStats = async (userId: number, timeframe: TimeFrame): Promise<EntityStats | null> => {
+export const getUserStats = async (userId: number, timeframe: TimeFrame, chain: 'solana' | 'bsc' | 'both' = 'both'): Promise<EntityStats | null> => {
   const user = await prisma.user.findUnique({ where: { id: userId } });
   if (!user) return null;
 
@@ -503,19 +553,15 @@ export const getUserStats = async (userId: number, timeframe: TimeFrame): Promis
   const signals = await prisma.signal.findMany({
     where: {
       userId,
-      detectedAt: { gte: since }
+      detectedAt: { gte: since },
+      ...(chain !== 'both' ? { chain } : {})
     },
     include: { metrics: true, priceSamples: { orderBy: { sampledAt: 'asc' }, take: 1 } }
   });
 
-  // Enrich signals using centralized logic
-  const { enrichSignalsBatch, enrichSignalsWithCurrentPrice } = await import('./metrics');
-  
-  // Batch enrich ATH metrics for stale/missing signals
-  await enrichSignalsBatch(signals as any);
-  
-  // Enrich with current price for accurate Paper Hands / Diamond Hands logic
-  await enrichSignalsWithCurrentPrice(signals as any);
+  await refreshAthForSignals(signals as any);
+
+  // Cache-only: do not enrich here (background job updates metrics)
 
   const stats = calculateStats(signals);
   stats.id = user.id;
@@ -529,7 +575,8 @@ export const getLeaderboard = async (
   timeframe: TimeFrame, 
   sortBy: 'PNL' | 'WINRATE' | 'SCORE' = 'SCORE',
   limit = 10,
-  ownerTelegramId?: bigint
+  ownerTelegramId?: bigint,
+  chain: 'solana' | 'bsc' | 'both' = 'both'
 ): Promise<EntityStats[]> => {
   const since = getDateFilter(timeframe);
   
@@ -557,34 +604,25 @@ export const getLeaderboard = async (
     };
   }
 
-  // 1. Fetch all signals in window (include those without metrics - will calculate from samples)
-  // OPTIMIZED: Prefer signals with recent metrics, but include all for accuracy
+  // 1. Fetch all signals in window (cache-only)
   const signals = await prisma.signal.findMany({
     where: {
       detectedAt: { gte: since },
-      ...scopeFilter
+      ...scopeFilter,
+      ...(chain !== 'both' ? { chain } : {})
     },
     include: { metrics: true, group: true, user: true, priceSamples: { orderBy: { sampledAt: 'asc' }, take: 1 } }
   });
   
-  // Filter: Only use signals with metrics OR sufficient price samples for accurate calculation
-  const validSignals = signals.filter(s => {
-    if (s.metrics) return true; // Has metrics = good
-    if (s.priceSamples && s.priceSamples.length > 0) return true; // Has samples = can calculate
-    return false; // No metrics and no samples = skip (inaccurate)
-  });
+  // Cache-only: only use signals with stored metrics
+  const validSignals = signals.filter(s => !!s.metrics);
 
   // 2. Group by Entity (Deduplicating Groups by ChatId)
   const entityMap = new Map<string, typeof validSignals>();
   const idMap = new Map<string, number>(); // Map Key -> Representative ID
   const nameMap = new Map<string, string>();
 
-  // Use batch enrichment for all valid signals to ensure accurate scores
-  const { enrichSignalsBatch, enrichSignalsWithCurrentPrice } = await import('./metrics');
-  
-  // Need to cast to any to match SignalWithRelations type which requires metrics (we filtered for it or will calc)
-  await enrichSignalsBatch(validSignals as any);
-  await enrichSignalsWithCurrentPrice(validSignals as any);
+  // Cache-only: no enrichment here
 
   for (const s of validSignals) {
     let key: string;
@@ -634,7 +672,8 @@ export const getLeaderboard = async (
 export const getSignalLeaderboard = async (
   timeframe: TimeFrame, 
   limit = 10,
-  ownerTelegramId?: bigint
+  ownerTelegramId?: bigint,
+  chain: 'solana' | 'bsc' | 'both' = 'both'
 ): Promise<Array<{
   id: number,
   mint: string,
@@ -678,6 +717,7 @@ export const getSignalLeaderboard = async (
     where: {
       detectedAt: { gte: since },
       ...scopeFilter,
+      ...(chain !== 'both' ? { chain } : {}),
     },
     include: { 
       metrics: true, 
@@ -687,59 +727,29 @@ export const getSignalLeaderboard = async (
     }
   });
   
-  // OPTIMIZATION: Only enrich signals that really need it
-  // Background job should handle most ATH calculations, so we only do on-demand for stale/missing
-  const now = Date.now();
-  const STALE_THRESHOLD_MS = 15 * 60 * 1000; // 15 minutes - only enrich if very stale
-  
-  const signalsToEnrich = signals.filter(s => {
-    if (!s.metrics) return true; // No metrics = needs calculation
-    const metricsAge = now - s.metrics.updatedAt.getTime();
-    return metricsAge > STALE_THRESHOLD_MS; // Only enrich if > 15 minutes old
-  });
-  
-  logger.info(`[SignalLeaderboard] ${signalsToEnrich.length}/${signals.length} signals need enrichment (others use cached ATH)`);
-  
-  // Enrich with real-time ATH calculations using centralized logic
-  const { enrichSignalMetrics, enrichSignalsWithCurrentPrice } = await import('./metrics');
-  
-  // Use batch enrichment for ATH (optimized for speed) - only for stale/missing
-  if (signalsToEnrich.length > 0) {
-  await import('./metrics').then(m => m.enrichSignalsBatch(signalsToEnrich as any));
-    
-    // Re-fetch signals to get updated metrics from DB
-    const enrichedSignalIds = signalsToEnrich.map(s => s.id);
-    const enrichedSignals = await prisma.signal.findMany({
-      where: { id: { in: enrichedSignalIds } },
-      include: { metrics: true }
-    });
-    
-    // Update in-memory signals with fresh metrics
-    const metricsMap = new Map(enrichedSignals.map(s => [s.id, s.metrics]));
-    for (const s of signals) {
-      if (metricsMap.has(s.id)) {
-        s.metrics = metricsMap.get(s.id)!;
-      }
-    }
+  // Cache-only: filter out signals missing metrics, and log if any missing
+  const missingMetricsCount = signals.filter(s => !s.metrics).length;
+  if (missingMetricsCount > 0) {
+    logger.info(`[SignalLeaderboard] ${missingMetricsCount}/${signals.length} signals missing metrics (background job will fill)`);
   }
+  const signalsWithMetrics = signals.filter(s => !!s.metrics);
   
   // Re-sort by ATH after enrichment across the full timeframe
-  signals.sort((a, b) => {
+  signalsWithMetrics.sort((a, b) => {
     const aAth = a.metrics?.athMultiple || 0;
     const bAth = b.metrics?.athMultiple || 0;
     return bAth - aAth;
   });
   
   // Take top limit after sorting
-  const topSignals = signals.slice(0, limit);
-
-  // Get current market caps for all signals (using centralized helper)
-  await enrichSignalsWithCurrentPrice(topSignals as any);
+  const topSignals = signalsWithMetrics.slice(0, limit);
+  const topMints = [...new Set(topSignals.map(s => s.mint))];
+  const currentPriceMap = await getMultipleTokenPrices(topMints);
 
   return topSignals.map(s => {
     // Use enriched metrics
-    const currentMc = s.metrics?.currentMarketCap || null;
-    const currentPrice = s.metrics?.currentPrice || null;
+    const currentPrice = currentPriceMap[s.mint] ?? s.metrics?.currentPrice ?? null;
+    const currentMc = currentPrice && s.entrySupply ? currentPrice * s.entrySupply : (s.metrics?.currentMarketCap || null);
     const athMarketCap = s.metrics?.athMarketCap || null;
     
     // Calculate time to ATH in minutes (with validation to prevent negative values)
@@ -852,7 +862,8 @@ export interface DistributionStats {
 export const getDistributionStats = async (
   ownerTelegramId: bigint, 
   timeframe: TimeFrame,
-  target?: { type: 'OVERALL' | 'GROUP' | 'USER'; id?: number }
+  target?: { type: 'OVERALL' | 'GROUP' | 'USER'; id?: number },
+  chain: 'solana' | 'bsc' | 'both' = 'both'
 ): Promise<DistributionStats> => {
   const since = getDateFilter(timeframe);
   
@@ -882,7 +893,8 @@ export const getDistributionStats = async (
       OR: [
           { chatId: { in: ownedChatIds } },
           { id: { in: forwardedSignalIds } }
-      ]
+      ],
+      ...(chain !== 'both' ? { chain } : {})
   };
 
   if (targetType === 'GROUP' && target?.id && allowedGroupIds.has(target.id)) {
@@ -891,8 +903,7 @@ export const getDistributionStats = async (
     scopeFilter = { userId: target.id };
   }
 
-  // FIXED: Include all signals, not just those with metrics, to support 1D timeframe
-  // Real-time ATH calculation will be done for signals without metrics or with stale metrics
+  // Cache-only: include signals, but skip those missing metrics during computation
   const signals = await prisma.signal.findMany({
     where: {
       detectedAt: { gte: since },
@@ -910,40 +921,9 @@ export const getDistributionStats = async (
 
   logger.info(`[DistributionStats] Processing ${signals.length} signals for distribution stats`);
   
-  // OPTIMIZATION: Only enrich signals that really need it
-  // Background job should handle most ATH calculations, so we only do on-demand for stale/missing
-  const { enrichSignalMetrics } = await import('./metrics');
-  
-  // Filter signals that need enrichment (missing or very stale metrics)
-  const now = Date.now();
-  const STALE_THRESHOLD_MS = 15 * 60 * 1000; // 15 minutes - only enrich if very stale
-  
-  const signalsToEnrich = signals.filter(s => {
-    if (!s.metrics) return true; // No metrics = needs calculation
-    const metricsAge = now - s.metrics.updatedAt.getTime();
-    return metricsAge > STALE_THRESHOLD_MS; // Only enrich if > 15 minutes old
-  });
-  
-  logger.info(`[DistributionStats] ${signalsToEnrich.length}/${signals.length} signals need enrichment (others use cached ATH)`);
-  
-  // Use batch enrichment for ATH metrics (optimized for speed) - only for stale/missing
-  if (signalsToEnrich.length > 0) {
-    await import('./metrics').then(m => m.enrichSignalsBatch(signalsToEnrich as any));
-    
-    // Re-fetch signals to get updated metrics from DB
-    const enrichedSignalIds = signalsToEnrich.map(s => s.id);
-    const enrichedSignals = await prisma.signal.findMany({
-      where: { id: { in: enrichedSignalIds } },
-      include: { metrics: true }
-    });
-    
-    // Update in-memory signals with fresh metrics
-    const metricsMap = new Map(enrichedSignals.map(s => [s.id, s.metrics]));
-    for (const s of signals) {
-      if (metricsMap.has(s.id)) {
-        s.metrics = metricsMap.get(s.id)!;
-      }
-    }
+  const missingMetricsCount = signals.filter(s => !s.metrics).length;
+  if (missingMetricsCount > 0) {
+    logger.info(`[DistributionStats] ${missingMetricsCount}/${signals.length} signals missing metrics (background job will fill)`);
   }
 
   // 3. Process Distributions - Initialize all stats

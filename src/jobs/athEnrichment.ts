@@ -1,7 +1,8 @@
 import { prisma } from '../db';
 import { logger } from '../utils/logger';
-import { enrichSignalMetrics, enrichSignalsWithCurrentPrice } from '../analytics/metrics';
+import { enrichSignalsWithCurrentPrice } from '../analytics/metrics';
 import { getMultipleTokenPrices } from '../providers/jupiter';
+import { bitquery } from '../providers/bitquery';
 
 /**
  * Smart ATH enrichment job that runs periodically.
@@ -138,41 +139,68 @@ export const runAthEnrichmentCycle = async () => {
         // Step 4: Enrich signals with current price first (update in-memory)
         await enrichSignalsWithCurrentPrice(signalsToEnrich as any);
 
-        // Step 5: Calculate ATH in optimized batches
-        const BATCH_SIZE = 3; // Process 3 at a time
-        const DELAY_BETWEEN_BATCHES_MS = 3000; // 3 seconds between batches
-        const DELAY_BETWEEN_ITEMS_MS = 1000; // 1 second between items
+        // Step 5: Calculate ATH in bulk via Bitquery
+        const uniqueEnrichMints = [...new Set(signalsToEnrich.map(s => s.mint))];
+        const BATCH_SIZE = 100;
 
         let enriched = 0;
         let failed = 0;
 
-        for (let i = 0; i < signalsToEnrich.length; i += BATCH_SIZE) {
-            const batch = signalsToEnrich.slice(i, i + BATCH_SIZE);
-            
-            // Process items in batch with delay
-            for (let j = 0; j < batch.length; j++) {
-                const signal = batch[j];
-                const currentPrice = priceMap[signal.mint];
-                
-                if (currentPrice !== null && currentPrice > 0) {
-                    try {
-                        await enrichSignalMetrics(signal as any, false, currentPrice);
-                        enriched++;
-                    } catch (err) {
-                        logger.debug(`[ATH Enrichment] Failed to enrich signal ${signal.id}: ${err}`);
+        for (let i = 0; i < uniqueEnrichMints.length; i += BATCH_SIZE) {
+            const batch = uniqueEnrichMints.slice(i, i + BATCH_SIZE);
+            const athMap = await bitquery.getBulkTokenATH(batch);
+
+            for (const mint of batch) {
+                const athData = athMap.get(mint);
+                if (!athData || athData.athPrice <= 0) {
+                    failed++;
+                    continue;
+                }
+
+                const mintSignals = signalsToEnrich.filter(s => s.mint === mint);
+                for (const sig of mintSignals) {
+                    const entryPrice = sig.entryPrice || 0;
+                    const entrySupply = sig.entrySupply || 0;
+                    const entryMc = sig.entryMarketCap || 0;
+
+                    if (entryPrice <= 0) {
                         failed++;
+                        continue;
                     }
+
+                    const athMultiple = athData.athPrice / entryPrice;
+                    let athMarketCap = 0;
+                    if (entrySupply > 0) {
+                        athMarketCap = athData.athPrice * entrySupply;
+                    } else if (entryMc > 0) {
+                        athMarketCap = entryMc * athMultiple;
+                    } else if (athData.athMarketCap > 0) {
+                        athMarketCap = athData.athMarketCap;
+                    }
+
+                    await prisma.signalMetric.upsert({
+                        where: { signalId: sig.id },
+                        update: {
+                            athMultiple,
+                            athPrice: athData.athPrice,
+                            athMarketCap,
+                            athAt: sig.metrics?.athAt || sig.detectedAt,
+                            updatedAt: new Date()
+                        },
+                        create: {
+                            signalId: sig.id,
+                            currentPrice: sig.metrics?.currentPrice || entryPrice,
+                            currentMultiple: sig.metrics?.currentMultiple || 1.0,
+                            currentMarketCap: sig.metrics?.currentMarketCap || entryMc || null,
+                            athMultiple,
+                            athPrice: athData.athPrice,
+                            athMarketCap,
+                            athAt: sig.metrics?.athAt || sig.detectedAt,
+                            timeToAth: sig.metrics?.timeToAth || 0
+                        }
+                    });
+                    enriched++;
                 }
-                
-                // Delay between items (except last)
-                if (j < batch.length - 1) {
-                    await new Promise(resolve => setTimeout(resolve, DELAY_BETWEEN_ITEMS_MS));
-                }
-            }
-            
-            // Delay between batches (except last)
-            if (i + BATCH_SIZE < signalsToEnrich.length) {
-                await new Promise(resolve => setTimeout(resolve, DELAY_BETWEEN_BATCHES_MS));
             }
         }
 

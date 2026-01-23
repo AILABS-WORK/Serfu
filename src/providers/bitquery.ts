@@ -28,6 +28,22 @@ export interface BitqueryOHLCV {
   volume: number;
 }
 
+export interface BitqueryBulkAthResult {
+  mint: string;
+  athPrice: number;
+  athMarketCap: number;
+  startingPrice: number;
+  startingMarketCap: number;
+  name?: string;
+  symbol?: string;
+}
+
+export interface BitqueryFirstBuyer {
+  wallet: string;
+  amount: number;
+  timestamp: Date;
+}
+
 export class BitqueryProvider {
   private apiKey: string;
   private disabled: boolean = false;
@@ -216,6 +232,356 @@ export class BitqueryProvider {
         return [];
       }
       logger.error(`Error fetching Bitquery OHLCV for ${mint}:`, error);
+      return [];
+    }
+  }
+
+  /**
+   * Bulk ATH and starting market cap for multiple tokens in one query.
+   * Uses a fixed 1B supply assumption from Bitquery examples.
+   */
+  async getBulkTokenATH(mints: string[]): Promise<Map<string, BitqueryBulkAthResult>> {
+    const resultsMap = new Map<string, BitqueryBulkAthResult>();
+    if (!this.apiKey || this.disabled || mints.length === 0) return resultsMap;
+
+    const query = `
+      query GetAthMarketCap($tokens: [String!]!) {
+        Solana(dataset: combined) {
+          DEXTradeByTokens(
+            limitBy: { by: Trade_Side_Currency_MintAddress, count: 1 }
+            where: {
+              Trade: {
+                Currency: { MintAddress: { in: $tokens } }
+                Side: { AmountInUSD: { gt: "1" } }
+              }
+            }
+          ) {
+            Trade {
+              Currency {
+                MintAddress
+                Name
+                Symbol
+              }
+              PriceInUSD(maximum: Trade_PriceInUSD)
+              Starting_Price: PriceInUSD(minimum: Block_Slot)
+            }
+            max: quantile(of: Trade_PriceInUSD, level: 0.98)
+            quantile_price_ATH_Marketcap: calculate(expression: "$max * 1000000000")
+            Starting_Marketcap: calculate(expression: "$Trade_Starting_Price * 1000000000")
+          }
+        }
+      }
+    `;
+
+    try {
+      const response = await axios.post(
+        BITQUERY_ENDPOINT,
+        {
+          query,
+          variables: { tokens: mints },
+        },
+        {
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${this.apiKey}`,
+          },
+        }
+      );
+
+      if (response.data.errors) {
+        logger.error('Bitquery bulk ATH errors:', response.data.errors);
+        return resultsMap;
+      }
+
+      const rows = response.data.data?.Solana?.DEXTradeByTokens || [];
+      for (const row of rows) {
+        const mint = row?.Trade?.Currency?.MintAddress;
+        if (!mint) continue;
+        const athPrice = Number(row.max || row?.Trade?.PriceInUSD || 0);
+        const startingPrice = Number(row?.Trade?.Starting_Price || 0);
+        const athMarketCap = Number(row.quantile_price_ATH_Marketcap || 0);
+        const startingMarketCap = Number(row.Starting_Marketcap || 0);
+
+        resultsMap.set(mint, {
+          mint,
+          athPrice,
+          athMarketCap,
+          startingPrice,
+          startingMarketCap,
+          name: row?.Trade?.Currency?.Name || undefined,
+          symbol: row?.Trade?.Currency?.Symbol || undefined,
+        });
+      }
+
+      return resultsMap;
+    } catch (error: any) {
+      if (error?.response?.status === 401) {
+        this.disabled = true;
+        logger.warn('Bitquery unauthorized (401). Disabling Bitquery for this runtime.');
+        return resultsMap;
+      }
+      logger.error('Error fetching Bitquery bulk ATH:', error);
+      return resultsMap;
+    }
+  }
+
+  /**
+   * Get ATH price and price change percentages (24h/7d/30d).
+   */
+  async getATHWithPriceChange(mint: string): Promise<{
+    athPrice: number;
+    currentPrice: number;
+    change24h: number;
+    change7d: number;
+    change30d: number;
+  }> {
+    if (!this.apiKey || this.disabled) {
+      return { athPrice: 0, currentPrice: 0, change24h: 0, change7d: 0, change30d: 0 };
+    }
+
+    const query = `
+      query ($token: String) {
+        Solana(dataset: combined) {
+          DEXTradeByTokens(
+            where: {Trade: {Side: {Currency: {MintAddress: {in: ["11111111111111111111111111111111", "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB", "So11111111111111111111111111111111111111112"]}}, AmountInUSD: {gt: "10"}}, Currency: {MintAddress: {is: $token}}, PriceAsymmetry: {lt: 0.01}}, Transaction: {Result: {Success: true}}}
+            limit: {count: 1}
+          ) {
+            Trade {
+              Price_24h_ago: PriceInUSD(
+                minimum: Block_Slot
+                if: {Block: {Time: {since_relative: {hours_ago: 24}}}}
+              )
+              Price_7d_ago: PriceInUSD(
+                minimum: Block_Slot
+                if: {Block: {Time: {since_relative: {days_ago: 7}}}}
+              )
+              Price_30d_ago: PriceInUSD(
+                minimum: Block_Slot
+                if: {Block: {Time: {since_relative: {days_ago: 30}}}}
+              )
+              CurrentPrice: PriceInUSD(maximum: Block_Slot)
+            }
+            change24hr: calculate(
+              expression: "(($Trade_CurrentPrice - $Trade_Price_24h_ago) / $Trade_Price_24h_ago) * 100"
+            )
+            change7d: calculate(
+              expression: "(($Trade_CurrentPrice - $Trade_Price_7d_ago) / $Trade_Price_7d_ago) * 100"
+            )
+            change30d: calculate(
+              expression: "(($Trade_CurrentPrice - $Trade_Price_30d_ago) / $Trade_Price_30d_ago) * 100"
+            )
+            aATH: quantile(of: Trade_PriceInUSD, level: 0.95)
+          }
+        }
+      }
+    `;
+
+    try {
+      const response = await axios.post(
+        BITQUERY_ENDPOINT,
+        { query, variables: { token: mint } },
+        {
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${this.apiKey}`,
+          },
+        }
+      );
+
+      if (response.data.errors) {
+        logger.error('Bitquery ATH+price change errors:', response.data.errors);
+        return { athPrice: 0, currentPrice: 0, change24h: 0, change7d: 0, change30d: 0 };
+      }
+
+      const row = response.data.data?.Solana?.DEXTradeByTokens?.[0];
+      return {
+        athPrice: Number(row?.aATH || 0),
+        currentPrice: Number(row?.Trade?.CurrentPrice || 0),
+        change24h: Number(row?.change24hr || 0),
+        change7d: Number(row?.change7d || 0),
+        change30d: Number(row?.change30d || 0),
+      };
+    } catch (error: any) {
+      if (error?.response?.status === 401) {
+        this.disabled = true;
+        logger.warn('Bitquery unauthorized (401). Disabling Bitquery for this runtime.');
+        return { athPrice: 0, currentPrice: 0, change24h: 0, change7d: 0, change30d: 0 };
+      }
+      logger.error('Error fetching Bitquery ATH+price change:', error);
+      return { athPrice: 0, currentPrice: 0, change24h: 0, change7d: 0, change30d: 0 };
+    }
+  }
+
+  /**
+   * Get max/min prices since a timestamp for drawdown calculations.
+   */
+  async getPriceExtremes(mint: string, since: Date): Promise<{
+    maxPrice: number;
+    maxAt: Date;
+    minPrice: number;
+    minAt: Date;
+  }> {
+    if (!this.apiKey || this.disabled) {
+      return { maxPrice: 0, maxAt: since, minPrice: 0, minAt: since };
+    }
+
+    const query = `
+      query TokenPriceExtremes($mint: String!, $since: DateTime!) {
+        Solana(dataset: combined) {
+          MaxTrade: DEXTradeByTokens(
+            limit: { count: 1 }
+            orderBy: { descendingByField: "Trade_PriceInUSD" }
+            where: {
+              Block: { Time: { since: $since } }
+              Trade: { Currency: { MintAddress: { is: $mint } } }
+              PriceAsymmetry: { lt: 0.1 }
+              AmountInUSD: { gt: "1" }
+            }
+          ) {
+            Block {
+              Time
+            }
+            Trade {
+              PriceInUSD
+            }
+          }
+          MinTrade: DEXTradeByTokens(
+            limit: { count: 1 }
+            orderBy: { ascendingByField: "Trade_PriceInUSD" }
+            where: {
+              Block: { Time: { since: $since } }
+              Trade: { Currency: { MintAddress: { is: $mint } } }
+              PriceAsymmetry: { lt: 0.1 }
+              AmountInUSD: { gt: "1" }
+            }
+          ) {
+            Block {
+              Time
+            }
+            Trade {
+              PriceInUSD
+            }
+          }
+          Aggregates: DEXTradeByTokens(
+            where: {
+              Block: { Time: { since: $since } }
+              Trade: { Currency: { MintAddress: { is: $mint } } }
+            }
+          ) {
+            maxPrice: PriceInUSD(maximum: Trade_PriceInUSD)
+            minPrice: PriceInUSD(minimum: Trade_PriceInUSD)
+            maxTime: Time(maximum: Block_Time)
+            minTime: Time(minimum: Block_Time)
+          }
+        }
+      }
+    `;
+
+    try {
+      const response = await axios.post(
+        BITQUERY_ENDPOINT,
+        { query, variables: { mint, since: since.toISOString() } },
+        {
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${this.apiKey}`,
+          },
+        }
+      );
+
+      if (response.data.errors) {
+        logger.error('Bitquery price extremes errors:', response.data.errors);
+        return { maxPrice: 0, maxAt: since, minPrice: 0, minAt: since };
+      }
+
+      const maxRow = response.data.data?.Solana?.MaxTrade?.[0];
+      const minRow = response.data.data?.Solana?.MinTrade?.[0];
+      const aggRow = response.data.data?.Solana?.Aggregates?.[0];
+
+      const maxPrice = Number(maxRow?.Trade?.PriceInUSD || aggRow?.maxPrice || 0);
+      const minPrice = Number(minRow?.Trade?.PriceInUSD || aggRow?.minPrice || 0);
+      const maxAt = maxRow?.Block?.Time ? new Date(maxRow.Block.Time) : (aggRow?.maxTime ? new Date(aggRow.maxTime) : since);
+      const minAt = minRow?.Block?.Time ? new Date(minRow.Block.Time) : (aggRow?.minTime ? new Date(aggRow.minTime) : since);
+
+      return {
+        maxPrice,
+        maxAt,
+        minPrice,
+        minAt,
+      };
+    } catch (error: any) {
+      if (error?.response?.status === 401) {
+        this.disabled = true;
+        logger.warn('Bitquery unauthorized (401). Disabling Bitquery for this runtime.');
+        return { maxPrice: 0, maxAt: since, minPrice: 0, minAt: since };
+      }
+      logger.error('Error fetching Bitquery price extremes:', error);
+      return { maxPrice: 0, maxAt: since, minPrice: 0, minAt: since };
+    }
+  }
+
+  /**
+   * Get first 100 buyers of a token.
+   */
+  async getFirst100Buyers(mint: string): Promise<BitqueryFirstBuyer[]> {
+    if (!this.apiKey || this.disabled) return [];
+
+    const query = `
+      query First100Buyers($token: String!) {
+        Solana {
+          DEXTrades(
+            where: {Trade: {Buy: {Currency: {MintAddress: {is: $token}}}}}
+            limit: { count: 100 }
+            orderBy: { ascending: Block_Time }
+          ) {
+            Block {
+              Time
+            }
+            Trade {
+              Buy {
+                Amount
+                Account {
+                  Token {
+                    Owner
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    `;
+
+    try {
+      const response = await axios.post(
+        BITQUERY_ENDPOINT,
+        { query, variables: { token: mint } },
+        {
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${this.apiKey}`,
+          },
+        }
+      );
+
+      if (response.data.errors) {
+        logger.error('Bitquery first buyers errors:', response.data.errors);
+        return [];
+      }
+
+      const rows = response.data.data?.Solana?.DEXTrades || [];
+      return rows.map((row: any) => ({
+        wallet: row?.Trade?.Buy?.Account?.Token?.Owner || 'unknown',
+        amount: Number(row?.Trade?.Buy?.Amount || 0),
+        timestamp: row?.Block?.Time ? new Date(row.Block.Time) : new Date(0)
+      })).filter((b: BitqueryFirstBuyer) => b.wallet !== 'unknown');
+    } catch (error: any) {
+      if (error?.response?.status === 401) {
+        this.disabled = true;
+        logger.warn('Bitquery unauthorized (401). Disabling Bitquery for this runtime.');
+        return [];
+      }
+      logger.error('Error fetching Bitquery first buyers:', error);
       return [];
     }
   }
