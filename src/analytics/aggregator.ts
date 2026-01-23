@@ -695,11 +695,30 @@ export const getSignalLeaderboard = async (
     return metricsAge > 5 * 60 * 1000; // > 5 minutes old = recalculate
   });
   
+  logger.info(`[SignalLeaderboard] Enriching ${signalsToEnrich.length}/${signals.length} signals with ATH metrics`);
+  
   // Enrich with real-time ATH calculations using centralized logic
   const { enrichSignalMetrics, enrichSignalsWithCurrentPrice } = await import('./metrics');
   
-  // Use batch enrichment for ATH
-  await import('./metrics').then(m => m.enrichSignalsBatch(signalsToEnrich as any));
+  // Use batch enrichment for ATH (optimized for speed)
+  if (signalsToEnrich.length > 0) {
+    await import('./metrics').then(m => m.enrichSignalsBatch(signalsToEnrich as any));
+    
+    // Re-fetch signals to get updated metrics from DB
+    const enrichedSignalIds = signalsToEnrich.map(s => s.id);
+    const enrichedSignals = await prisma.signal.findMany({
+      where: { id: { in: enrichedSignalIds } },
+      include: { metrics: true }
+    });
+    
+    // Update in-memory signals with fresh metrics
+    const metricsMap = new Map(enrichedSignals.map(s => [s.id, s.metrics]));
+    for (const s of signals) {
+      if (metricsMap.has(s.id)) {
+        s.metrics = metricsMap.get(s.id)!;
+      }
+    }
+  }
   
   // Re-sort by ATH after enrichment across the full timeframe
   signals.sort((a, b) => {
@@ -886,11 +905,40 @@ export const getDistributionStats = async (
     }
   });
 
+  logger.info(`[DistributionStats] Processing ${signals.length} signals for distribution stats`);
+  
   // Enrich signals with current price and ATH metrics using centralized logic
   const { enrichSignalMetrics } = await import('./metrics');
   
-  // Use batch enrichment for ATH metrics
-  await import('./metrics').then(m => m.enrichSignalsBatch(signals as any));
+  // Filter signals that need enrichment (missing or stale metrics)
+  const now = Date.now();
+  const signalsToEnrich = signals.filter(s => {
+    if (!s.metrics) return true;
+    const metricsAge = now - s.metrics.updatedAt.getTime();
+    return metricsAge > 5 * 60 * 1000; // > 5 minutes old
+  });
+  
+  logger.info(`[DistributionStats] Enriching ${signalsToEnrich.length}/${signals.length} signals with ATH metrics`);
+  
+  // Use batch enrichment for ATH metrics (optimized for speed)
+  if (signalsToEnrich.length > 0) {
+    await import('./metrics').then(m => m.enrichSignalsBatch(signalsToEnrich as any));
+    
+    // Re-fetch signals to get updated metrics from DB
+    const enrichedSignalIds = signalsToEnrich.map(s => s.id);
+    const enrichedSignals = await prisma.signal.findMany({
+      where: { id: { in: enrichedSignalIds } },
+      include: { metrics: true }
+    });
+    
+    // Update in-memory signals with fresh metrics
+    const metricsMap = new Map(enrichedSignals.map(s => [s.id, s.metrics]));
+    for (const s of signals) {
+      if (metricsMap.has(s.id)) {
+        s.metrics = metricsMap.get(s.id)!;
+      }
+    }
+  }
 
   // 3. Process Distributions - Initialize all stats
   const stats: DistributionStats = {

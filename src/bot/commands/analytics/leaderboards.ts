@@ -9,10 +9,12 @@ type TimeWindow = '1D' | '3D' | '7D' | '30D' | 'ALL' | string;
 export const handleGroupLeaderboardCommand = async (ctx: Context, window: TimeWindow = '30D') => {
   try {
     const ownerTelegramId = ctx.from?.id ? BigInt(ctx.from.id) : undefined;
+    logger.info(`[Leaderboard] Fetching group leaderboard for window ${window}, owner ${ownerTelegramId}`);
     const statsList = await getLeaderboard('GROUP', window, 'SCORE', 10, ownerTelegramId);
+    logger.info(`[Leaderboard] Got ${statsList.length} groups for ${window}`);
 
     if (statsList.length === 0) {
-      return ctx.reply(`No group data available for ${window}.`);
+      return ctx.reply(`No group data available for ${window}.\n\nTry a different timeframe or ensure you have signals in your workspace.`);
     }
 
     const windowLabel = ['1D','3D','7D','30D','ALL'].includes(String(window)) ? String(window) : `Custom ${window}`;
@@ -58,10 +60,12 @@ export const handleGroupLeaderboardCommand = async (ctx: Context, window: TimeWi
 export const handleUserLeaderboardCommand = async (ctx: Context, window: TimeWindow = '30D') => {
   try {
     const ownerTelegramId = ctx.from?.id ? BigInt(ctx.from.id) : undefined;
+    logger.info(`[Leaderboard] Fetching user leaderboard for window ${window}, owner ${ownerTelegramId}`);
     const statsList = await getLeaderboard('USER', window, 'SCORE', 10, ownerTelegramId);
+    logger.info(`[Leaderboard] Got ${statsList.length} users for ${window}`);
 
     if (statsList.length === 0) {
-      return ctx.reply(`No user data available for ${window}.`);
+      return ctx.reply(`No user data available for ${window}.\n\nTry a different timeframe or ensure you have signals in your workspace.`);
     }
 
     const windowLabel = ['1D','3D','7D','30D','ALL'].includes(String(window)) ? String(window) : `Custom ${window}`;
@@ -108,10 +112,12 @@ export const handleUserLeaderboardCommand = async (ctx: Context, window: TimeWin
 export const handleSignalLeaderboardCommand = async (ctx: Context, window: TimeWindow = '30D') => {
   try {
     const ownerTelegramId = ctx.from?.id ? BigInt(ctx.from.id) : undefined;
+    logger.info(`[Leaderboard] Fetching signal leaderboard for window ${window}, owner ${ownerTelegramId}`);
     const signals = await getSignalLeaderboard(window, 10, ownerTelegramId);
+    logger.info(`[Leaderboard] Got ${signals.length} signals for ${window}`);
 
     if (signals.length === 0) {
-      return ctx.reply(`No signal data available for ${window}.`);
+      return ctx.reply(`No signal data available for ${window}.\n\nTry a different timeframe or ensure you have signals in your workspace.`);
     }
 
     const signalIds = signals.map((s: any) => s.id);

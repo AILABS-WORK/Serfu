@@ -362,10 +362,13 @@ export const enrichSignalMetrics = async (
 /**
  * Batched enrichment for a list of signals.
  * Handles parallel processing with rate limiting.
+ * Optimized for speed: larger batches, longer delays between batches.
  */
 export const enrichSignalsBatch = async (signals: SignalWithRelations[], force: boolean = false) => {
-    const BATCH_SIZE = 5;
-    const DELAY_BETWEEN_BATCHES = 500;
+    // Optimized batch settings (similar to live signals ATH calculation)
+    const BATCH_SIZE = 3; // Process 3 signals at a time
+    const DELAY_BETWEEN_BATCHES_MS = 3000; // 3 seconds between batches
+    const DELAY_BETWEEN_ITEMS_MS = 1000; // 1 second between items in same batch
     
     // Filter out signals that don't need update unless forced
     const now = Date.now();
@@ -377,14 +380,34 @@ export const enrichSignalsBatch = async (signals: SignalWithRelations[], force: 
         return (now - s.metrics.updatedAt.getTime()) > STALE_METRICS_MS;
     });
 
+    logger.info(`[Metrics] Enriching ${toProcess.length}/${signals.length} signals (${toProcess.length - signals.length} already fresh)`);
+
+    // Process in batches with delays
     for (let i = 0; i < toProcess.length; i += BATCH_SIZE) {
         const batch = toProcess.slice(i, i + BATCH_SIZE);
-        await Promise.allSettled(batch.map(s => enrichSignalMetrics(s, force)));
         
+        // Process items in batch with small delay between each
+        for (let j = 0; j < batch.length; j++) {
+            const signal = batch[j];
+            try {
+                await enrichSignalMetrics(signal, force);
+            } catch (err) {
+                logger.debug(`[Metrics] Failed to enrich signal ${signal.id}: ${err}`);
+            }
+            
+            // Delay between items in same batch (except last item)
+            if (j < batch.length - 1) {
+                await new Promise(resolve => setTimeout(resolve, DELAY_BETWEEN_ITEMS_MS));
+            }
+        }
+        
+        // Delay between batches (except after last batch)
         if (i + BATCH_SIZE < toProcess.length) {
-            await new Promise(resolve => setTimeout(resolve, DELAY_BETWEEN_BATCHES));
+            await new Promise(resolve => setTimeout(resolve, DELAY_BETWEEN_BATCHES_MS));
         }
     }
+    
+    logger.info(`[Metrics] Batch enrichment complete for ${toProcess.length} signals`);
 };
 
 /**
