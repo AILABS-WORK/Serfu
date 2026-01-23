@@ -296,46 +296,51 @@ export const enrichSignalMetrics = async (
             
             const timeToAth = maxAt - entryTimestamp;
 
-            // Calculate max drawdown: find lowest price between entry and ATH, compare to entry
+            // Calculate max drawdown: find lowest price between entry and ATH time ONLY
             // Max drawdown = percentage decrease from entry price to lowest price in that period
+            // CRITICAL: Drawdown always occurs BEFORE ATH, so we only check candles up to ATH time
             let maxDrawdown = 0;
             let maxDrawdownPrice = entryPriceValue; // Price at max drawdown
             let maxDrawdownAt = entryTimestamp; // Time of max drawdown
             
             if (allCandles.length > 0) {
-                // Filter candles to only those between entry and ATH time
-                const candlesUpToAth = allCandles.filter(c => c.timestamp >= entryTimestamp && c.timestamp <= maxAt);
+                // Filter candles to ONLY those between entry and ATH time (same candles used for ATH)
+                // Stop checking after ATH time - drawdown can only occur before ATH
+                const candlesUpToAth = allCandles.filter(c => 
+                    c.timestamp >= entryTimestamp && c.timestamp <= maxAt
+                );
                 
                 // Find the lowest price (using candle.low) in the timeframe between entry and ATH
-                let lowestPrice = entryPriceValue; // Start with entry price
+                // Start with entry price as baseline
+                let lowestPrice = entryPriceValue;
                 let lowestPriceAt = entryTimestamp;
                 
+                // Use the same candles that were used for ATH calculation
                 for (const candle of candlesUpToAth) {
                     // Use the low of the candle to find the absolute lowest price
+                    // This is the max drawdown point (lowest point before ATH)
                     if (candle.low < lowestPrice) {
                         lowestPrice = candle.low;
                         lowestPriceAt = candle.timestamp;
                     }
                 }
                 
+                // Set max drawdown values
                 maxDrawdownPrice = lowestPrice;
                 maxDrawdownAt = lowestPriceAt;
                 
                 // Calculate max drawdown: percentage decrease from entry to lowest price
+                // This is always negative (or 0 if no drawdown)
                 if (entryPriceValue > 0) {
                     maxDrawdown = ((lowestPrice - entryPriceValue) / entryPriceValue) * 100;
                 }
             } else {
                 // If no OHLCV data, calculate simple drawdown from entry to current price
-                // This gives us at least some drawdown metric even when GeckoTerminal fails
-                if (currentPrice > 0 && entryPriceValue > 0) {
-                    const simpleDrawdown = ((currentPrice - entryPriceValue) / entryPriceValue) * 100;
-                    // If current is below entry, that's a drawdown
-                    if (simpleDrawdown < 0) {
-                        maxDrawdown = simpleDrawdown;
-                        maxDrawdownPrice = currentPrice;
-                        maxDrawdownAt = nowTimestamp;
-                    }
+                // But only if current is below entry (drawdown)
+                if (currentPrice > 0 && entryPriceValue > 0 && currentPrice < entryPriceValue) {
+                    maxDrawdown = ((currentPrice - entryPriceValue) / entryPriceValue) * 100;
+                    maxDrawdownPrice = currentPrice;
+                    maxDrawdownAt = nowTimestamp;
                 }
             }
             
@@ -349,10 +354,16 @@ export const enrichSignalMetrics = async (
                 maxDrawdownMarketCap = sig.entryMarketCap * drawdownMultiple;
             }
             
-            // Calculate time from max drawdown to ATH (only if drawdown happened before ATH)
+            // Calculate time from max drawdown to ATH
+            // Since drawdown always occurs before ATH (we only check up to ATH time),
+            // we can calculate this if we found a drawdown
             let timeFromDrawdownToAth: number | null = null;
-            if (maxDrawdownAt < maxAt && maxDrawdown < 0) {
+            if (maxDrawdown < 0 && maxDrawdownAt < maxAt) {
+                // Drawdown occurred before ATH, calculate recovery time
                 timeFromDrawdownToAth = maxAt - maxDrawdownAt;
+            } else if (maxDrawdown < 0 && maxDrawdownAt === entryTimestamp) {
+                // Drawdown was at entry (never recovered), time to ATH is the recovery time
+                timeFromDrawdownToAth = timeToAth;
             }
 
             // Store max drawdown market cap and time from drawdown to ATH in a JSON field or calculate on-the-fly
