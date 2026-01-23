@@ -228,14 +228,14 @@ export const getMultipleTokenInfo = async (mints: string[]): Promise<Record<stri
   });
   
   try {
-    // OPTIMIZE: Balance speed with rate limit handling
-    // Start conservative, adapt based on rate limits
-    let MAX_PARALLEL = 8; // Start with 8 parallel (reduced from 15 to avoid rate limits)
+    // OPTIMIZE: Keep high parallelism, handle rate limits with longer waits
+    // When rate limited, wait longer and retry instead of reducing parallelism
+    const MAX_PARALLEL = 12; // Keep high parallelism for speed
     const REQUEST_TIMEOUT_MS = 15000; // 15 seconds per request
-    let DELAY_BETWEEN_BATCHES_MS = 500; // 500ms delay between batches (increased from 300ms)
-    const MAX_RETRIES = 2; // Retry failed requests up to 2 times
-    let rateLimitCount = 0; // Track rate limits to adapt
-    let consecutiveRateLimitBatches = 0; // Track consecutive batches with rate limits
+    const DELAY_BETWEEN_BATCHES_MS = 200; // Small delay between batches (200ms)
+    const MAX_RETRIES = 3; // More retries for rate-limited requests
+    const RATE_LIMIT_WAIT_MS = 3000; // Wait 3 seconds when rate limited
+    let rateLimitCount = 0; // Track rate limits for logging
     
     logger.info(`[Jupiter] Fetching token info for ${mints.length} tokens using search endpoint (${MAX_PARALLEL} parallel, ${DELAY_BETWEEN_BATCHES_MS}ms delay between batches)`);
     
@@ -245,19 +245,10 @@ export const getMultipleTokenInfo = async (mints: string[]): Promise<Record<stri
       const batchNum = Math.floor(i / MAX_PARALLEL) + 1;
       const totalBatches = Math.ceil(mints.length / MAX_PARALLEL);
       
-      // Add delay between batches (except first batch)
+      // Add small delay between batches (except first batch)
       if (i > 0) {
-        // If previous batch had many rate limits, add extra delay
-        if (consecutiveRateLimitBatches > 0) {
-          const extraDelay = Math.min(2000, consecutiveRateLimitBatches * 500);
-          await new Promise(resolve => setTimeout(resolve, DELAY_BETWEEN_BATCHES_MS + extraDelay));
-        } else {
-          await new Promise(resolve => setTimeout(resolve, DELAY_BETWEEN_BATCHES_MS));
-        }
+        await new Promise(resolve => setTimeout(resolve, DELAY_BETWEEN_BATCHES_MS));
       }
-      
-      // Track rate limits in this batch
-      let batchRateLimitCount = 0;
       
       // Process batch in parallel with retry logic
       const batchResults = await Promise.allSettled(batch.map(async (mint) => {
@@ -280,12 +271,14 @@ export const getMultipleTokenInfo = async (mints: string[]): Promise<Record<stri
               
               if (!res.ok) {
                 if (res.status === 429) {
-                  rateLimitCount++; // Track rate limits for adaptive throttling
-                  batchRateLimitCount++; // Track rate limits in this batch
-                  // Rate limited - retry with exponential backoff
+                  rateLimitCount++; // Track rate limits for logging
+                  // Rate limited - wait longer and retry (don't reduce parallelism)
                   if (retryCount < MAX_RETRIES) {
-                    const backoffMs = Math.pow(2, retryCount) * 1000; // 1s, 2s, 4s
-                    logger.warn(`[Jupiter] Rate limited for ${mint.slice(0, 8)}... (batch ${batchNum}/${totalBatches}), retrying in ${backoffMs}ms (attempt ${retryCount + 1}/${MAX_RETRIES + 1})`);
+                    // Check for retry-after header, otherwise use default wait
+                    const retryAfter = res.headers.get('retry-after');
+                    const waitMs = retryAfter ? parseInt(retryAfter, 10) * 1000 : RATE_LIMIT_WAIT_MS;
+                    const backoffMs = Math.min(waitMs + (retryCount * 1000), 8000); // Max 8s wait
+                    logger.warn(`[Jupiter] Rate limited for ${mint.slice(0, 8)}... (batch ${batchNum}/${totalBatches}), waiting ${backoffMs}ms (attempt ${retryCount + 1}/${MAX_RETRIES + 1})`);
                     await new Promise(resolve => setTimeout(resolve, backoffMs));
                     retryCount++;
                     continue; // Retry the request
@@ -387,24 +380,8 @@ export const getMultipleTokenInfo = async (mints: string[]): Promise<Record<stri
         }
       });
       
-      // Adaptive rate limiting: if this batch had many rate limits, slow down
       const batchSuccessCount = batchResults.filter(r => r.status === 'fulfilled' && r.value).length;
-      const batchRateLimitRatio = batchRateLimitCount / batch.length;
-      
-      if (batchRateLimitRatio > 0.5) {
-        // More than 50% rate limited in this batch
-        consecutiveRateLimitBatches++;
-        if (consecutiveRateLimitBatches >= 2 && MAX_PARALLEL > 5) {
-          MAX_PARALLEL = Math.max(5, Math.floor(MAX_PARALLEL * 0.75));
-          DELAY_BETWEEN_BATCHES_MS = Math.min(1500, Math.floor(DELAY_BETWEEN_BATCHES_MS * 1.3));
-          logger.warn(`[Jupiter] Adapting: reducing to ${MAX_PARALLEL} parallel, ${DELAY_BETWEEN_BATCHES_MS}ms delay (${consecutiveRateLimitBatches} consecutive rate-limited batches)`);
-        }
-      } else {
-        // Batch was mostly successful, reset consecutive counter
-        consecutiveRateLimitBatches = 0;
-      }
-      
-      logger.debug(`[Jupiter] Batch ${batchNum}/${totalBatches} complete: ${batchSuccessCount}/${batch.length} found (${batchRateLimitCount} rate limited)`);
+      logger.debug(`[Jupiter] Batch ${batchNum}/${totalBatches} complete: ${batchSuccessCount}/${batch.length} found`);
     }
     
     const found = Object.values(results).filter(r => r !== null).length;
