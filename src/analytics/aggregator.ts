@@ -687,20 +687,23 @@ export const getSignalLeaderboard = async (
     }
   });
   
-  // Calculate ATH for signals missing metrics or with stale metrics
+  // OPTIMIZATION: Only enrich signals that really need it
+  // Background job should handle most ATH calculations, so we only do on-demand for stale/missing
   const now = Date.now();
+  const STALE_THRESHOLD_MS = 15 * 60 * 1000; // 15 minutes - only enrich if very stale
+  
   const signalsToEnrich = signals.filter(s => {
     if (!s.metrics) return true; // No metrics = needs calculation
     const metricsAge = now - s.metrics.updatedAt.getTime();
-    return metricsAge > 5 * 60 * 1000; // > 5 minutes old = recalculate
+    return metricsAge > STALE_THRESHOLD_MS; // Only enrich if > 15 minutes old
   });
   
-  logger.info(`[SignalLeaderboard] Enriching ${signalsToEnrich.length}/${signals.length} signals with ATH metrics`);
+  logger.info(`[SignalLeaderboard] ${signalsToEnrich.length}/${signals.length} signals need enrichment (others use cached ATH)`);
   
   // Enrich with real-time ATH calculations using centralized logic
   const { enrichSignalMetrics, enrichSignalsWithCurrentPrice } = await import('./metrics');
   
-  // Use batch enrichment for ATH (optimized for speed)
+  // Use batch enrichment for ATH (optimized for speed) - only for stale/missing
   if (signalsToEnrich.length > 0) {
     await import('./metrics').then(m => m.enrichSignalsBatch(signalsToEnrich as any));
     
@@ -907,20 +910,23 @@ export const getDistributionStats = async (
 
   logger.info(`[DistributionStats] Processing ${signals.length} signals for distribution stats`);
   
-  // Enrich signals with current price and ATH metrics using centralized logic
+  // OPTIMIZATION: Only enrich signals that really need it
+  // Background job should handle most ATH calculations, so we only do on-demand for stale/missing
   const { enrichSignalMetrics } = await import('./metrics');
   
-  // Filter signals that need enrichment (missing or stale metrics)
+  // Filter signals that need enrichment (missing or very stale metrics)
   const now = Date.now();
+  const STALE_THRESHOLD_MS = 15 * 60 * 1000; // 15 minutes - only enrich if very stale
+  
   const signalsToEnrich = signals.filter(s => {
-    if (!s.metrics) return true;
+    if (!s.metrics) return true; // No metrics = needs calculation
     const metricsAge = now - s.metrics.updatedAt.getTime();
-    return metricsAge > 5 * 60 * 1000; // > 5 minutes old
+    return metricsAge > STALE_THRESHOLD_MS; // Only enrich if > 15 minutes old
   });
   
-  logger.info(`[DistributionStats] Enriching ${signalsToEnrich.length}/${signals.length} signals with ATH metrics`);
+  logger.info(`[DistributionStats] ${signalsToEnrich.length}/${signals.length} signals need enrichment (others use cached ATH)`);
   
-  // Use batch enrichment for ATH metrics (optimized for speed)
+  // Use batch enrichment for ATH metrics (optimized for speed) - only for stale/missing
   if (signalsToEnrich.length > 0) {
     await import('./metrics').then(m => m.enrichSignalsBatch(signalsToEnrich as any));
     

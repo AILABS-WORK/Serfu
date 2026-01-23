@@ -114,7 +114,8 @@ export const enrichSignalMetrics = async (
     }
 
     try {
-        // Skip OHLCV if we have no activity since last update (volume check)
+        // OPTIMIZATION: Skip OHLCV if we have no activity since last update (volume check)
+        // This prevents recalculating ATH for dead tokens with no volume
         if (!force && sig.metrics?.updatedAt) {
             const latestSample = await prisma.priceSample.findFirst({
                 where: {
@@ -123,8 +124,15 @@ export const enrichSignalMetrics = async (
                 },
                 orderBy: { sampledAt: 'desc' }
             });
+            // Skip if no new samples OR no volume in latest sample
+            // But allow if metrics are very stale (> 1 hour) - might need update anyway
+            const metricsAge = now - sig.metrics.updatedAt.getTime();
             if (!latestSample || (latestSample.volume ?? 0) <= 0) {
-                return;
+                // Only skip if metrics are relatively fresh (< 1 hour)
+                // If very stale, recalculate anyway (might have missed activity)
+                if (metricsAge < 60 * 60 * 1000) {
+                    return;
+                }
             }
         }
         const entryTimestamp = sig.detectedAt.getTime();

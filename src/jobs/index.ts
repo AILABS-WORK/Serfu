@@ -3,6 +3,7 @@ import { logger } from '../utils/logger';
 import { checkPriceAlerts } from './priceAlerts';
 import { updateHistoricalMetrics } from './historicalMetrics';
 import { runSamplingCycle } from './sampling';
+import { runAthEnrichmentCycle } from './athEnrichment';
 
 // Run price alerts every minute
 export const priceAlertJob = new CronJob('* * * * *', async () => {
@@ -13,12 +14,21 @@ export const priceAlertJob = new CronJob('* * * * *', async () => {
   }
 });
 
-// Run sampling cycle every minute (drives price samples + ATH updates)
+// Run sampling cycle every minute (drives price samples)
 export const samplingJob = new CronJob('* * * * *', async () => {
   try {
     await runSamplingCycle();
   } catch (error) {
     logger.error('Error in sampling job:', error);
+  }
+});
+
+// Run ATH enrichment every 10 minutes (smart filtering, minimizes API calls)
+export const athEnrichmentJob = new CronJob('*/10 * * * *', async () => {
+  try {
+    await runAthEnrichmentCycle();
+  } catch (error) {
+    logger.error('Error in ATH enrichment job:', error);
   }
 });
 
@@ -34,8 +44,9 @@ export const historicalMetricsJob = new CronJob('*/30 * * * *', async () => {
 export const startJobs = () => {
   priceAlertJob.start();
   samplingJob.start();
+  athEnrichmentJob.start();
   historicalMetricsJob.start();
-  logger.info('Background jobs started (Price Alerts: 1m, Sampling: 1m, Historical Metrics: 30m)');
+  logger.info('Background jobs started (Price Alerts: 1m, Sampling: 1m, ATH Enrichment: 10m, Historical Metrics: 30m)');
 };
 
 
