@@ -28,7 +28,8 @@ export class GeckoTerminalProvider {
       try {
         // Add delay between retries to avoid rate limits
         if (attempt > 0) {
-          const delay = Math.min(2000 * Math.pow(2, attempt - 1), 10000); // Exponential backoff: 2s, 4s, 8s (max 10s)
+          // Longer delays for rate limits: 5s, 10s, 15s
+          const delay = Math.min(5000 + (attempt - 1) * 5000, 15000);
           logger.warn(`GeckoTerminal rate limited for ${mint.slice(0, 8)}... (attempt ${attempt + 1}/${retries}), waiting ${delay/1000}s`);
           await new Promise(resolve => setTimeout(resolve, delay));
         }
@@ -57,10 +58,11 @@ export class GeckoTerminalProvider {
 
         // Check for rate limit response
         if (response.status === 429) {
-          const retryAfter = parseInt(response.headers['retry-after'] || '5', 10);
-          logger.warn(`GeckoTerminal rate limited for ${mint}, waiting ${retryAfter}s`);
+          const retryAfter = parseInt(response.headers['retry-after'] || '10', 10);
+          const waitTime = Math.max(retryAfter, 10); // Minimum 10 seconds
+          logger.warn(`GeckoTerminal rate limited for ${mint.slice(0, 8)}..., waiting ${waitTime}s`);
           if (attempt < retries - 1) {
-            await new Promise(resolve => setTimeout(resolve, retryAfter * 1000));
+            await new Promise(resolve => setTimeout(resolve, waitTime * 1000));
             continue; // Retry after rate limit delay
           }
           throw new Error(`Rate limited after ${retries} attempts`);
@@ -97,7 +99,7 @@ export class GeckoTerminalProvider {
         
         if (isRateLimit && attempt < retries - 1) {
           const retryAfter = parseInt(error.response?.headers?.['retry-after'] || '10', 10); // Default to 10s if not specified
-          const backoffMs = Math.min(retryAfter * 1000, 10000); // Cap at 10s
+          const backoffMs = Math.max(retryAfter * 1000, 10000); // Minimum 10s, use retry-after if longer
           logger.warn(`GeckoTerminal rate limited for ${mint.slice(0, 8)}... (attempt ${attempt + 1}/${retries}), waiting ${backoffMs/1000}s`);
           await new Promise(resolve => setTimeout(resolve, backoffMs));
           continue; // Retry

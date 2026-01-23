@@ -311,6 +311,16 @@ export const enrichSignalMetrics = async (
                         }
                     }
                 }
+            } else {
+                // If no OHLCV data, calculate simple drawdown from entry to current price
+                // This gives us at least some drawdown metric even when GeckoTerminal fails
+                if (currentPrice > 0 && entryPriceValue > 0) {
+                    const simpleDrawdown = ((currentPrice - entryPriceValue) / entryPriceValue) * 100;
+                    // If current is below entry, that's a drawdown
+                    if (simpleDrawdown < 0) {
+                        maxDrawdown = simpleDrawdown;
+                    }
+                }
             }
 
             if (sig.metrics) {

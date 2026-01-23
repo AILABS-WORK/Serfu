@@ -327,11 +327,13 @@ export const handleLiveSignals = async (ctx: BotContext, forceRefresh = false) =
         try {
           await Promise.race([
             enrichSignalMetrics(sig, false, item.currentPrice),
-            new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 8000))
+            new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 12000))
           ]);
-          // Add small delay between ATH calculations to avoid GeckoTerminal rate limits
-          await new Promise(resolve => setTimeout(resolve, 200));
-        } catch {}
+          // Add longer delay between ATH calculations to avoid GeckoTerminal rate limits
+          await new Promise(resolve => setTimeout(resolve, 500));
+        } catch (err) {
+          logger.debug(`ATH calculation failed for ${item.mint.slice(0, 8)}...: ${err}`);
+        }
       }
     }
 
@@ -397,9 +399,18 @@ export const handleLiveSignals = async (ctx: BotContext, forceRefresh = false) =
         ? `${effectiveAth.toFixed(1)}x ATH${athMc ? ` (${UIHelper.formatMarketCap(athMc)})` : ''}`
         : 'ATH N/A';
 
-      // Max drawdown (from metrics, negative %)
-      const maxDrawdown = sig?.metrics?.maxDrawdown || 0;
-      const drawdownStr = maxDrawdown < 0 ? UIHelper.formatPercent(maxDrawdown) : 'N/A';
+      // Max drawdown (from metrics, negative % or 0 if no drawdown)
+      const maxDrawdown = sig?.metrics?.maxDrawdown ?? null;
+      let drawdownStr = 'N/A';
+      if (maxDrawdown !== null && maxDrawdown !== undefined) {
+        if (maxDrawdown < 0) {
+          drawdownStr = UIHelper.formatPercent(maxDrawdown);
+        } else if (maxDrawdown === 0) {
+          drawdownStr = '0%'; // No drawdown
+        } else {
+          drawdownStr = 'N/A'; // Invalid positive value
+        }
+      }
 
       // Time to ATH (from metrics, in ms, convert to readable format)
       const timeToAthMs = sig?.metrics?.timeToAth || null;
