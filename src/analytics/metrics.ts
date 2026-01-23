@@ -185,6 +185,8 @@ export const enrichSignalMetrics = async (
         let candlesFound = 0;
         const allCandles: Array<{ timestamp: number; high: number; low: number }> = [];
 
+        logger.debug(`[Metrics] Starting GeckoTerminal OHLCV fetch for ${sig.mint.slice(0, 8)}... (entry: ${entryPriceValue}, current: ${currentPrice})`);
+
         // Minute candles: entry -> hour boundary
         if (nowTimestamp > entryTimestamp) {
             const minuteEnd = Math.min(hourBoundaryTs, nowTimestamp);
@@ -192,7 +194,9 @@ export const enrichSignalMetrics = async (
                 const minutesNeeded = Math.ceil((minuteEnd - entryTimestamp) / (60 * 1000)) + 2;
                 const minuteLimit = Math.min(1000, minutesNeeded);
                 try {
+                    logger.debug(`[Metrics] Fetching GeckoTerminal minute candles for ${sig.mint.slice(0, 8)}... (limit: ${minuteLimit})`);
                     const minuteCandles = await geckoTerminal.getOHLCV(sig.mint, 'minute', minuteLimit);
+                    logger.debug(`[Metrics] Got ${minuteCandles.length} minute candles for ${sig.mint.slice(0, 8)}...`);
                     const postEntryMinutes = minuteCandles.filter(
                         (c) => c.timestamp >= entryTimestamp && c.timestamp < minuteEnd
                     );
@@ -217,7 +221,9 @@ export const enrichSignalMetrics = async (
                 const hoursNeeded = Math.ceil((hourEnd - hourBoundaryTs) / (60 * 60 * 1000)) + 2;
                 const hourLimit = Math.min(1000, hoursNeeded);
                 try {
+                    logger.debug(`[Metrics] Fetching GeckoTerminal hourly candles for ${sig.mint.slice(0, 8)}... (limit: ${hourLimit})`);
                     const hourlyCandles = await geckoTerminal.getOHLCV(sig.mint, 'hour', hourLimit);
+                    logger.debug(`[Metrics] Got ${hourlyCandles.length} hourly candles for ${sig.mint.slice(0, 8)}...`);
                     const hourlyInRange = hourlyCandles.filter(
                         (c) => c.timestamp >= hourBoundaryTs && c.timestamp < hourEnd
                     );
@@ -239,8 +245,10 @@ export const enrichSignalMetrics = async (
         if (nowTimestamp > dayBoundaryTs) {
             const daysNeeded = Math.ceil((nowTimestamp - dayBoundaryTs) / (24 * 60 * 60 * 1000)) + 2;
             const dayLimit = Math.min(1000, daysNeeded);
-            try {
-                const dailyCandles = await geckoTerminal.getOHLCV(sig.mint, 'day', dayLimit);
+                try {
+                    logger.debug(`[Metrics] Fetching GeckoTerminal daily candles for ${sig.mint.slice(0, 8)}... (limit: ${dayLimit})`);
+                    const dailyCandles = await geckoTerminal.getOHLCV(sig.mint, 'day', dayLimit);
+                    logger.debug(`[Metrics] Got ${dailyCandles.length} daily candles for ${sig.mint.slice(0, 8)}...`);
                 const dailyInRange = dailyCandles.filter((c) => c.timestamp >= dayBoundaryTs);
                 candlesFound += dailyInRange.length;
                 for (const candle of dailyInRange) {
@@ -255,8 +263,12 @@ export const enrichSignalMetrics = async (
             }
         }
 
+        logger.debug(`[Metrics] Total candles found for ${sig.mint.slice(0, 8)}...: ${candlesFound} (from GeckoTerminal)`);
+        
         if (candlesFound === 0) {
+            logger.debug(`[Metrics] No candles found for ${sig.mint.slice(0, 8)}..., using cached ATH if available`);
             if (!sig.metrics?.athPrice || sig.metrics.athPrice <= 0) {
+                logger.debug(`[Metrics] No cached ATH for ${sig.mint.slice(0, 8)}..., skipping`);
                 return;
             }
             maxHigh = sig.metrics.athPrice;
@@ -284,6 +296,7 @@ export const enrichSignalMetrics = async (
             // Calculate ATH multiple
         if (maxHigh > 0 && entryPriceValue > 0) {
             const athMultiple = maxHigh / entryPriceValue;
+            logger.debug(`[Metrics] Calculated ATH for ${sig.mint.slice(0, 8)}...: ${athMultiple.toFixed(2)}x (price: ${maxHigh}, entry: ${entryPriceValue})`);
 
             // Calculate ATH market cap - use entrySupply if available, otherwise calculate from entryMarketCap
             let athMarketCap = 0;

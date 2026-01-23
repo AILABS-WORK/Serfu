@@ -251,12 +251,12 @@ export const handleLiveSignals = async (ctx: BotContext, forceRefresh = false) =
             loadingMsg.chat.id,
             loadingMsg.message_id,
             undefined,
-            '⏳ Loading live signals...',
+            '⏳ Loading live signals and calculating ATH...',
             { parse_mode: 'Markdown' }
           );
         } catch {}
       } else {
-        loadingMsg = await ctx.reply('⏳ Loading live signals...');
+        loadingMsg = await ctx.reply('⏳ Loading live signals and calculating ATH...');
       }
       
       logger.info('[LiveSignals] Building fresh cache with real-time prices');
@@ -321,37 +321,78 @@ export const handleLiveSignals = async (ctx: BotContext, forceRefresh = false) =
     }
 
     // Calculate ATH for top items only - process in small batches with longer delays to avoid GeckoTerminal rate limits
+    // CRITICAL: This uses GeckoTerminal OHLCV to calculate ATH, max drawdown, and time to ATH
+    logger.info(`[LiveSignals] Starting ATH calculation for ${topItems.length} top items using GeckoTerminal OHLCV`);
+    
+    // Update loading message to show progress
+    if (loadingMsg && topItems.length > 0) {
+      try {
+        await ctx.telegram.editMessageText(
+          loadingMsg.chat.id,
+          loadingMsg.message_id,
+          undefined,
+          `⏳ Calculating ATH for ${topItems.length} signals using GeckoTerminal...`,
+          { parse_mode: 'Markdown' }
+        );
+      } catch {}
+    }
+    
     const BATCH_SIZE = 3; // Process 3 tokens at a time
     const DELAY_BETWEEN_BATCHES_MS = 3000; // 3 seconds between batches
     const DELAY_BETWEEN_ITEMS_MS = 1000; // 1 second between items in same batch
     
     const failedTokens: Array<{ item: CachedSignal; sig: any }> = [];
+    let athCalculated = 0;
     
     // First pass: process in batches
     for (let i = 0; i < topItems.length; i += BATCH_SIZE) {
       const batch = topItems.slice(i, i + BATCH_SIZE);
+      const batchNum = Math.floor(i / BATCH_SIZE) + 1;
+      const totalBatches = Math.ceil(topItems.length / BATCH_SIZE);
+      logger.info(`[LiveSignals] Processing ATH batch ${batchNum}/${totalBatches} (${batch.length} tokens) using GeckoTerminal`);
+      
+      // Update loading message with progress
+      if (loadingMsg && batchNum % 2 === 0) { // Update every 2 batches to avoid spam
+        try {
+          await ctx.telegram.editMessageText(
+            loadingMsg.chat.id,
+            loadingMsg.message_id,
+            undefined,
+            `⏳ Calculating ATH: ${athCalculated}/${topItems.length} complete (batch ${batchNum}/${totalBatches})...`,
+            { parse_mode: 'Markdown' }
+          );
+        } catch {}
+      }
       
       for (const item of batch) {
         const sig = signalMap.get(item.signalId);
         if (sig && item.currentPrice > 0) {
+          // Ensure entry data is populated for enrichSignalMetrics
           if (!sig.entryMarketCap && item.entryMc > 0) sig.entryMarketCap = item.entryMc;
           if (!sig.entryPrice && item.entryPrice > 0) sig.entryPrice = item.entryPrice;
           if (!sig.entrySupply && sig.entryMarketCap && sig.entryPrice) {
             sig.entrySupply = sig.entryMarketCap / sig.entryPrice;
           }
+          
+          logger.info(`[LiveSignals] Calculating ATH for ${item.mint.slice(0, 8)}... using GeckoTerminal OHLCV`);
           try {
             await Promise.race([
               enrichSignalMetrics(sig, false, item.currentPrice),
               new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 15000))
             ]);
+            athCalculated++;
+            logger.info(`[LiveSignals] ✅ ATH calculated for ${item.mint.slice(0, 8)}... (${athCalculated}/${topItems.length})`);
+            
             // Delay between items in same batch
             if (item !== batch[batch.length - 1]) {
               await new Promise(resolve => setTimeout(resolve, DELAY_BETWEEN_ITEMS_MS));
             }
           } catch (err) {
-            logger.debug(`ATH calculation failed for ${item.mint.slice(0, 8)}...: ${err}`);
+            logger.warn(`[LiveSignals] ❌ ATH calculation failed for ${item.mint.slice(0, 8)}...: ${err}`);
             failedTokens.push({ item, sig });
           }
+        } else {
+          logger.debug(`[LiveSignals] Skipping ATH for ${item.mint.slice(0, 8)}... (no signal or price: sig=${!!sig}, price=${item.currentPrice})`);
         }
       }
       
@@ -361,21 +402,27 @@ export const handleLiveSignals = async (ctx: BotContext, forceRefresh = false) =
       }
     }
     
+    logger.info(`[LiveSignals] ATH calculation complete: ${athCalculated} succeeded, ${failedTokens.length} failed`);
+    
     // Retry failed tokens with longer delays
     if (failedTokens.length > 0) {
       logger.info(`[LiveSignals] Retrying ${failedTokens.length} failed ATH calculations with longer delays`);
       const RETRY_DELAY_MS = 5000; // 5 seconds between retries
+      let retrySuccess = 0;
       
       for (let i = 0; i < failedTokens.length; i++) {
         const { item, sig } = failedTokens[i];
+        logger.debug(`[LiveSignals] Retrying ATH for ${item.mint.slice(0, 8)}... (attempt ${i + 1}/${failedTokens.length})`);
         try {
           await Promise.race([
             enrichSignalMetrics(sig, false, item.currentPrice),
             new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 20000))
           ]);
-          logger.debug(`[LiveSignals] Retry successful for ${item.mint.slice(0, 8)}...`);
+          retrySuccess++;
+          athCalculated++;
+          logger.debug(`[LiveSignals] ✅ Retry successful for ${item.mint.slice(0, 8)}...`);
         } catch (err) {
-          logger.debug(`[LiveSignals] Retry failed for ${item.mint.slice(0, 8)}...: ${err}`);
+          logger.warn(`[LiveSignals] ❌ Retry failed for ${item.mint.slice(0, 8)}...: ${err}`);
         }
         
         // Delay between retries (except after last one)
@@ -383,10 +430,13 @@ export const handleLiveSignals = async (ctx: BotContext, forceRefresh = false) =
           await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
         }
       }
+      logger.info(`[LiveSignals] Retry complete: ${retrySuccess}/${failedTokens.length} succeeded`);
     }
     
-    // Re-fetch signals to get updated metrics from DB (including ATH market cap)
+    // CRITICAL: Re-fetch signals to get updated metrics from DB (including ATH market cap)
+    // This ensures we have the latest ATH data calculated by GeckoTerminal
     if (topItems.length > 0) {
+      logger.info(`[LiveSignals] Re-fetching ${topItems.length} signals to get updated ATH metrics from DB`);
       const updatedSignals = await prisma.signal.findMany({
         where: { id: { in: topItems.map(i => i.signalId) } },
         include: { metrics: true, group: true, user: true }
@@ -394,9 +444,16 @@ export const handleLiveSignals = async (ctx: BotContext, forceRefresh = false) =
       // Update signalMap with fresh metrics
       for (const s of updatedSignals) {
         signalMap.set(s.id, s);
+        // Log ATH data for debugging
+        if (s.metrics?.athMultiple) {
+          logger.debug(`[LiveSignals] Signal ${s.id}: ATH=${s.metrics.athMultiple.toFixed(2)}x, ATH MC=${s.metrics.athMarketCap ? UIHelper.formatMarketCap(s.metrics.athMarketCap) : 'N/A'}`);
+        }
       }
-      logger.info(`[LiveSignals] Re-fetched ${updatedSignals.length} signals with updated metrics`);
+      logger.info(`[LiveSignals] Re-fetched ${updatedSignals.length} signals with updated metrics (ready to display)`);
     }
+
+    // CRITICAL: All ATH calculations are now complete - fetch metadata and build message
+    logger.info(`[LiveSignals] All ATH calculations complete. Fetching token metadata and building display...`);
 
     // Fetch token info for display (symbol, audit, socials)
     const { getMultipleTokenInfo } = await import('../../../providers/jupiter');
@@ -422,6 +479,8 @@ export const handleLiveSignals = async (ctx: BotContext, forceRefresh = false) =
     });
 
     // Build message (EXACT SAME DISPLAY LOGIC AS TEST)
+    // All ATH calculations are complete, metrics are fresh from DB
+    logger.info(`[LiveSignals] Building display message for ${topItems.length} items with fresh ATH metrics`);
     let message = UIHelper.header(`Live Signals (${filtered.length})`);
     if (topItems.length === 0) {
       message += '\nNo signals match your filters.';
