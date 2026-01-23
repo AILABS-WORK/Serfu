@@ -333,14 +333,14 @@ export const handleLiveSignals = async (ctx: BotContext) => {
       const pnlStr = isFinite(item.pnl) ? UIHelper.formatPercent(item.pnl) : 'N/A';
       const icon = isFinite(item.pnl) ? (item.pnl >= 0 ? '🟢' : '🔴') : '❓';
 
-      // ATH - show raw values from metrics
+      // ATH - use previous method: max of stored ATH and current multiple
       const athMult = sig?.metrics?.athMultiple || 0;
       const athMc = sig?.metrics?.athMarketCap || 0;
-      const athLabel = athMult > 1.05
-        ? `${athMult.toFixed(1)}x ATH${athMc > 0 ? ` (${UIHelper.formatMarketCap(athMc)})` : ''}`
-        : athMult > 0 
-          ? `${athMult.toFixed(1)}x ATH` 
-          : 'ATH N/A';
+      const currentMult = isFinite(item.pnl) ? (item.pnl / 100) + 1 : 0;
+      const effectiveAth = Math.max(athMult, currentMult);
+      const athLabel = effectiveAth > 1.05
+        ? `${effectiveAth.toFixed(1)}x ATH${athMc ? ` (${UIHelper.formatMarketCap(athMc)})` : ''}`
+        : 'ATH N/A';
 
       const dexPaid = (meta?.tags || []).some((t: string) => t.toLowerCase().includes('dex')) ? '✅' : '❔';
       const migrated = (meta?.audit?.devMigrations || 0) > 0 ? '✅' : '❔';
