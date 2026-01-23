@@ -605,7 +605,6 @@ export const handleLiveSignals = async (ctx: BotContext, forceRefresh = false) =
       // Time from max drawdown to ATH - calculate on-the-fly since not in DB schema
       // If we have timeToAth and maxDrawdown occurred, we can estimate
       let timeFromDrawdownToAthStr = 'N/A';
-      const timeToAthMs = sig?.metrics?.timeToAth || null;
       
       // If we have timeToAth and maxDrawdown < 0, we can show time to ATH as recovery time
       // (This is an approximation - actual drawdown-to-ATH time would need to be stored)
