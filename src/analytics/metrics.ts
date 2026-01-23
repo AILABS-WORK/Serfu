@@ -175,6 +175,7 @@ export const enrichSignalMetrics = async (
         const dayBoundaryTs = dayBoundary.getTime();
 
         let candlesFound = 0;
+        const allCandles: Array<{ timestamp: number; high: number; low: number }> = [];
 
         // Minute candles: entry -> hour boundary
         if (nowTimestamp > entryTimestamp) {
@@ -189,6 +190,7 @@ export const enrichSignalMetrics = async (
                     );
                     candlesFound += postEntryMinutes.length;
                     for (const candle of postEntryMinutes) {
+                        allCandles.push({ timestamp: candle.timestamp, high: candle.high, low: candle.low });
                         if (candle.high > maxHigh) {
                             maxHigh = candle.high;
                             maxAt = candle.timestamp;
@@ -213,6 +215,7 @@ export const enrichSignalMetrics = async (
                     );
                     candlesFound += hourlyInRange.length;
                     for (const candle of hourlyInRange) {
+                        allCandles.push({ timestamp: candle.timestamp, high: candle.high, low: candle.low });
                         if (candle.high > maxHigh) {
                             maxHigh = candle.high;
                             maxAt = candle.timestamp;
@@ -233,6 +236,7 @@ export const enrichSignalMetrics = async (
                 const dailyInRange = dailyCandles.filter((c) => c.timestamp >= dayBoundaryTs);
                 candlesFound += dailyInRange.length;
                 for (const candle of dailyInRange) {
+                    allCandles.push({ timestamp: candle.timestamp, high: candle.high, low: candle.low });
                     if (candle.high > maxHigh) {
                         maxHigh = candle.high;
                         maxAt = candle.timestamp;
@@ -277,49 +281,32 @@ export const enrichSignalMetrics = async (
             const athMarketCap = entrySupply ? maxHigh * entrySupply : 0;
             const timeToAth = maxAt - entryTimestamp;
 
-            // Calculate max drawdown from entry to ATH (STOP after ATH is hit)
-            // Use price samples or OHLCV candles, only up to ATH time
+            // Calculate max drawdown from entry to ATH using same OHLCV candles
+            // Only consider candles up to ATH time (maxAt) - STOP after ATH is hit
             let maxDrawdown = 0;
-            const entryMcValue = entryMc || (entrySupply ? entryPriceValue * entrySupply : 0);
-            
-            if (entryMcValue > 0 && entrySupply) {
-                // Get price samples up to ATH time (or current if ATH not hit yet)
-                const samplesUpToAth = await prisma.priceSample.findMany({
-                    where: {
-                        signalId: sig.id,
-                        sampledAt: { lte: new Date(maxAt) } // Only up to ATH time
-                    },
-                    orderBy: { sampledAt: 'asc' }
-                });
-
-                // Calculate drawdown: track peak and find max drop from peak
-                let peakMc = entryMcValue;
-                let minMc = entryMcValue;
+            if (allCandles.length > 0) {
+                // Filter candles to only those up to ATH time
+                const candlesUpToAth = allCandles.filter(c => c.timestamp <= maxAt);
                 
-                for (const sample of samplesUpToAth) {
-                    const sampleMc = sample.marketCap || (sample.price * entrySupply);
-                    if (sampleMc > peakMc) {
-                        peakMc = sampleMc;
-                        minMc = sampleMc; // Reset min when new peak is reached
-                    } else if (sampleMc < minMc) {
-                        minMc = sampleMc;
+                // Track peak and lowest point from entry to ATH
+                let peakPrice = entryPriceValue;
+                let minLow = entryPriceValue;
+                
+                for (const candle of candlesUpToAth) {
+                    // Update peak when we hit a new high
+                    if (candle.high > peakPrice) {
+                        peakPrice = candle.high;
+                        minLow = candle.high; // Reset min when new peak is reached
+                    }
+                    // Update lowest point
+                    if (candle.low < minLow) {
+                        minLow = candle.low;
                     }
                     
-                    // Calculate drawdown from peak: (min - peak) / peak * 100
-                    if (peakMc > 0) {
-                        const drawdown = ((minMc - peakMc) / peakMc) * 100;
+                    // Calculate drawdown from current peak: (lowest - peak) / peak * 100
+                    if (peakPrice > 0) {
+                        const drawdown = ((minLow - peakPrice) / peakPrice) * 100;
                         if (drawdown < maxDrawdown) { // More negative = worse drawdown
-                            maxDrawdown = drawdown;
-                        }
-                    }
-                }
-                
-                // Also check current price if ATH hasn't been hit yet (current is ATH)
-                if (maxAt === nowTimestamp && currentPrice > 0 && entrySupply) {
-                    const currentMc = currentPrice * entrySupply;
-                    if (currentMc < peakMc && peakMc > 0) {
-                        const drawdown = ((currentMc - peakMc) / peakMc) * 100;
-                        if (drawdown < maxDrawdown) {
                             maxDrawdown = drawdown;
                         }
                     }
