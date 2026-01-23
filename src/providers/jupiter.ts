@@ -18,10 +18,11 @@ export const getMultipleTokenPrices = async (mints: string[]): Promise<Record<st
   
   try {
     // Jupiter price/v3 supports batch requests with comma-separated IDs
-    // Test with larger chunks and parallel processing for maximum speed
-    const CHUNK_SIZE = 100; // Larger chunks = fewer requests = faster
+    // Based on API docs, test with reasonable chunk sizes
+    // Start conservative, can increase if no rate limits
+    const CHUNK_SIZE = 50; // Start with 50 tokens per request (can test higher)
     const REQUEST_TIMEOUT_MS = 20000; // 20 seconds per request
-    const MAX_PARALLEL_CHUNKS = 10; // Process up to 10 chunks in parallel
+    const MAX_PARALLEL_CHUNKS = 5; // Process up to 5 chunks in parallel (start conservative)
     
     const chunks = [];
     for (let i = 0; i < mints.length; i += CHUNK_SIZE) {
@@ -66,10 +67,13 @@ export const getMultipleTokenPrices = async (mints: string[]): Promise<Record<st
             
             const data: any = await res.json();
             
+            // Jupiter price/v3 response structure: { "mint1": { usdPrice: ... }, "mint2": { usdPrice: ... } }
+            // No nested "data" object - tokens are direct keys in the response
             let pricesFound = 0;
             chunk.forEach(mint => {
-                const price = data?.data?.[mint]?.price;
-                if (price !== undefined && price !== null) {
+                const tokenData = data?.[mint];
+                const price = tokenData?.usdPrice; // Field is "usdPrice", not "price"
+                if (price !== undefined && price !== null && !isNaN(Number(price))) {
                   results[mint] = Number(price);
                   pricesFound++;
                 } else {
@@ -78,6 +82,12 @@ export const getMultipleTokenPrices = async (mints: string[]): Promise<Record<st
             });
             
             logger.debug(`[Jupiter] Chunk ${chunkIndex + 1}/${chunks.length}: ${pricesFound}/${chunk.length} prices found`);
+            
+            // Log sample response structure for debugging
+            if (chunkIndex === 0 && Object.keys(data || {}).length > 0) {
+              const sampleMint = Object.keys(data)[0];
+              logger.debug(`[Jupiter] Sample response structure for ${sampleMint.slice(0, 8)}...:`, JSON.stringify(data[sampleMint]).slice(0, 200));
+            }
             
           } catch (fetchErr: any) {
             clearTimeout(timeoutId);
@@ -125,7 +135,8 @@ const getJupiterPriceV3 = async (mint: string): Promise<{ price: number | null; 
       return { price: null, error: `status ${res.status} body ${text?.slice(0, 200)}` };
     }
     const data: any = await res.json();
-    const price = data?.data?.[mint]?.price;
+    // Response structure: { "mint": { usdPrice: ... } }
+    const price = data?.[mint]?.usdPrice;
     if (price === undefined || price === null) return { price: null, error: 'no price in response' };
     return { price: Number(price) };
   } catch (err: any) {
