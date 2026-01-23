@@ -705,7 +705,7 @@ export const getSignalLeaderboard = async (
   
   // Use batch enrichment for ATH (optimized for speed) - only for stale/missing
   if (signalsToEnrich.length > 0) {
-    await import('./metrics').then(m => m.enrichSignalsBatch(signalsToEnrich as any));
+  await import('./metrics').then(m => m.enrichSignalsBatch(signalsToEnrich as any));
     
     // Re-fetch signals to get updated metrics from DB
     const enrichedSignalIds = signalsToEnrich.map(s => s.id);

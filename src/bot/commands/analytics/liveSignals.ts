@@ -446,7 +446,9 @@ export const handleLiveSignals = async (ctx: BotContext, forceRefresh = false) =
         signalMap.set(s.id, s);
         // Log ATH data for debugging - show what's actually in the DB
         if (s.metrics) {
-          logger.info(`[LiveSignals] Signal ${s.id} (${s.mint.slice(0, 8)}...): ATH=${s.metrics.athMultiple?.toFixed(2) || 'N/A'}x, ATH Price=${s.metrics.athPrice || 'N/A'}, ATH MC=${s.metrics.athMarketCap ? UIHelper.formatMarketCap(s.metrics.athMarketCap) : 'N/A'}, MaxDD=${s.metrics.maxDrawdown || 'N/A'}, TimeToAth=${s.metrics.timeToAth ? `${Math.floor(s.metrics.timeToAth / 60000)}m` : 'N/A'}, EntrySupply=${s.entrySupply || 'N/A'}, EntryMC=${s.entryMarketCap ? UIHelper.formatMarketCap(s.entryMarketCap) : 'N/A'}`);
+          const maxDdValue = s.metrics.maxDrawdown ?? null;
+          const timeToAthValue = s.metrics.timeToAth ?? null;
+          logger.info(`[LiveSignals] Signal ${s.id} (${s.mint.slice(0, 8)}...): ATH=${s.metrics.athMultiple?.toFixed(2) || 'N/A'}x, ATH Price=${s.metrics.athPrice || 'N/A'}, ATH MC=${s.metrics.athMarketCap ? UIHelper.formatMarketCap(s.metrics.athMarketCap) : 'N/A'}, MaxDD=${maxDdValue !== null && maxDdValue !== undefined ? maxDdValue : 'N/A'}, TimeToAth=${timeToAthValue !== null && timeToAthValue !== undefined ? `${Math.floor(timeToAthValue / 60000)}m` : 'N/A'}, EntrySupply=${s.entrySupply || 'N/A'}, EntryMC=${s.entryMarketCap ? UIHelper.formatMarketCap(s.entryMarketCap) : 'N/A'}`);
         } else {
           logger.warn(`[LiveSignals] Signal ${s.id} (${s.mint.slice(0, 8)}...) has NO metrics after re-fetch!`);
         }
@@ -516,8 +518,6 @@ export const handleLiveSignals = async (ctx: BotContext, forceRefresh = false) =
       const athMult = sig?.metrics?.athMultiple || 0;
       const athPrice = sig?.metrics?.athPrice || 0;
       const storedAthMc = sig?.metrics?.athMarketCap || null;
-      const currentMult = isFinite(item.pnl) ? (item.pnl / 100) + 1 : 0;
-      const effectiveAth = Math.max(athMult, currentMult);
       
       // Calculate ATH market cap - prioritize stored value from DB (calculated by GeckoTerminal)
       let athMc = storedAthMc && storedAthMc > 0 ? storedAthMc : 0;
@@ -535,27 +535,18 @@ export const handleLiveSignals = async (ctx: BotContext, forceRefresh = false) =
         }
       }
       
-      // If current is higher than stored ATH, match market cap to effective ATH
-      if (effectiveAth > athMult && item.entryMc && item.entryMc > 0) {
-        athMc = item.entryMc * effectiveAth;
-      }
-      
       // Last fallback: use ATH multiple * entry market cap
       if (athMc <= 0 && athMult > 0 && item.entryMc && item.entryMc > 0) {
         athMc = item.entryMc * athMult;
       }
       
-      // Final fallback: use effective ATH if we have it
-      if (athMc <= 0 && effectiveAth > 1.05 && item.entryMc && item.entryMc > 0) {
-        athMc = item.entryMc * effectiveAth;
-      }
-      
       // Log for debugging
       if (sig?.metrics) {
-        logger.debug(`[LiveSignals] Display ATH for ${item.mint.slice(0, 8)}...: mult=${athMult.toFixed(2)}, currentMult=${currentMult.toFixed(2)}, effectiveAth=${effectiveAth.toFixed(2)}, price=${athPrice}, storedMc=${storedAthMc}, calculatedMc=${athMc}`);
+        logger.debug(`[LiveSignals] Display ATH for ${item.mint.slice(0, 8)}...: mult=${athMult.toFixed(2)}, price=${athPrice}, storedMc=${storedAthMc}, calculatedMc=${athMc}`);
       }
-      const athLabel = effectiveAth > 1.05
-        ? `${effectiveAth.toFixed(1)}x ATH${athMc > 0 ? ` (${UIHelper.formatMarketCap(athMc)})` : ''}`
+      
+      const athLabel = athMult > 1.05
+        ? `${athMult.toFixed(1)}x ATH${athMc > 0 ? ` (${UIHelper.formatMarketCap(athMc)})` : ''}`
         : 'ATH N/A';
 
       // Max drawdown (from metrics, negative % or 0 if no drawdown)
@@ -566,8 +557,7 @@ export const handleLiveSignals = async (ctx: BotContext, forceRefresh = false) =
       if (maxDrawdown !== null && maxDrawdown !== undefined) {
         if (maxDrawdown < 0) {
           drawdownStr = UIHelper.formatPercent(maxDrawdown);
-          // Calculate max drawdown market cap on-the-fly
-          // Since maxDrawdownMarketCap is not in DB schema, calculate from maxDrawdown percentage
+          // Prefer stored max drawdown market cap, fallback to percentage-based calculation
           const storedDrawdownMc = sig?.metrics?.maxDrawdownMarketCap;
           if (storedDrawdownMc && storedDrawdownMc > 0) {
             drawdownMcStr = ` (${UIHelper.formatMarketCap(storedDrawdownMc)})`;
@@ -592,7 +582,7 @@ export const handleLiveSignals = async (ctx: BotContext, forceRefresh = false) =
       }
 
       // Time to ATH (from metrics, in ms, convert to readable format)
-      const timeToAthMs = sig?.metrics?.timeToAth || null;
+      const timeToAthMs = sig?.metrics?.timeToAth ?? null;
       let timeToAthStr = 'N/A';
       if (timeToAthMs !== null && timeToAthMs !== undefined && timeToAthMs >= 0) {
         const minutes = Math.floor(timeToAthMs / 60000);
@@ -616,8 +606,7 @@ export const handleLiveSignals = async (ctx: BotContext, forceRefresh = false) =
         logger.debug(`[LiveSignals] Display timeToAth for ${item.mint.slice(0, 8)}...: ${timeToAthMs}ms = ${timeToAthStr}`);
       }
       
-      // Time from max drawdown to ATH - calculate on-the-fly since not in DB schema
-      // If we have timeToAth and maxDrawdown occurred, we can estimate
+      // Time from max drawdown to ATH - prefer stored value
       let timeFromDrawdownToAthStr = 'N/A';
       const storedTimeFromDdToAth = sig?.metrics?.timeFromDrawdownToAth ?? null;
       

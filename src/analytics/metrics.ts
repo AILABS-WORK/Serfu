@@ -108,7 +108,10 @@ export const enrichSignalMetrics = async (
     const now = Date.now();
 
     // Check if we need to calculate
-    if (!force && sig.metrics?.updatedAt) {
+    const metricsUncomputed = !!sig.metrics
+        && sig.metrics.athMultiple === 1.0
+        && sig.metrics.timeToAth === null;
+    if (!force && sig.metrics?.updatedAt && !metricsUncomputed) {
         const age = now - sig.metrics.updatedAt.getTime();
         if (age < STALE_METRICS_MS) return; // Metrics are fresh enough
     }
@@ -135,7 +138,7 @@ export const enrichSignalMetrics = async (
                 }
             }
         }
-        const entryTimestamp = sig.detectedAt.getTime();
+        const entryTimestamp = (sig.entryPriceAt || sig.detectedAt).getTime();
         
         // Determine Entry Data (Price & Supply)
         let entryPrice = sig.entryPrice;
@@ -281,17 +284,7 @@ export const enrichSignalMetrics = async (
             }
         }
 
-        // Ensure ATH is never below Current Price
-        if (currentPrice > 0 && maxHigh < currentPrice) {
-            maxHigh = currentPrice;
-            maxAt = nowTimestamp; // If current is ATH, ATH time is now
-        }
-
-        // Never allow ATH to decrease below cached ATH price if it exists
-        if (sig.metrics?.athPrice && sig.metrics.athPrice > maxHigh) {
-            maxHigh = sig.metrics.athPrice;
-            maxAt = sig.metrics.athAt?.getTime?.() || maxAt;
-        }
+        // Do not override candle-derived ATH with current or cached values when candles exist
 
             // Calculate ATH multiple
         if (maxHigh > 0 && entryPriceValue > 0) {
