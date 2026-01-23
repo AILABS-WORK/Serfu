@@ -228,115 +228,143 @@ export const getMultipleTokenInfo = async (mints: string[]): Promise<Record<stri
   });
   
   try {
-    // MAXIMUM SPEED: Process all tokens in parallel with NO delays
-    // Search endpoint handles individual queries, so we parallelize everything
-    const MAX_PARALLEL = 50; // Process 50 tokens in parallel for maximum speed
+    // FIX RATE LIMITING: Reduce parallel requests and add delays
+    // Jupiter rate limits when we hit too many requests at once
+    const MAX_PARALLEL = 10; // Reduced from 50 to 10 to avoid rate limits
     const REQUEST_TIMEOUT_MS = 15000; // 15 seconds per request
+    const DELAY_BETWEEN_BATCHES_MS = 500; // 500ms delay between batches to avoid rate limits
+    const MAX_RETRIES = 2; // Retry failed requests up to 2 times
     
-    logger.info(`[Jupiter] Fetching token info for ${mints.length} tokens using search endpoint (${MAX_PARALLEL} parallel, no delays)`);
+    logger.info(`[Jupiter] Fetching token info for ${mints.length} tokens using search endpoint (${MAX_PARALLEL} parallel, ${DELAY_BETWEEN_BATCHES_MS}ms delay between batches)`);
     
-    // Process all tokens in parallel batches
+    // Process all tokens in parallel batches with delays
     for (let i = 0; i < mints.length; i += MAX_PARALLEL) {
       const batch = mints.slice(i, i + MAX_PARALLEL);
       const batchNum = Math.floor(i / MAX_PARALLEL) + 1;
       const totalBatches = Math.ceil(mints.length / MAX_PARALLEL);
       
-      // Process batch in parallel - NO DELAYS
+      // Add delay between batches (except first batch)
+      if (i > 0) {
+        await new Promise(resolve => setTimeout(resolve, DELAY_BETWEEN_BATCHES_MS));
+      }
+      
+      // Process batch in parallel with retry logic
       const batchResults = await Promise.allSettled(batch.map(async (mint) => {
-        try {
-          const headers: Record<string, string> = {};
-          if (JUP_API_KEY) {
-            headers['x-api-key'] = JUP_API_KEY;
-          }
-          const url = `${JUP_SEARCH_URL}?query=${mint}`;
-          
-          const controller = new AbortController();
-          const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-          
+        // Retry logic with exponential backoff
+        let retryCount = 0;
+        while (retryCount <= MAX_RETRIES) {
           try {
-            const res = await fetch(url, { headers, signal: controller.signal });
-            clearTimeout(timeoutId);
+            const headers: Record<string, string> = {};
+            if (JUP_API_KEY) {
+              headers['x-api-key'] = JUP_API_KEY;
+            }
+            const url = `${JUP_SEARCH_URL}?query=${mint}`;
             
-            if (!res.ok) {
-              if (res.status === 429) {
-                logger.warn(`[Jupiter] Rate limited for ${mint.slice(0, 8)}... (batch ${batchNum}/${totalBatches})`);
-              } else {
-                logger.debug(`[Jupiter] Search failed for ${mint.slice(0, 8)}...: ${res.status} ${res.statusText}`);
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+            
+            try {
+              const res = await fetch(url, { headers, signal: controller.signal });
+              clearTimeout(timeoutId);
+              
+              if (!res.ok) {
+                if (res.status === 429) {
+                  // Rate limited - retry with exponential backoff
+                  if (retryCount < MAX_RETRIES) {
+                    const backoffMs = Math.pow(2, retryCount) * 1000; // 1s, 2s, 4s
+                    logger.warn(`[Jupiter] Rate limited for ${mint.slice(0, 8)}... (batch ${batchNum}/${totalBatches}), retrying in ${backoffMs}ms (attempt ${retryCount + 1}/${MAX_RETRIES + 1})`);
+                    await new Promise(resolve => setTimeout(resolve, backoffMs));
+                    retryCount++;
+                    continue; // Retry the request
+                  } else {
+                    logger.warn(`[Jupiter] Rate limited for ${mint.slice(0, 8)}... (batch ${batchNum}/${totalBatches}), max retries reached`);
+                    return null;
+                  }
+                } else {
+                  logger.debug(`[Jupiter] Search failed for ${mint.slice(0, 8)}...: ${res.status} ${res.statusText}`);
+                  return null;
+                }
               }
-              return null;
-            }
-            
-            const data: any = await res.json();
-            if (!data || !data.length) {
-              logger.warn(`[Jupiter] No results for ${mint.slice(0, 8)}...`);
-              return null;
-            }
-            
-            // Search endpoint returns array - find exact match
-            const exactMatch = data.find((token: any) => token.id === mint);
-            const t = exactMatch || data[0];
-            
-            // CRITICAL: Log if we found exact match or using first result
-            if (!exactMatch && data.length > 0) {
-              logger.warn(`[Jupiter] No exact match for ${mint.slice(0, 8)}..., using first result: ${data[0].id?.slice(0, 8)}...`);
-            }
-            
-            // If we have a match (exact or first), use it
-            if (t && t.id) {
-              // If not exact match, log it
-              if (t.id !== mint) {
-                logger.warn(`[Jupiter] Mint mismatch for ${mint.slice(0, 8)}...: got ${t.id?.slice(0, 8)}..., skipping`);
+              
+              const data: any = await res.json();
+              if (!data || !data.length) {
+                logger.warn(`[Jupiter] No results for ${mint.slice(0, 8)}...`);
                 return null;
               }
-              return { mint, info: {
-                id: t.id,
-                name: t.name,
-                symbol: t.symbol,
-                icon: t.icon,
-                decimals: t.decimals,
-                circSupply: t.circSupply,
-                totalSupply: t.totalSupply,
-                usdPrice: t.usdPrice,
-                mcap: t.mcap,
-                fdv: t.fdv,
-                liquidity: t.liquidity,
-                holderCount: t.holderCount,
-                priceBlockId: t.priceBlockId,
-                stats5m: t.stats5m,
-                stats1h: t.stats1h,
-                stats6h: t.stats6h,
-                stats24h: t.stats24h,
-                twitter: t.twitter,
-                telegram: t.telegram,
-                website: t.website,
-                launchpad: t.launchpad,
-                createdAt: t.createdAt,
-                firstPoolId: t?.firstPool?.id,
-                firstPoolCreatedAt: t?.firstPool?.createdAt,
-                audit: t.audit,
-                organicScore: t.organicScore,
-                organicScoreLabel: t.organicScoreLabel,
-                isVerified: t.isVerified,
-                cexes: t.cexes,
-                tags: t.tags,
-                graduatedPool: t.graduatedPool,
-                graduatedAt: t.graduatedAt,
-              }};
-            } else {
-              logger.debug(`[Jupiter] Mint mismatch for ${mint.slice(0, 8)}...: got ${t.id?.slice(0, 8)}...`);
+              
+              // Search endpoint returns array - find exact match
+              const exactMatch = data.find((token: any) => token.id === mint);
+              const t = exactMatch || data[0];
+              
+              // CRITICAL: Log if we found exact match or using first result
+              if (!exactMatch && data.length > 0) {
+                logger.warn(`[Jupiter] No exact match for ${mint.slice(0, 8)}..., using first result: ${data[0].id?.slice(0, 8)}...`);
+              }
+              
+              // If we have a match (exact or first), use it
+              if (t && t.id) {
+                // If not exact match, log it
+                if (t.id !== mint) {
+                  logger.warn(`[Jupiter] Mint mismatch for ${mint.slice(0, 8)}...: got ${t.id?.slice(0, 8)}..., skipping`);
+                  return null;
+                }
+                return { mint, info: {
+                  id: t.id,
+                  name: t.name,
+                  symbol: t.symbol,
+                  icon: t.icon,
+                  decimals: t.decimals,
+                  circSupply: t.circSupply,
+                  totalSupply: t.totalSupply,
+                  usdPrice: t.usdPrice,
+                  mcap: t.mcap,
+                  fdv: t.fdv,
+                  liquidity: t.liquidity,
+                  holderCount: t.holderCount,
+                  priceBlockId: t.priceBlockId,
+                  stats5m: t.stats5m,
+                  stats1h: t.stats1h,
+                  stats6h: t.stats6h,
+                  stats24h: t.stats24h,
+                  twitter: t.twitter,
+                  telegram: t.telegram,
+                  website: t.website,
+                  launchpad: t.launchpad,
+                  createdAt: t.createdAt,
+                  firstPoolId: t?.firstPool?.id,
+                  firstPoolCreatedAt: t?.firstPool?.createdAt,
+                  audit: t.audit,
+                  organicScore: t.organicScore,
+                  organicScoreLabel: t.organicScoreLabel,
+                  isVerified: t.isVerified,
+                  cexes: t.cexes,
+                  tags: t.tags,
+                  graduatedPool: t.graduatedPool,
+                  graduatedAt: t.graduatedAt,
+                }};
+              } else {
+                logger.debug(`[Jupiter] Mint mismatch for ${mint.slice(0, 8)}...: got ${t.id?.slice(0, 8)}...`);
+                return null;
+              }
+            } catch (fetchErr: any) {
+              clearTimeout(timeoutId);
+              if (fetchErr.name !== 'AbortError') {
+                if (retryCount < MAX_RETRIES) {
+                  const backoffMs = Math.pow(2, retryCount) * 1000;
+                  await new Promise(resolve => setTimeout(resolve, backoffMs));
+                  retryCount++;
+                  continue;
+                }
+                logger.debug(`[Jupiter] Search error for ${mint.slice(0, 8)}...: ${fetchErr.message}`);
+              }
               return null;
             }
-          } catch (fetchErr: any) {
-            clearTimeout(timeoutId);
-            if (fetchErr.name !== 'AbortError') {
-              logger.debug(`[Jupiter] Search error for ${mint.slice(0, 8)}...: ${fetchErr.message}`);
-            }
+          } catch (err: any) {
+            logger.debug(`[Jupiter] Error processing ${mint.slice(0, 8)}...: ${err.message}`);
             return null;
           }
-        } catch (err: any) {
-          logger.debug(`[Jupiter] Error processing ${mint.slice(0, 8)}...: ${err.message}`);
-          return null;
         }
+        return null; // Exhausted retries
       }));
       
       // Store successful results
