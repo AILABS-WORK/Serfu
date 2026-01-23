@@ -281,35 +281,26 @@ export const enrichSignalMetrics = async (
             const athMarketCap = entrySupply ? maxHigh * entrySupply : 0;
             const timeToAth = maxAt - entryTimestamp;
 
-            // Calculate max drawdown from entry to ATH using same OHLCV candles
-            // Only consider candles up to ATH time (maxAt) - STOP after ATH is hit
+            // Calculate max drawdown: find lowest price between entry and ATH, compare to entry
+            // Max drawdown = percentage decrease from entry price to lowest price in that period
             let maxDrawdown = 0;
             if (allCandles.length > 0) {
-                // Filter candles to only those up to ATH time
-                const candlesUpToAth = allCandles.filter(c => c.timestamp <= maxAt);
+                // Filter candles to only those between entry and ATH time
+                const candlesUpToAth = allCandles.filter(c => c.timestamp >= entryTimestamp && c.timestamp <= maxAt);
                 
-                // Track peak and lowest point from entry to ATH
-                let peakPrice = entryPriceValue;
-                let minLow = entryPriceValue;
+                // Find the lowest price (using candle.low) in the timeframe between entry and ATH
+                let lowestPrice = entryPriceValue; // Start with entry price
                 
                 for (const candle of candlesUpToAth) {
-                    // Update peak when we hit a new high
-                    if (candle.high > peakPrice) {
-                        peakPrice = candle.high;
-                        minLow = candle.high; // Reset min when new peak is reached
+                    // Use the low of the candle to find the absolute lowest price
+                    if (candle.low < lowestPrice) {
+                        lowestPrice = candle.low;
                     }
-                    // Update lowest point
-                    if (candle.low < minLow) {
-                        minLow = candle.low;
-                    }
-                    
-                    // Calculate drawdown from current peak: (lowest - peak) / peak * 100
-                    if (peakPrice > 0) {
-                        const drawdown = ((minLow - peakPrice) / peakPrice) * 100;
-                        if (drawdown < maxDrawdown) { // More negative = worse drawdown
-                            maxDrawdown = drawdown;
-                        }
-                    }
+                }
+                
+                // Calculate max drawdown: percentage decrease from entry to lowest price
+                if (entryPriceValue > 0) {
+                    maxDrawdown = ((lowestPrice - entryPriceValue) / entryPriceValue) * 100;
                 }
             } else {
                 // If no OHLCV data, calculate simple drawdown from entry to current price

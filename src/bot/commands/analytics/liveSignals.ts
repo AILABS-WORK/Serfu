@@ -97,62 +97,45 @@ const buildCache = async (
 
   // STEP 1: Get all unique mints (now already unique, but keep for clarity)
   const allMints = [...new Set(uniqueSignals.map(s => s.mint))];
-  const { getMultipleTokenInfo } = await import('../../../providers/jupiter');
+  const { getMultipleTokenPrices } = await import('../../../providers/jupiter');
   
-  logger.info(`[LiveSignals] Fetching token info for ${allMints.length} unique mints`);
+  logger.info(`[LiveSignals] Fetching prices for ${allMints.length} unique mints using price/v3 (batch)`);
   
-  // STEP 2: Fetch token info (EXACT SAME AS TEST)
-  logger.info(`[LiveSignals] About to fetch ${allMints.length} tokens from Jupiter`);
-  const tokenInfoMap = await getMultipleTokenInfo(allMints);
+  // STEP 2: Fetch prices using price/v3 (FASTEST - batch with comma-separated IDs)
+  const priceMap = await getMultipleTokenPrices(allMints);
   
-  // CRITICAL DEBUG: Log what we got from Jupiter
-  const tokensWithData = Object.entries(tokenInfoMap).filter(([_, info]) => info !== null);
-  const tokensWithoutData = allMints.filter(mint => !tokenInfoMap[mint] || tokenInfoMap[mint] === null);
-  logger.info(`[LiveSignals] Jupiter returned data for ${tokensWithData.length}/${allMints.length} tokens`);
-  if (tokensWithoutData.length > 0) {
-    logger.warn(`[LiveSignals] ${tokensWithoutData.length} tokens had no data from Jupiter. Sample: ${tokensWithoutData.slice(0, 5).map(m => m.slice(0, 8) + '...').join(', ')}`);
-  }
+  const pricesFound = Object.values(priceMap).filter(p => p !== null && p > 0).length;
+  logger.info(`[LiveSignals] Jupiter price/v3 returned ${pricesFound}/${allMints.length} prices`);
   
   // Log sample of what we got
-  if (tokensWithData.length > 0) {
-    const sample = tokensWithData.slice(0, 5);
-    sample.forEach(([mint, info]) => {
-      logger.info(`[LiveSignals] ✅ Token ${mint.slice(0, 8)}...: price=$${info?.usdPrice}, mcap=$${info?.mcap}`);
-    });
-  }
+  const sampleMints = allMints.slice(0, 5);
+  sampleMints.forEach(mint => {
+    const price = priceMap[mint];
+    if (price !== null && price > 0) {
+      logger.info(`[LiveSignals] ✅ Token ${mint.slice(0, 8)}...: price=$${price}`);
+    }
+  });
   
-  // STEP 3: Extract prices and market caps (EXACT SAME AS TEST)
-  const priceMap: Record<string, number | null> = {};
+  // STEP 3: Calculate market caps from prices and entry supply
   const marketCapMap: Record<string, number | null> = {};
   
-  // Initialize all as null (EXACT SAME AS TEST)
+  // Initialize all as null
   allMints.forEach(mint => {
-    priceMap[mint] = null;
     marketCapMap[mint] = null;
   });
   
-      // Extract from tokenInfoMap - show what Jupiter actually sent
-      Object.entries(tokenInfoMap).forEach(([mint, info]) => {
-        if (info) {
-          // Store EXACTLY what Jupiter sent - don't convert null to anything
-          priceMap[mint] = info.usdPrice ?? null;
-          marketCapMap[mint] = info.mcap ?? null;
-          
-          // Only log first few to avoid spam
-          if (Object.keys(priceMap).length <= 5) {
-            logger.info(`[LiveSignals] Extracted ${mint.slice(0, 8)}...: price=${priceMap[mint]}, mcap=${marketCapMap[mint]}`);
-          }
-        } else {
-          // Only log first few missing tokens
-          if (Object.keys(priceMap).length <= 5) {
-            logger.warn(`[LiveSignals] Token ${mint.slice(0, 8)}... has null info in tokenInfoMap`);
-          }
-        }
-      });
-  
-  const pricesFound = Object.values(priceMap).filter(p => p !== null && p > 0).length;
+  // Calculate market cap from price * entrySupply for each signal
+  uniqueSignals.forEach(sig => {
+    const price = priceMap[sig.mint];
+    const entrySupply = sig.entrySupply;
+    
+    if (price !== null && price > 0 && entrySupply !== null && entrySupply > 0) {
+      marketCapMap[sig.mint] = price * entrySupply;
+    }
+  });
+
   const marketCapsFound = Object.values(marketCapMap).filter(m => m !== null && m > 0).length;
-  logger.info(`[LiveSignals] Extracted ${pricesFound} prices, ${marketCapsFound} market caps`);
+  logger.info(`[LiveSignals] Calculated ${marketCapsFound} market caps from prices and entry supply`);
   
   // CRITICAL: Log signals that will have N/A
   const signalsWithNoData = signals.filter(s => {
