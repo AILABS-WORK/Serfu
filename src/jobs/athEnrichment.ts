@@ -20,7 +20,7 @@ export const runAthEnrichmentCycle = async () => {
     const now = Date.now();
     
     try {
-        // Get all active signals with metrics
+        // Step 1: Get ALL active signals (we'll fetch prices for all at once - Jupiter v3 is instant)
         const signals = await prisma.signal.findMany({
             where: {
                 trackingStatus: { in: ['ACTIVE', 'ENTRY_PENDING'] }
@@ -36,99 +36,102 @@ export const runAthEnrichmentCycle = async () => {
 
         logger.info(`[ATH Enrichment] Found ${signals.length} active signals`);
 
-        // Step 1: Filter signals that need enrichment
+        if (signals.length === 0) {
+            logger.info('[ATH Enrichment] No active signals');
+            return;
+        }
+
+        // Step 2: Fetch current prices for ALL signals in ONE batch (Jupiter v3 is instant!)
+        const uniqueMints = [...new Set(signals.map(s => s.mint))];
+        logger.info(`[ATH Enrichment] Fetching current prices for ${uniqueMints.length} unique mints (Jupiter v3 batch - instant)`);
+        
+        const startTime = Date.now();
+        const priceMap = await getMultipleTokenPrices(uniqueMints);
+        const fetchTime = Date.now() - startTime;
+        const pricesFound = Object.values(priceMap).filter(p => p !== null && p > 0).length;
+        logger.info(`[ATH Enrichment] Got prices for ${pricesFound}/${uniqueMints.length} tokens in ${fetchTime}ms`);
+
+        // Step 3: Smart filtering - determine which signals need ATH recalculation
         const signalsToCheck = signals.filter(s => {
-            // Must have metrics
-            if (!s.metrics) return true; // New signal, needs initial calculation
-            
-            // Must be stale
-            const age = now - s.metrics.updatedAt.getTime();
-            if (age < STALE_METRICS_MS) return false; // Fresh enough
-            
             // Must have entry data
-            if (!s.entryPrice || !s.entryMarketCap) return false;
+            if (!s.entryPrice || s.entryPrice <= 0) return false;
+            
+            // Must have current price
+            const currentPrice = priceMap[s.mint];
+            if (currentPrice === null || currentPrice === undefined || currentPrice <= 0) return false;
             
             return true;
         });
 
-        logger.info(`[ATH Enrichment] ${signalsToCheck.length} signals have stale metrics`);
-
-        if (signalsToCheck.length === 0) {
-            logger.info('[ATH Enrichment] No signals need enrichment');
-            return;
-        }
-
-        // Step 2: Fetch current prices for all signals in batch (FAST)
-        const uniqueMints = [...new Set(signalsToCheck.map(s => s.mint))];
-        logger.info(`[ATH Enrichment] Fetching current prices for ${uniqueMints.length} unique mints`);
-        
-        const priceMap = await getMultipleTokenPrices(uniqueMints);
-        const pricesFound = Object.values(priceMap).filter(p => p !== null && p > 0).length;
-        logger.info(`[ATH Enrichment] Got prices for ${pricesFound}/${uniqueMints.length} tokens`);
-
-        // Step 3: Smart filtering - only enrich signals that might have new ATH
+        // Step 4: Smart filtering - only enrich signals that might have new ATH
         const signalsToEnrich: typeof signalsToCheck = [];
+        let skippedDead = 0;
+        let skippedFresh = 0;
+        let skippedNoChange = 0;
         
         for (const sig of signalsToCheck) {
-            const currentPrice = priceMap[sig.mint];
+            const currentPrice = priceMap[sig.mint]!; // Already validated above
+            const entryPrice = sig.entryPrice!; // Already validated above
             
-            // Skip if no current price
-            if (currentPrice === null || currentPrice === undefined || currentPrice <= 0) {
-                continue;
-            }
-
-            // Skip if no entry price
-            if (!sig.entryPrice || sig.entryPrice <= 0) {
-                continue;
-            }
-
             // Calculate current multiple
-            const currentMultiple = currentPrice / sig.entryPrice;
+            const currentMultiple = currentPrice / entryPrice;
             const storedAthMultiple = sig.metrics?.athMultiple || 1.0;
+            const metricsAge = sig.metrics ? now - sig.metrics.updatedAt.getTime() : Infinity;
             
-            // OPTIMIZATION 1: Skip if current multiple is way below stored ATH (token is dead)
+            // OPTIMIZATION 1: Skip if metrics are fresh (< 10 min old) and current < stored ATH
+            // Fresh metrics + current below ATH = no new ATH possible, use cached
+            if (metricsAge < STALE_METRICS_MS && currentMultiple < storedAthMultiple * 0.95) {
+                skippedFresh++;
+                continue;
+            }
+            
+            // OPTIMIZATION 2: Skip if current multiple is way below stored ATH (token is dead)
             // If current is < 50% of stored ATH and current is < 0.5x, likely dead token
             if (storedAthMultiple > 1.0 && currentMultiple < storedAthMultiple * 0.5 && currentMultiple < 0.5) {
-                // Token is at -50% or worse and ATH was higher - likely dead, skip
+                skippedDead++;
                 continue;
             }
 
-            // OPTIMIZATION 2: Skip if current multiple is significantly below entry (dead token)
+            // OPTIMIZATION 3: Skip if current multiple is significantly below entry (dead token)
             // If current is < 0.1x (down 90%+) and stored ATH is also low, likely dead
             if (currentMultiple < 0.1 && storedAthMultiple < 1.5) {
-                // Token is down 90%+ and never hit a good ATH - likely dead, skip
+                skippedDead++;
                 continue;
             }
 
-            // OPTIMIZATION 3: Check volume - skip if no recent volume
+            // OPTIMIZATION 4: Check volume - skip if no recent volume (dead token)
             const latestSample = sig.priceSamples[0];
             if (latestSample) {
                 const sampleAge = now - latestSample.sampledAt.getTime();
                 // If last sample is > 1 hour old and had no volume, skip
                 if (sampleAge > 60 * 60 * 1000 && (latestSample.volume ?? 0) <= 0) {
+                    skippedDead++;
                     continue;
                 }
             }
 
-            // OPTIMIZATION 4: Only recalculate if current suggests ATH might have changed
-            // If current multiple > stored ATH, definitely recalculate
-            // If current multiple is close to stored ATH (within 10%), recalculate (might have hit new ATH)
-            // If stored ATH is very old (> 1 hour), recalculate anyway
-            const metricsAge = sig.metrics ? now - sig.metrics.updatedAt.getTime() : Infinity;
+            // OPTIMIZATION 5: Only recalculate if current suggests ATH might have changed
+            // If current multiple > stored ATH, definitely recalculate (new peak!)
+            // If current multiple is close to stored ATH (within 10%), recalculate (might have hit new peak)
+            // If no metrics yet, recalculate (initial calculation)
+            // If metrics are very old (> 1 hour), recalculate anyway (safety check)
             const shouldRecalculate = 
-                currentMultiple > storedAthMultiple * 1.05 || // Current is 5%+ above stored ATH
-                currentMultiple > storedAthMultiple * 0.9 || // Current is within 10% of stored ATH (might have hit new peak)
+                !sig.metrics || // No metrics yet - initial calculation
+                currentMultiple > storedAthMultiple * 1.05 || // Current is 5%+ above stored ATH (new peak!)
+                (currentMultiple > storedAthMultiple * 0.9 && metricsAge > STALE_METRICS_MS) || // Current within 10% of stored ATH and stale
                 metricsAge > 60 * 60 * 1000; // Metrics are > 1 hour old (recalculate anyway)
 
             if (shouldRecalculate) {
                 signalsToEnrich.push(sig);
+            } else {
+                skippedNoChange++;
             }
         }
-
-        logger.info(`[ATH Enrichment] Smart filtering: ${signalsToEnrich.length}/${signalsToCheck.length} signals need ATH recalculation`);
+        
+        logger.info(`[ATH Enrichment] Smart filtering: ${signalsToEnrich.length} need ATH, ${skippedFresh} fresh (cached), ${skippedDead} dead (skipped), ${skippedNoChange} no change (skipped)`);
 
         if (signalsToEnrich.length === 0) {
-            logger.info('[ATH Enrichment] No signals need ATH recalculation after smart filtering');
+            logger.info('[ATH Enrichment] No signals need ATH recalculation - all using cached ATH or skipped as dead');
             return;
         }
 
@@ -173,7 +176,10 @@ export const runAthEnrichmentCycle = async () => {
             }
         }
 
-        logger.info(`[ATH Enrichment] Cycle complete: ${enriched} enriched, ${failed} failed, ${signalsToEnrich.length - enriched - failed} skipped`);
+        const totalProcessed = signals.length;
+        const totalSkipped = skippedFresh + skippedDead + skippedNoChange;
+        logger.info(`[ATH Enrichment] Cycle complete: ${enriched} enriched, ${failed} failed, ${totalSkipped} skipped (${skippedFresh} fresh, ${skippedDead} dead, ${skippedNoChange} no change)`);
+        logger.info(`[ATH Enrichment] Efficiency: ${((totalSkipped / totalProcessed) * 100).toFixed(1)}% skipped, ${((enriched / totalProcessed) * 100).toFixed(1)}% enriched`);
         
     } catch (error) {
         logger.error('[ATH Enrichment] Error in enrichment cycle:', error);
