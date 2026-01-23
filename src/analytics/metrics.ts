@@ -379,9 +379,7 @@ export const enrichSignalMetrics = async (
                 timeFromDrawdownToAth = timeToAth;
             }
 
-            // Store max drawdown market cap and time from drawdown to ATH in a JSON field or calculate on-the-fly
-            // For now, we'll store them in the metrics object (we can add DB fields later if needed)
-            // But we'll calculate them on-the-fly in the display since they're derived from existing data
+            // Store max drawdown market cap and time from drawdown to ATH in metrics for display
             
             if (sig.metrics) {
                 // UPDATE
@@ -394,6 +392,8 @@ export const enrichSignalMetrics = async (
                         athAt: new Date(maxAt),
                         timeToAth,
                         maxDrawdown,
+                        maxDrawdownMarketCap,
+                        timeFromDrawdownToAth,
                         updatedAt: new Date()
                     }
                 });
@@ -404,12 +404,12 @@ export const enrichSignalMetrics = async (
                 sig.metrics.athAt = new Date(maxAt);
                 sig.metrics.timeToAth = timeToAth;
                 sig.metrics.maxDrawdown = maxDrawdown;
+                sig.metrics.maxDrawdownMarketCap = maxDrawdownMarketCap;
+                sig.metrics.timeFromDrawdownToAth = timeFromDrawdownToAth;
                 sig.metrics.updatedAt = new Date();
                 // Store derived values for display (not in DB schema yet, but available in memory)
                 (sig.metrics as any).maxDrawdownPrice = maxDrawdownPrice;
                 (sig.metrics as any).maxDrawdownAt = new Date(maxDrawdownAt);
-                (sig.metrics as any).maxDrawdownMarketCap = maxDrawdownMarketCap;
-                (sig.metrics as any).timeFromDrawdownToAth = timeFromDrawdownToAth;
             } else {
                 // CREATE
                 const newMetrics = await prisma.signalMetric.create({
@@ -422,15 +422,15 @@ export const enrichSignalMetrics = async (
                         athMarketCap,
                         athAt: new Date(maxAt),
                         timeToAth,
-                        maxDrawdown
+                        maxDrawdown,
+                        maxDrawdownMarketCap,
+                        timeFromDrawdownToAth
                     }
                 });
                 sig.metrics = newMetrics;
                 // Store derived values for display
                 (sig.metrics as any).maxDrawdownPrice = maxDrawdownPrice;
                 (sig.metrics as any).maxDrawdownAt = new Date(maxDrawdownAt);
-                (sig.metrics as any).maxDrawdownMarketCap = maxDrawdownMarketCap;
-                (sig.metrics as any).timeFromDrawdownToAth = timeFromDrawdownToAth;
             }
         }
     } catch (err) {

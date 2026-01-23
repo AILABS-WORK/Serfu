@@ -516,6 +516,8 @@ export const handleLiveSignals = async (ctx: BotContext, forceRefresh = false) =
       const athMult = sig?.metrics?.athMultiple || 0;
       const athPrice = sig?.metrics?.athPrice || 0;
       const storedAthMc = sig?.metrics?.athMarketCap || null;
+      const currentMult = isFinite(item.pnl) ? (item.pnl / 100) + 1 : 0;
+      const effectiveAth = Math.max(athMult, currentMult);
       
       // Calculate ATH market cap - prioritize stored value from DB (calculated by GeckoTerminal)
       let athMc = storedAthMc && storedAthMc > 0 ? storedAthMc : 0;
@@ -533,18 +535,25 @@ export const handleLiveSignals = async (ctx: BotContext, forceRefresh = false) =
         }
       }
       
+      // If current is higher than stored ATH, match market cap to effective ATH
+      if (effectiveAth > athMult && item.entryMc && item.entryMc > 0) {
+        athMc = item.entryMc * effectiveAth;
+      }
+      
       // Last fallback: use ATH multiple * entry market cap
       if (athMc <= 0 && athMult > 0 && item.entryMc && item.entryMc > 0) {
         athMc = item.entryMc * athMult;
       }
       
-      // Log for debugging
-      if (sig?.metrics) {
-        logger.debug(`[LiveSignals] Display ATH for ${item.mint.slice(0, 8)}...: mult=${athMult.toFixed(2)}, price=${athPrice}, storedMc=${storedAthMc}, calculatedMc=${athMc}`);
+      // Final fallback: use effective ATH if we have it
+      if (athMc <= 0 && effectiveAth > 1.05 && item.entryMc && item.entryMc > 0) {
+        athMc = item.entryMc * effectiveAth;
       }
       
-      const currentMult = isFinite(item.pnl) ? (item.pnl / 100) + 1 : 0;
-      const effectiveAth = Math.max(athMult, currentMult);
+      // Log for debugging
+      if (sig?.metrics) {
+        logger.debug(`[LiveSignals] Display ATH for ${item.mint.slice(0, 8)}...: mult=${athMult.toFixed(2)}, currentMult=${currentMult.toFixed(2)}, effectiveAth=${effectiveAth.toFixed(2)}, price=${athPrice}, storedMc=${storedAthMc}, calculatedMc=${athMc}`);
+      }
       const athLabel = effectiveAth > 1.05
         ? `${effectiveAth.toFixed(1)}x ATH${athMc > 0 ? ` (${UIHelper.formatMarketCap(athMc)})` : ''}`
         : 'ATH N/A';
@@ -559,7 +568,10 @@ export const handleLiveSignals = async (ctx: BotContext, forceRefresh = false) =
           drawdownStr = UIHelper.formatPercent(maxDrawdown);
           // Calculate max drawdown market cap on-the-fly
           // Since maxDrawdownMarketCap is not in DB schema, calculate from maxDrawdown percentage
-          if (item.entryMc && item.entryMc > 0 && maxDrawdown < 0) {
+          const storedDrawdownMc = sig?.metrics?.maxDrawdownMarketCap;
+          if (storedDrawdownMc && storedDrawdownMc > 0) {
+            drawdownMcStr = ` (${UIHelper.formatMarketCap(storedDrawdownMc)})`;
+          } else if (item.entryMc && item.entryMc > 0 && maxDrawdown < 0) {
             // maxDrawdown is negative %, so: drawdownMc = entryMc * (1 + maxDrawdown/100)
             // Example: -20% drawdown means 80% of entry = entryMc * 0.8
             const ddMc = item.entryMc * (1 + (maxDrawdown / 100));
@@ -582,11 +594,13 @@ export const handleLiveSignals = async (ctx: BotContext, forceRefresh = false) =
       // Time to ATH (from metrics, in ms, convert to readable format)
       const timeToAthMs = sig?.metrics?.timeToAth || null;
       let timeToAthStr = 'N/A';
-      if (timeToAthMs !== null && timeToAthMs !== undefined && timeToAthMs > 0) {
+      if (timeToAthMs !== null && timeToAthMs !== undefined && timeToAthMs >= 0) {
         const minutes = Math.floor(timeToAthMs / 60000);
         const hours = Math.floor(minutes / 60);
         const days = Math.floor(hours / 24);
-        if (days > 0) {
+        if (timeToAthMs === 0) {
+          timeToAthStr = '<1m';
+        } else if (days > 0) {
           timeToAthStr = `${days}d ${hours % 24}h`;
         } else if (hours > 0) {
           timeToAthStr = `${hours}h ${minutes % 60}m`;
@@ -605,12 +619,23 @@ export const handleLiveSignals = async (ctx: BotContext, forceRefresh = false) =
       // Time from max drawdown to ATH - calculate on-the-fly since not in DB schema
       // If we have timeToAth and maxDrawdown occurred, we can estimate
       let timeFromDrawdownToAthStr = 'N/A';
+      const storedTimeFromDdToAth = sig?.metrics?.timeFromDrawdownToAth ?? null;
       
-      // If we have timeToAth and maxDrawdown < 0, we can show time to ATH as recovery time
-      // (This is an approximation - actual drawdown-to-ATH time would need to be stored)
-      if (timeToAthMs !== null && timeToAthMs > 0 && maxDrawdown !== null && maxDrawdown < 0) {
-        // For now, show time to ATH as the recovery window
-        // In the future, we'd need to store maxDrawdownAt timestamp in DB
+      if (storedTimeFromDdToAth !== null && storedTimeFromDdToAth > 0) {
+        const minutes = Math.floor(storedTimeFromDdToAth / 60000);
+        const hours = Math.floor(minutes / 60);
+        const days = Math.floor(hours / 24);
+        if (days > 0) {
+          timeFromDrawdownToAthStr = `${days}d ${hours % 24}h`;
+        } else if (hours > 0) {
+          timeFromDrawdownToAthStr = `${hours}h ${minutes % 60}m`;
+        } else if (minutes > 0) {
+          timeFromDrawdownToAthStr = `${minutes}m`;
+        } else {
+          timeFromDrawdownToAthStr = '<1m';
+        }
+      } else if (timeToAthMs !== null && timeToAthMs > 0 && maxDrawdown !== null && maxDrawdown < 0) {
+        // Fallback approximation: use timeToAth as recovery window
         const minutes = Math.floor(timeToAthMs / 60000);
         const hours = Math.floor(minutes / 60);
         const days = Math.floor(hours / 24);

@@ -30,7 +30,7 @@ export const getMultipleTokenPrices = async (mints: string[]): Promise<Record<st
     }
 
     const results: Record<string, number | null> = {};
-    
+
     logger.info(`[Jupiter] Fetching prices for ${mints.length} tokens in ${chunks.length} chunks (${CHUNK_SIZE} per chunk, ${MAX_PARALLEL_CHUNKS} parallel)`);
 
     // Process chunks in parallel batches for maximum speed
