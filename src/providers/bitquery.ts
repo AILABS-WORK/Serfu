@@ -1,7 +1,7 @@
 import { logger } from '../utils/logger';
 import axios from 'axios';
 
-const BITQUERY_ENDPOINT = 'https://streaming.bitquery.io/eap'; // v2 endpoint usually
+const BITQUERY_ENDPOINT = 'https://streaming.bitquery.io/graphql'; // Bitquery streaming GraphQL endpoint
 
 export interface BitqueryTradeStats {
   token: {
@@ -428,50 +428,23 @@ export class BitqueryProvider {
     const query = `
       query TokenPriceExtremes($mint: String!, $since: DateTime!) {
         Solana(dataset: combined) {
-          MaxTrade: DEXTradeByTokens(
-            limit: { count: 1 }
-            orderBy: { descendingByField: "Trade_PriceInUSD" }
+          DEXTradeByTokens(
             where: {
               Block: { Time: { since: $since } }
-              Trade: { Currency: { MintAddress: { is: $mint } } }
-              PriceAsymmetry: { lt: 0.1 }
-              AmountInUSD: { gt: "1" }
+              Trade: {
+                Currency: { MintAddress: { is: $mint } }
+                Side: { AmountInUSD: { gt: "1" } }
+              }
             }
           ) {
-            Block {
-              Time
-            }
             Trade {
-              PriceInUSD
+              maxPrice: PriceInUSD(maximum: Trade_PriceInUSD)
+              minPrice: PriceInUSD(minimum: Trade_PriceInUSD)
             }
-          }
-          MinTrade: DEXTradeByTokens(
-            limit: { count: 1 }
-            orderBy: { ascendingByField: "Trade_PriceInUSD" }
-            where: {
-              Block: { Time: { since: $since } }
-              Trade: { Currency: { MintAddress: { is: $mint } } }
-              PriceAsymmetry: { lt: 0.1 }
-              AmountInUSD: { gt: "1" }
-            }
-          ) {
             Block {
-              Time
+              maxTime: Time(maximum: Block_Time)
+              minTime: Time(minimum: Block_Time)
             }
-            Trade {
-              PriceInUSD
-            }
-          }
-          Aggregates: DEXTradeByTokens(
-            where: {
-              Block: { Time: { since: $since } }
-              Trade: { Currency: { MintAddress: { is: $mint } } }
-            }
-          ) {
-            maxPrice: PriceInUSD(maximum: Trade_PriceInUSD)
-            minPrice: PriceInUSD(minimum: Trade_PriceInUSD)
-            maxTime: Time(maximum: Block_Time)
-            minTime: Time(minimum: Block_Time)
           }
         }
       }
@@ -494,14 +467,11 @@ export class BitqueryProvider {
         return { maxPrice: 0, maxAt: since, minPrice: 0, minAt: since };
       }
 
-      const maxRow = response.data.data?.Solana?.MaxTrade?.[0];
-      const minRow = response.data.data?.Solana?.MinTrade?.[0];
-      const aggRow = response.data.data?.Solana?.Aggregates?.[0];
-
-      const maxPrice = Number(maxRow?.Trade?.PriceInUSD || aggRow?.maxPrice || 0);
-      const minPrice = Number(minRow?.Trade?.PriceInUSD || aggRow?.minPrice || 0);
-      const maxAt = maxRow?.Block?.Time ? new Date(maxRow.Block.Time) : (aggRow?.maxTime ? new Date(aggRow.maxTime) : since);
-      const minAt = minRow?.Block?.Time ? new Date(minRow.Block.Time) : (aggRow?.minTime ? new Date(aggRow.minTime) : since);
+      const row = response.data.data?.Solana?.DEXTradeByTokens?.[0];
+      const maxPrice = Number(row?.Trade?.maxPrice || 0);
+      const minPrice = Number(row?.Trade?.minPrice || 0);
+      const maxAt = row?.Block?.maxTime ? new Date(row.Block.maxTime) : since;
+      const minAt = row?.Block?.minTime ? new Date(row.Block.minTime) : since;
 
       return {
         maxPrice,
