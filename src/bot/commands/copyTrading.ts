@@ -322,7 +322,7 @@ export const handleStrategyDraftSummary = async (ctx: Context) => {
     }).join(' | ');
     message += `Day Groups: ${dayMap}\n`;
   }
-  message += `Conditions: Min Vol ${conditions.minVolume ? UIHelper.formatMarketCap(conditions.minVolume) : 'Off'} | Min Mentions ${conditions.minMentions ?? 'Off'} | Min MC ${conditions.minMarketCap ? UIHelper.formatMarketCap(conditions.minMarketCap) : 'Off'} | Max MC ${conditions.maxMarketCap ? UIHelper.formatMarketCap(conditions.maxMarketCap) : 'Off'}\n`;
+  message += `Conditions: Min Vol ${conditions.minVolume ? UIHelper.formatMarketCap(conditions.minVolume) : 'Off'} | Min Mentions ${conditions.minMentions ?? 'Off'} | Min Confluence ${conditions.minConfluence ?? 'Off'} | Min MC ${conditions.minMarketCap ? UIHelper.formatMarketCap(conditions.minMarketCap) : 'Off'} | Max MC ${conditions.maxMarketCap ? UIHelper.formatMarketCap(conditions.maxMarketCap) : 'Off'}\n`;
   message += `TP/SL: ${conditions.takeProfitMultiple ? `${conditions.takeProfitMultiple.toFixed(2)}x` : 'Off'} / ${conditions.stopLossMultiple ? `${conditions.stopLossMultiple.toFixed(2)}x` : 'Off'}\n`;
   message += `TP Rules: ${conditions.takeProfitRules?.length ? conditions.takeProfitRules.map((r: any) => `${r.multiple}x${r.sellPct ? ` ${Math.round(r.sellPct * 100)}%` : ''}${r.maxMinutes ? ` ${r.maxMinutes}m` : ''}`).join(', ') : 'Off'}\n`;
   message += `SL Rules: ${conditions.stopLossRules?.length ? conditions.stopLossRules.map((r: any) => `${r.multiple}x${r.sellPct ? ` ${Math.round(r.sellPct * 100)}%` : ''}${r.maxMinutes ? ` ${r.maxMinutes}m` : ''}`).join(', ') : 'Off'}\n`;
@@ -384,7 +384,8 @@ export const handleStrategyDraftSummary = async (ctx: Context) => {
         [{ text: '⚙️ Set Fees', callback_data: 'strategy_set_fees' }],
         [{ text: '🗓️ Schedule', callback_data: 'strategy_schedule' }],
         [{ text: '🧰 Conditions', callback_data: 'strategy_conditions' }],
-        [{ text: '🧪 Backtest', callback_data: 'strategy_backtest' }],
+        [{ text: '🧪 Backtest Builder', callback_data: 'strategy_backtest' }],
+        [{ text: '📦 Strategy Templates', callback_data: 'strategy_templates' }],
         [{ text: '🔀 Rule Priority', callback_data: 'strategy_rule_priority' }],
         [{ text: stopOnFirstRuleHit ? '⛔ Stop First ON' : '▶️ Stop First OFF', callback_data: 'strategy_stop_first' }],
         [{ text: '💾 Save Preset', callback_data: 'strategy_save' }],
@@ -494,6 +495,7 @@ export const handleStrategyConditionsView = async (ctx: Context) => {
   let message = UIHelper.header('STRATEGY CONDITIONS', '🧰');
   message += `Min Volume: *${c.minVolume ? UIHelper.formatMarketCap(c.minVolume) : 'Off'}*\n`;
   message += `Min Mentions: *${c.minMentions ?? 'Off'}*\n`;
+  message += `Min Confluence: *${c.minConfluence ?? 'Off'}*\n`;
   message += `Min MC: *${c.minMarketCap ? UIHelper.formatMarketCap(c.minMarketCap) : 'Off'}*\n`;
   message += `Max MC: *${c.maxMarketCap ? UIHelper.formatMarketCap(c.maxMarketCap) : 'Off'}*\n`;
   message += `Take Profit: *${c.takeProfitMultiple ? `${c.takeProfitMultiple.toFixed(2)}x` : 'Off'}*\n`;
@@ -508,6 +510,7 @@ export const handleStrategyConditionsView = async (ctx: Context) => {
       inline_keyboard: [
         [{ text: 'Set Min Volume', callback_data: 'strategy_cond:volume' }],
         [{ text: 'Set Min Mentions', callback_data: 'strategy_cond:mentions' }],
+        [{ text: 'Set Min Confluence', callback_data: 'strategy_cond:confluence' }],
         [{ text: 'Set Min MC', callback_data: 'strategy_cond:min_mc' }],
         [{ text: 'Set Max MC', callback_data: 'strategy_cond:max_mc' }],
         [{ text: 'Set Take Profit', callback_data: 'strategy_cond:tp' }],
@@ -559,6 +562,30 @@ export const handleStrategySavePreset = async (ctx: Context) => {
   });
 
   await ctx.reply('✅ Strategy preset saved.');
+};
+
+export const handleStrategyTemplates = async (ctx: Context) => {
+  const message = UIHelper.header('STRATEGY TEMPLATES', '📦') +
+    `1) Balanced Swing\n` +
+    `• MC: $10k–$200k | Mentions: 2\n` +
+    `• TP: 2.5x (50%), 4x (50%) | SL: 0.65x\n\n` +
+    `2) High Return (Moonshot)\n` +
+    `• MC: $5k–$150k | Mentions: 1\n` +
+    `• TP: 3x/5x/8x | SL: 0.6x\n\n` +
+    `3) High Win Rate (Scalper)\n` +
+    `• MC: $20k–$300k | Mentions: 3\n` +
+    `• TP: 2x/3x | SL: 0.7x\n\n` +
+    `4) Confluence Only\n` +
+    `• Confluence: 3+ | MC: $10k–$200k\n` +
+    `• TP: 2.5x/4x/6x | SL: 0.65x\n\n` +
+    `5) Microcap Sniper\n` +
+    `• MC: < $15k | Mentions: 1\n` +
+    `• TP: 2x/4x | SL: 0.5x\n`;
+
+  await ctx.reply(message, {
+    parse_mode: 'Markdown',
+    reply_markup: { inline_keyboard: [[{ text: '🔙 Back', callback_data: 'strategy_summary' }]] }
+  });
 };
 
 export const handleStrategyPresetsList = async (ctx: Context) => {
@@ -650,7 +677,7 @@ export const handleStrategyPresetDetails = async (ctx: Context, presetId: number
     }).join(' | ');
     message += `Day Groups: ${dayMap}\n`;
   }
-  message += `Min Vol: ${conditions.minVolume ? UIHelper.formatMarketCap(conditions.minVolume) : 'Off'} | Min Mentions: ${conditions.minMentions ?? 'Off'}\n`;
+  message += `Min Vol: ${conditions.minVolume ? UIHelper.formatMarketCap(conditions.minVolume) : 'Off'} | Min Mentions: ${conditions.minMentions ?? 'Off'} | Min Confluence: ${conditions.minConfluence ?? 'Off'}\n`;
   message += `Min MC: ${conditions.minMarketCap ? UIHelper.formatMarketCap(conditions.minMarketCap) : 'Off'} | Max MC: ${conditions.maxMarketCap ? UIHelper.formatMarketCap(conditions.maxMarketCap) : 'Off'}\n`;
   message += `TP/SL: ${conditions.takeProfitMultiple ? `${conditions.takeProfitMultiple.toFixed(2)}x` : 'Off'} / ${conditions.stopLossMultiple ? `${conditions.stopLossMultiple.toFixed(2)}x` : 'Off'}\n`;
   message += `Rule Priority: ${conditions.rulePriority || 'TP_FIRST'} | Stop First: ${conditions.stopOnFirstRuleHit ? 'ON' : 'OFF'}\n`;
@@ -830,7 +857,12 @@ export const handleStrategyBacktest = async (ctx: Context) => {
 
   // Mentions count (approx): total calls per mint in scope
   const mintCounts = new Map<string, number>();
-  signals.forEach(s => mintCounts.set(s.mint, (mintCounts.get(s.mint) || 0) + 1));
+  const mintConfluence = new Map<string, Set<number>>();
+  signals.forEach(s => {
+    mintCounts.set(s.mint, (mintCounts.get(s.mint) || 0) + 1);
+    if (!mintConfluence.has(s.mint)) mintConfluence.set(s.mint, new Set());
+    if (s.groupId) mintConfluence.get(s.mint)!.add(s.groupId);
+  });
 
   const coverage = {
     metrics: signals.filter(s => !!s.metrics).length,
@@ -871,6 +903,10 @@ export const handleStrategyBacktest = async (ctx: Context) => {
     if (conditions.minMentions) {
       const mentions = mintCounts.get(s.mint) || 0;
       if (mentions < conditions.minMentions) return false;
+    }
+    if (conditions.minConfluence) {
+      const confluence = mintConfluence.get(s.mint)?.size || 0;
+      if (confluence < conditions.minConfluence) return false;
     }
     return true;
   });

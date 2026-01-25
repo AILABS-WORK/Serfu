@@ -224,6 +224,20 @@ export const ingestMiddleware: Middleware<Context> = async (ctx, next) => {
         return next();
       }
 
+      if (pending.type === 'strategy_cond_confluence') {
+        const num = parseInt(text.trim(), 10);
+        if (!num || num < 1) {
+          await ctx.reply('❌ Invalid confluence. Use a whole number >= 1.');
+          return next();
+        }
+        if (!(ctx as any).session.strategyDraft) (ctx as any).session.strategyDraft = {};
+        if (!(ctx as any).session.strategyDraft.conditions) (ctx as any).session.strategyDraft.conditions = {};
+        (ctx as any).session.strategyDraft.conditions.minConfluence = num;
+        const { handleStrategyConditionsView } = await import('./commands/copyTrading');
+        await handleStrategyConditionsView(ctx as any);
+        return next();
+      }
+
       if (pending.type === 'strategy_cond_min_mc') {
         const val = UIHelper.parseCompactNumber(text);
         if (val === null) {

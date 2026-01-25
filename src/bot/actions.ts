@@ -1065,6 +1065,7 @@ ATH: ${ath.toFixed(2)}x
       if (!ctx.session) ctx.session = {} as any;
       if (type === 'volume') ctx.session.pendingInput = { type: 'strategy_cond_volume' };
       if (type === 'mentions') ctx.session.pendingInput = { type: 'strategy_cond_mentions' };
+      if (type === 'confluence') ctx.session.pendingInput = { type: 'strategy_cond_confluence' };
       if (type === 'min_mc') ctx.session.pendingInput = { type: 'strategy_cond_min_mc' };
       if (type === 'max_mc') ctx.session.pendingInput = { type: 'strategy_cond_max_mc' };
       if (type === 'tp') ctx.session.pendingInput = { type: 'strategy_cond_tp' };
@@ -1105,6 +1106,8 @@ ATH: ${ath.toFixed(2)}x
           await ctx.reply('Enter TP rule like "4x 50% 1m" or "3x 100%".');
       } else if (type === 'sl_rule') {
           await ctx.reply('Enter SL rule like "0.7x 50% 5m" or "0.6x 100%".');
+      } else if (type === 'confluence') {
+          await ctx.reply('Enter minimum confluence (number of distinct sources, e.g., 2 or 3).');
       } else {
           await ctx.reply('Enter value (e.g., 25K, 1.2M) or integer for mentions:');
       }
@@ -1114,6 +1117,12 @@ ATH: ${ath.toFixed(2)}x
   bot.action('strategy_save', async (ctx) => {
       const { handleStrategySavePreset } = await import('./commands/copyTrading');
       await handleStrategySavePreset(ctx as any);
+      await ctx.answerCbQuery();
+  });
+
+  bot.action('strategy_templates', async (ctx) => {
+      const { handleStrategyTemplates } = await import('./commands/copyTrading');
+      await handleStrategyTemplates(ctx as any);
       await ctx.answerCbQuery();
   });
 
