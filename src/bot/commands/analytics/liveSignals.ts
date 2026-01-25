@@ -25,7 +25,8 @@ const buildCache = async (
   ctx: BotContext,
   timeframeCutoff: Date,
   timeframeLabel: string,
-  chain: 'solana' | 'bsc' | 'both'
+  chain: 'solana' | 'bsc' | 'both',
+  timeBasis: 'latest' | 'created'
 ): Promise<LiveSignalsCache> => {
   const ownerTelegramId = ctx.from?.id ? BigInt(ctx.from.id) : null;
   if (!ownerTelegramId) {
@@ -49,12 +50,22 @@ const buildCache = async (
   }
 
   if (ownedChatIds.length === 0 && forwardedSignalIds.length === 0) {
-    return { signals: [], fetchedAt: Date.now(), timeframe: timeframeLabel, chain };
+    return { signals: [], fetchedAt: Date.now(), timeframe: timeframeLabel, chain, timeBasis };
   }
+
+  const timeFilter =
+    timeBasis === 'created'
+      ? {
+          OR: [
+            { entryPriceAt: { gte: timeframeCutoff } },
+            { entryPriceAt: null, detectedAt: { gte: timeframeCutoff } }
+          ]
+        }
+      : { detectedAt: { gte: timeframeCutoff } };
 
   const signals = await prisma.signal.findMany({
     where: {
-      detectedAt: { gte: timeframeCutoff },
+      ...timeFilter,
       trackingStatus: { in: ['ACTIVE', 'ENTRY_PENDING'] },
       ...(chain !== 'both' ? { chain } : {}),
       OR: [
@@ -70,7 +81,7 @@ const buildCache = async (
   });
 
   if (signals.length === 0) {
-    return { signals: [], fetchedAt: Date.now(), timeframe: timeframeLabel, chain };
+    return { signals: [], fetchedAt: Date.now(), timeframe: timeframeLabel, chain, timeBasis };
   }
 
   // CRITICAL: Deduplicate by mint BEFORE fetching prices to reduce API calls
@@ -85,10 +96,11 @@ const buildCache = async (
       mintMap.set(sig.mint, sig);
     }
     // Track first and latest detection times per mint
+    const effectiveCreatedAt = sig.entryPriceAt ?? sig.detectedAt;
     const firstDetected = mintFirstDetected.get(sig.mint);
     const latestDetected = mintLatestDetected.get(sig.mint);
-    if (!firstDetected || sig.detectedAt.getTime() < firstDetected.getTime()) {
-      mintFirstDetected.set(sig.mint, sig.detectedAt);
+    if (!firstDetected || effectiveCreatedAt.getTime() < firstDetected.getTime()) {
+      mintFirstDetected.set(sig.mint, effectiveCreatedAt);
     }
     if (!latestDetected || sig.detectedAt.getTime() > latestDetected.getTime()) {
       mintLatestDetected.set(sig.mint, sig.detectedAt);
@@ -218,7 +230,8 @@ const buildCache = async (
     signals: cachedSignals,
     fetchedAt: Date.now(),
     timeframe: timeframeLabel,
-    chain
+    chain,
+    timeBasis
   };
 };
 
@@ -230,6 +243,7 @@ export const handleLiveSignals = async (ctx: BotContext, forceRefresh = false) =
     const liveFilters = ctx.session?.liveFilters || {};
     const timeframeLabel = (liveFilters as any).timeframe || '24H';
     const chain = (liveFilters as any).chain || 'both';
+    const timeBasis = (liveFilters as any).timeBasis === 'created' ? 'created' : 'latest';
     const timeframeParsed = UIHelper.parseTimeframeInput(timeframeLabel);
     const timeframeCutoff = timeframeLabel === 'ALL'
       ? new Date(0)
@@ -246,11 +260,12 @@ export const handleLiveSignals = async (ctx: BotContext, forceRefresh = false) =
       cached && 
       cached.timeframe === timeframeLabel && 
       cached.chain === chain &&
+      cached.timeBasis === timeBasis &&
       Date.now() - cached.fetchedAt < CACHE_TTL_MS;
     
     // Log cache status for debugging
     if (cached) {
-      logger.info(`[LiveSignals] Cache check: timeframe=${cached.timeframe} vs requested=${timeframeLabel}, chain=${cached.chain} vs requested=${chain}, age=${Date.now() - cached.fetchedAt}ms, fresh=${cacheFresh}`);
+      logger.info(`[LiveSignals] Cache check: timeframe=${cached.timeframe} vs requested=${timeframeLabel}, chain=${cached.chain} vs requested=${chain}, basis=${cached.timeBasis} vs requested=${timeBasis}, age=${Date.now() - cached.fetchedAt}ms, fresh=${cacheFresh}`);
     }
     
     let cache: LiveSignalsCache;
@@ -260,8 +275,8 @@ export const handleLiveSignals = async (ctx: BotContext, forceRefresh = false) =
       // No loading message needed - instant filtering
     } else {
       // Cache is stale or timeframe changed - rebuild
-      if (cached && (cached.timeframe !== timeframeLabel || cached.chain !== chain)) {
-        logger.info(`[LiveSignals] Cache changed - rebuilding (timeframe=${timeframeLabel}, chain=${chain})`);
+      if (cached && (cached.timeframe !== timeframeLabel || cached.chain !== chain || cached.timeBasis !== timeBasis)) {
+        logger.info(`[LiveSignals] Cache changed - rebuilding (timeframe=${timeframeLabel}, chain=${chain}, basis=${timeBasis})`);
       } else if (cached && Date.now() - cached.fetchedAt >= CACHE_TTL_MS) {
         logger.info(`[LiveSignals] Cache expired (age: ${Date.now() - cached.fetchedAt}ms) - rebuilding`);
       } else if (forceRefresh) {
@@ -284,7 +299,7 @@ export const handleLiveSignals = async (ctx: BotContext, forceRefresh = false) =
       }
       
       logger.info('[LiveSignals] Building fresh cache with real-time prices');
-      cache = await buildCache(ctx, timeframeCutoff, timeframeLabel, chain);
+      cache = await buildCache(ctx, timeframeCutoff, timeframeLabel, chain, timeBasis);
       ctx.session.liveSignalsCache = cache;
     }
 
@@ -733,6 +748,11 @@ export const handleLiveSignals = async (ctx: BotContext, forceRefresh = false) =
       { text: chain === 'bsc' ? '✅ BSC' : 'BSC', callback_data: 'live_chain:bsc' }
     ];
 
+    const basisRow = [
+      { text: timeBasis === 'latest' ? '✅ Latest' : 'Latest', callback_data: 'live_basis:latest' },
+      { text: timeBasis === 'created' ? '✅ Created' : 'Created', callback_data: 'live_basis:created' }
+    ];
+
     const filters = [
       [
         { text: '🔥 Trending', callback_data: 'live_sort:trending' },
@@ -740,6 +760,7 @@ export const handleLiveSignals = async (ctx: BotContext, forceRefresh = false) =
         { text: '💰 Highest PnL', callback_data: 'live_sort:pnl' }
       ],
       chainRow,
+      basisRow,
       [
         { text: minMult === 2 ? '✅ > 2x' : '🚀 > 2x', callback_data: 'live_filter:2x' },
         { text: minMult === 5 ? '✅ > 5x' : '🌕 > 5x', callback_data: 'live_filter:5x' },

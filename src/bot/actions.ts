@@ -395,6 +395,30 @@ Max Drawdown: ${(dd * 100).toFixed(2)}%
       }
   });
 
+  bot.action(/^live_basis:(.*)$/, async (ctx) => {
+      try {
+          const basis = ctx.match[1];
+          if (!ctx.session) ctx.session = {};
+          if (!ctx.session.liveFilters) ctx.session.liveFilters = {};
+
+          if (basis === 'latest' || basis === 'created') {
+              (ctx.session.liveFilters as any).timeBasis = basis;
+          }
+
+          if (ctx.session.liveSignalsCache) {
+              ctx.session.liveSignalsCache = undefined;
+          }
+
+          await ctx.answerCbQuery('Time basis updated').catch(() => {});
+          handleLiveSignals(ctx).catch((err) => {
+              logger.error('Error reloading live signals after basis change:', err);
+          });
+      } catch (error) {
+          logger.error('Time basis action error:', error);
+          ctx.answerCbQuery('Error updating time basis');
+      }
+  });
+
   bot.action(/^live_time:(.*)$/, async (ctx) => {
       try {
           const tf = ctx.match[1];

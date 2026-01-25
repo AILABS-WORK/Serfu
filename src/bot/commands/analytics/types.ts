@@ -20,5 +20,6 @@ export interface LiveSignalsCache {
   fetchedAt: number;
   timeframe: string;
   chain: 'solana' | 'bsc' | 'both';
+  timeBasis: 'latest' | 'created';
 }
 
