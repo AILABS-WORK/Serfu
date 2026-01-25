@@ -1322,6 +1322,20 @@ ATH: ${ath.toFixed(2)}x
      }
   });
 
+  bot.action('analytics_backfill', async (ctx) => {
+      try {
+          await ctx.answerCbQuery('Starting full backfill...');
+          await ctx.reply('⏳ Full ATH/DD backfill started in background. This may take a while.');
+          const { runHistoricalMetricsBackfill } = await import('../jobs/historicalMetrics');
+          const { runAthEnrichmentCycle } = await import('../jobs/athEnrichment');
+          runHistoricalMetricsBackfill().catch(err => logger.error('Full backfill failed', err));
+          runAthEnrichmentCycle().catch(err => logger.error('ATH enrichment failed', err));
+      } catch (error) {
+          logger.error('Backfill action error:', error);
+          ctx.reply('❌ Failed to start full backfill.');
+      }
+  });
+
   bot.action('leaderboards_menu', async (ctx) => {
       await ctx.editMessageText('🏆 *Leaderboards*\nSelect a category:', {
           parse_mode: 'Markdown',
