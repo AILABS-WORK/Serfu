@@ -301,17 +301,17 @@ export const handleLiveSignals = async (ctx: BotContext, forceRefresh = false) =
     logger.info(`[LiveSignals] After filtering: ${filtered.length}/${cache.signals.length} signals (sortBy=${sortBy}, minMult=${minMult}, onlyGainers=${onlyGainers})`);
 
     // Sort based on filter type - works with ANY timeframe including ALL
-    if (minMult > 0) {
-      // >2x / >5x: sort by newest creation (firstDetectedAt)
-      filtered.sort((a: CachedSignal, b: CachedSignal) => b.firstDetectedAt.getTime() - a.firstDetectedAt.getTime());
-      logger.info(`[LiveSignals] Sorted by newest (minMult filter)`);
-    } else if (sortBy === 'pnl' || sortBy === 'trending') {
+    if (sortBy === 'pnl' || sortBy === 'trending') {
       // Highest PnL / Trending: separate valid and invalid, sort valid descending
       const valid = filtered.filter(c => isFinite(c.pnl) && c.pnl !== -Infinity);
       const invalid = filtered.filter(c => !isFinite(c.pnl) || c.pnl === -Infinity);
       valid.sort((a, b) => b.pnl - a.pnl); // Highest PnL first
       filtered = [...valid, ...invalid];
       logger.info(`[LiveSignals] Sorted by PnL: ${valid.length} valid, ${invalid.length} invalid`);
+    } else if (minMult > 0) {
+      // >2x / >5x: sort by newest creation (firstDetectedAt)
+      filtered.sort((a: CachedSignal, b: CachedSignal) => b.firstDetectedAt.getTime() - a.firstDetectedAt.getTime());
+      logger.info(`[LiveSignals] Sorted by newest (minMult filter)`);
     } else if (sortBy === 'newest') {
       // Newest: sort by firstDetectedAt (creation time)
       filtered.sort((a: CachedSignal, b: CachedSignal) => b.firstDetectedAt.getTime() - a.firstDetectedAt.getTime());
