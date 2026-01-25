@@ -47,6 +47,15 @@ export const getHistoricalMetricsBackfillProgress = (): HistoricalMetricsBackfil
 export const updateHistoricalMetrics = async (targetSignalIds?: number[]) => {
   try {
     logger.info(`Starting historical metrics update job... ${targetSignalIds ? `(Targeting ${targetSignalIds.length} signals)` : ''}`);
+    const shouldTrackProgress = backfillProgress.status === 'running' && !!targetSignalIds?.length;
+    const markProcessed = (signalId?: number) => {
+      if (!shouldTrackProgress) return;
+      updateBackfillProgress({
+        processedSignals: backfillProgress.processedSignals + 1,
+        lastSignalId: signalId ?? backfillProgress.lastSignalId
+      });
+    };
+    const ohlcvCache = new Map<string, any[]>();
     
     // Get active signals
     // OPTIMIZATION: Only check signals created in the last 7 days for detailed "Recent Calls" accuracy
@@ -100,16 +109,22 @@ export const updateHistoricalMetrics = async (targetSignalIds?: number[]) => {
                 // OPTIMIZED: Use GeckoTerminal first (fastest, best success rate)
                 // Benchmark showed GeckoTerminal minute parallel: 248.83ms/token with 3/6 success
                 // Bitquery: 0% success rate
-                let ohlcv: any[] = [];
-
                 // Priority 1: GeckoTerminal (Fastest, best success rate)
                 // Use progressive timeframe strategy: minute for recent, hour for older
                 let timeframe: 'minute' | 'hour' | 'day' = ageHours <= 16 ? 'minute' : ageHours <= 720 ? 'hour' : 'day';
                 const tfMs = timeframe === 'minute' ? 60 * 1000 : timeframe === 'hour' ? 60 * 60 * 1000 : 24 * 60 * 60 * 1000;
                 const limit = Math.min(1000, Math.max(10, Math.ceil((now - fetchStart) / tfMs) + 5));
+                let ohlcv: any[] = [];
+                const cacheKey = `${signal.mint}:${timeframe}:${limit}:${fetchStart}`;
                 
                 try {
-                    ohlcv = await geckoTerminal.getOHLCV(signal.mint, timeframe, limit);
+                    const cached = ohlcvCache.get(cacheKey);
+                    if (cached) {
+                      ohlcv = cached;
+                    } else {
+                      ohlcv = await geckoTerminal.getOHLCV(signal.mint, timeframe, limit);
+                      ohlcvCache.set(cacheKey, ohlcv);
+                    }
                     
                     // If minute candles don't cover entry period, try hour candles
                     if (timeframe === 'minute' && ohlcv.length > 0) {
@@ -118,7 +133,14 @@ export const updateHistoricalMetrics = async (targetSignalIds?: number[]) => {
                         // If oldest candle is > 5 minutes after signal, try hourly
                         if (oldestCandle.timestamp > signalTime + 300000) {
                             timeframe = 'hour';
-                            ohlcv = await geckoTerminal.getOHLCV(signal.mint, timeframe, 1000);
+                            const fallbackKey = `${signal.mint}:${timeframe}:1000:${fetchStart}`;
+                            const cachedFallback = ohlcvCache.get(fallbackKey);
+                            if (cachedFallback) {
+                              ohlcv = cachedFallback;
+                            } else {
+                              ohlcv = await geckoTerminal.getOHLCV(signal.mint, timeframe, 1000);
+                              ohlcvCache.set(fallbackKey, ohlcv);
+                            }
                         }
                     }
                 } catch (e) {
@@ -219,9 +241,11 @@ export const updateHistoricalMetrics = async (targetSignalIds?: number[]) => {
                         updatedAt: new Date()
                     }
                 });
+                markProcessed(signal.id);
                 
             } catch (err) {
                 logger.error(`Error updating history for ${signal.mint}:`, err);
+                markProcessed(signal.id);
             }
         }));
 
