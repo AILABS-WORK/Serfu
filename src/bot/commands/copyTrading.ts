@@ -807,6 +807,13 @@ export const handleStrategyBacktest = async (ctx: Context) => {
         ]
       }
     : {};
+  let statusMsg: any = null;
+  if (ctx.callbackQuery && ctx.callbackQuery.message) {
+    statusMsg = ctx.callbackQuery.message;
+  } else {
+    statusMsg = await ctx.reply('⏳ Backtest running...');
+  }
+
   const signals = await prisma.signal.findMany({
     where: {
       ...timeFilter,
@@ -825,13 +832,33 @@ export const handleStrategyBacktest = async (ctx: Context) => {
   const mintCounts = new Map<string, number>();
   signals.forEach(s => mintCounts.set(s.mint, (mintCounts.get(s.mint) || 0) + 1));
 
+  const coverage = {
+    metrics: signals.filter(s => !!s.metrics).length,
+    ath: signals.filter(s => (s.metrics?.athMultiple ?? 0) > 0).length,
+    time: signals.filter(s => s.metrics?.timeToAth !== null && s.metrics?.timeToAth !== undefined).length,
+    dd: signals.filter(s => s.metrics?.maxDrawdown !== null && s.metrics?.maxDrawdown !== undefined).length
+  };
+  const coveragePct = Math.round(((coverage.ath + coverage.time + coverage.dd) / (signals.length * 3)) * 100);
+  const coverageBar = UIHelper.progressBar(coveragePct, 100, 10);
+  if (statusMsg?.chat && statusMsg?.message_id) {
+    try {
+      await ctx.telegram.editMessageText(
+        statusMsg.chat.id,
+        statusMsg.message_id,
+        undefined,
+        `⏳ Backtest running...\nCoverage ${coveragePct}% ${coverageBar}\nSignals: ${signals.length}`
+      );
+    } catch {}
+  }
+
   const filtered = signals.filter(s => {
     if (!s.entryMarketCap) return false;
     if (!s.metrics?.athMultiple) return false;
-    if (!withinSchedule(s.detectedAt, schedule)) return false;
+    const entryTime = s.entryPriceAt ?? s.detectedAt;
+    if (!withinSchedule(entryTime, schedule)) return false;
     if (schedule.dayGroups && Object.keys(schedule.dayGroups).length > 0) {
       const dayNames = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
-      const day = dayNames[s.detectedAt.getUTCDay()];
+      const day = dayNames[entryTime.getUTCDay()];
       const allowed = schedule.dayGroups[day] || [];
       if (allowed.length > 0 && s.groupId && !allowed.includes(s.groupId)) return false;
     }
@@ -889,6 +916,7 @@ export const handleStrategyBacktest = async (ctx: Context) => {
   message += `Avg ROI/Trade: *${(result.avgRoi * 100).toFixed(1)}%*\n`;
   message += `Avg Hold Time: *${UIHelper.formatDurationMinutes(result.avgHoldMinutes)}*\n`;
   message += `Max Drawdown: *${result.maxDrawdown.toFixed(1)}%*\n`;
+  message += `Coverage: *${coveragePct}%* (${coverage.ath}/${signals.length} ATH, ${coverage.time}/${signals.length} Time, ${coverage.dd}/${signals.length} DD)\n`;
   message += UIHelper.separator('LIGHT');
   message += `Start Balance: *${startBalanceSol} SOL*\n`;
   message += `End Balance: *${result.endBalance.toFixed(4)} SOL* (${(result.returnPct * 100).toFixed(1)}%)\n`;
