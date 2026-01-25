@@ -1,5 +1,6 @@
 import { Context } from 'telegraf';
 import { getTopStrategies, simulateCopyTrading, computeGroupStrategy, computeUserStrategy } from '../../analytics/copyTrading';
+import { runBacktest } from '../../analytics/backtest';
 import { logger } from '../../utils/logger';
 import { prisma } from '../../db';
 import { getGroupByChatId } from '../../db/groups';
@@ -746,9 +747,17 @@ export const handleStrategyBacktest = async (ctx: Context) => {
     };
   }
 
+  const timeFilter = since
+    ? {
+        OR: [
+          { entryPriceAt: { gte: since } },
+          { entryPriceAt: null, detectedAt: { gte: since } }
+        ]
+      }
+    : {};
   const signals = await prisma.signal.findMany({
     where: {
-      ...(since ? { detectedAt: { gte: since } } : {}),
+      ...timeFilter,
       metrics: { isNot: null },
       ...scope
     },
@@ -792,111 +801,45 @@ export const handleStrategyBacktest = async (ctx: Context) => {
   }
 
   const perTrade = startBalanceSol / filtered.length;
-  let balance = startBalanceSol;
-  let wins = 0;
-  let roiSum = 0;
-  let multSum = 0;
-  let timeSum = 0;
-  let timeCount = 0;
-  let peak = startBalanceSol;
-  let maxDrawdown = 0;
-
-  for (const s of filtered) {
-    const mult = s.metrics?.athMultiple || 0;
-    multSum += mult;
-    let remaining = 1;
-    let realizedMultiple = 0;
-    const timeToAthMin = s.metrics?.timeToAth ? s.metrics.timeToAth / (1000 * 60) : undefined;
-    const minMultiple = s.metrics?.maxDrawdown ? 1 + s.metrics.maxDrawdown : 1;
-    const slDurationMin = s.metrics?.drawdownDuration ? s.metrics.drawdownDuration / (1000 * 60) : undefined;
-    const applyRule = (rule: any, isTp: boolean): boolean => {
-      if (remaining <= 0) return true;
-      const hit = isTp ? mult >= rule.multiple : minMultiple <= rule.multiple;
-      const window = isTp ? timeToAthMin : slDurationMin;
-      const timeOk = !rule.maxMinutes || (window !== undefined && window <= rule.maxMinutes);
-      if (hit && timeOk) {
-        const pct = rule.sellPct ?? 1;
-        const sell = Math.min(remaining, pct);
-        realizedMultiple += sell * rule.multiple;
-        remaining -= sell;
-        if (stopOnFirstRuleHit) {
-          realizedMultiple += remaining * rule.multiple;
-          remaining = 0;
-          return true;
-        }
-      }
-      return false;
-    };
-
-    const sortedTp = [...tpRules].sort((a, b) => a.multiple - b.multiple);
-    const sortedSl = [...slRules].sort((a, b) => a.multiple - b.multiple);
-    if (rulePriority === 'TP_FIRST') {
-      for (const rule of sortedTp) {
-        if (applyRule(rule, true)) break;
-      }
-      for (const rule of sortedSl) {
-        if (applyRule(rule, false)) break;
-      }
-    } else if (rulePriority === 'SL_FIRST') {
-      for (const rule of sortedSl) {
-        if (applyRule(rule, false)) break;
-      }
-      for (const rule of sortedTp) {
-        if (applyRule(rule, true)) break;
-      }
-    } else {
-      const combined = [
-        ...sortedTp.map(r => ({ ...r, isTp: true })),
-        ...sortedSl.map(r => ({ ...r, isTp: false }))
-      ].sort((a, b) => a.multiple - b.multiple);
-      for (const rule of combined) {
-        if (applyRule(rule, rule.isTp)) break;
-      }
+  const result = runBacktest(
+    filtered.map(s => ({
+      id: s.id,
+      mint: s.mint,
+      entryPrice: s.entryPrice,
+      entryMarketCap: s.entryMarketCap,
+      detectedAt: s.detectedAt,
+      metrics: s.metrics
+        ? {
+            athMultiple: s.metrics.athMultiple,
+            timeToAth: s.metrics.timeToAth,
+            maxDrawdown: s.metrics.maxDrawdown,
+            drawdownDuration: s.metrics.drawdownDuration
+          }
+        : null
+    })),
+    {
+      takeProfitMultiple: tp,
+      stopLossMultiple: sl,
+      takeProfitRules: tpRules,
+      stopLossRules: slRules,
+      stopOnFirstRuleHit,
+      rulePriority,
+      feePerSide: feePerSideSol,
+      perTradeAmount: perTrade
     }
-    if (remaining > 0 && sl && minMultiple <= sl) {
-      realizedMultiple += remaining * sl;
-      remaining = 0;
-    }
-    if (remaining > 0 && tp && mult >= tp) {
-      realizedMultiple += remaining * tp;
-      remaining = 0;
-    }
-    if (remaining > 0) {
-      realizedMultiple += remaining * mult;
-      remaining = 0;
-    }
-
-    const gross = perTrade * realizedMultiple;
-    const net = gross - totalFee;
-    const roi = perTrade > 0 ? (net - perTrade) / perTrade : 0;
-    roiSum += roi;
-    if (realizedMultiple >= 2) wins++;
-    balance += net - perTrade;
-    if (balance > peak) peak = balance;
-    const dd = peak > 0 ? (peak - balance) / peak : 0;
-    if (dd > maxDrawdown) maxDrawdown = dd;
-    if (s.metrics?.timeToAth) {
-      timeSum += s.metrics.timeToAth / (1000 * 60);
-      timeCount++;
-    }
-  }
-
-  const avgRoi = roiSum / filtered.length;
-  const avgMult = multSum / filtered.length;
-  const winRate = wins / filtered.length;
-  const avgHold = timeCount ? timeSum / timeCount : 0;
-  const returnPct = (balance - startBalanceSol) / startBalanceSol;
+  );
 
   let message = UIHelper.header('STRATEGY BACKTEST', '🧪');
-  message += `Trades: *${filtered.length}*\n`;
-  message += `Win Rate: *${(winRate * 100).toFixed(1)}%*\n`;
-  message += `Avg Multiple: *${avgMult.toFixed(2)}x*\n`;
-  message += `Avg ROI/Trade: *${(avgRoi * 100).toFixed(1)}%*\n`;
-  message += `Avg Hold Time: *${UIHelper.formatDurationMinutes(avgHold)}*\n`;
-  message += `Max Drawdown: *${(maxDrawdown * 100).toFixed(1)}%*\n`;
+  message += `Trades: *${result.trades}*\n`;
+  const winRatePct = result.trades > 0 ? (result.wins / result.trades) * 100 : 0;
+  message += `Win Rate: *${winRatePct.toFixed(1)}%*\n`;
+  message += `Avg Multiple: *${result.avgMultiple.toFixed(2)}x*\n`;
+  message += `Avg ROI/Trade: *${(result.avgRoi * 100).toFixed(1)}%*\n`;
+  message += `Avg Hold Time: *${UIHelper.formatDurationMinutes(result.avgHoldMinutes)}*\n`;
+  message += `Max Drawdown: *${result.maxDrawdown.toFixed(1)}%*\n`;
   message += UIHelper.separator('LIGHT');
   message += `Start Balance: *${startBalanceSol} SOL*\n`;
-  message += `End Balance: *${balance.toFixed(4)} SOL* (${(returnPct * 100).toFixed(1)}%)\n`;
+  message += `End Balance: *${result.endBalance.toFixed(4)} SOL* (${(result.returnPct * 100).toFixed(1)}%)\n`;
   message += `Fee/Side: *${feePerSideSol} SOL* (Total/Trade: ${totalFee} SOL)\n`;
   message += `_Assumptions: exit at TP/SL rules, then TP/SL, otherwise ATH multiple; SL timing uses drawdown duration when available._\n`;
 

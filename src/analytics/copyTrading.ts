@@ -222,7 +222,10 @@ export const simulateCopyTrading = async (
     const signals = await prisma.signal.findMany({
       where: {
         ...(strategyType === 'user' ? { userId: targetId } : { groupId: targetId }),
-        detectedAt: { gte: cutoff },
+        OR: [
+          { entryPriceAt: { gte: cutoff } },
+          { entryPriceAt: null, detectedAt: { gte: cutoff } }
+        ],
         entryMarketCap: { not: null },
       },
       include: {

@@ -1,6 +1,7 @@
 import { prisma } from '../db';
 import { logger } from '../utils/logger';
 import { enrichSignalsWithCurrentPrice, enrichSignalsBatch } from '../analytics/metrics';
+import { hasComputedAth, hasComputedDrawdown, hasComputedTimes } from '../analytics/metricsUtils';
 import { getMultipleTokenPrices } from '../providers/jupiter';
 
 /**
@@ -77,6 +78,7 @@ export const runAthEnrichmentCycle = async () => {
             const currentMultiple = currentPrice / entryPrice;
             const storedAthMultiple = sig.metrics?.athMultiple || 1.0;
             const metricsAge = sig.metrics ? now - sig.metrics.updatedAt.getTime() : Infinity;
+            const metricsIncomplete = !hasComputedAth(sig.metrics) || !hasComputedDrawdown(sig.metrics) || !hasComputedTimes(sig.metrics);
             
             // OPTIMIZATION 1: Skip if metrics are fresh (< 10 min old) and current < stored ATH
             // Fresh metrics + current below ATH = no new ATH possible, use cached
@@ -117,6 +119,7 @@ export const runAthEnrichmentCycle = async () => {
             // If metrics are very old (> 1 hour), recalculate anyway (safety check)
             const shouldRecalculate = 
                 !sig.metrics || // No metrics yet - initial calculation
+                metricsIncomplete || // Missing ATH/DD/Time values
                 currentMultiple > storedAthMultiple * 1.05 || // Current is 5%+ above stored ATH (new peak!)
                 (currentMultiple > storedAthMultiple * 0.9 && metricsAge > STALE_METRICS_MS) || // Current within 10% of stored ATH and stale
                 metricsAge > 60 * 60 * 1000; // Metrics are > 1 hour old (recalculate anyway)

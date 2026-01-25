@@ -57,7 +57,8 @@ export const updateHistoricalMetrics = async (targetSignalIds?: number[]) => {
                 if (!entryPrice || !entryTime) return;
 
                 const now = Date.now();
-                const ageHours = (now - entryTime.getTime()) / (1000 * 60 * 60);
+                const fetchStart = signal.metrics?.ohlcvLastAt ? signal.metrics.ohlcvLastAt.getTime() : entryTime.getTime();
+                const ageHours = (now - fetchStart) / (1000 * 60 * 60);
                 
                 // OPTIMIZED: Use GeckoTerminal first (fastest, best success rate)
                 // Benchmark showed GeckoTerminal minute parallel: 248.83ms/token with 3/6 success
@@ -67,7 +68,8 @@ export const updateHistoricalMetrics = async (targetSignalIds?: number[]) => {
                 // Priority 1: GeckoTerminal (Fastest, best success rate)
                 // Use progressive timeframe strategy: minute for recent, hour for older
                 let timeframe: 'minute' | 'hour' | 'day' = ageHours <= 16 ? 'minute' : ageHours <= 720 ? 'hour' : 'day';
-                const limit = timeframe === 'minute' ? 1000 : timeframe === 'hour' ? 1000 : 1000;
+                const tfMs = timeframe === 'minute' ? 60 * 1000 : timeframe === 'hour' ? 60 * 60 * 1000 : 24 * 60 * 60 * 1000;
+                const limit = Math.min(1000, Math.max(10, Math.ceil((now - fetchStart) / tfMs) + 5));
                 
                 try {
                     ohlcv = await geckoTerminal.getOHLCV(signal.mint, timeframe, limit);
@@ -88,15 +90,16 @@ export const updateHistoricalMetrics = async (targetSignalIds?: number[]) => {
 
                 if (!ohlcv || ohlcv.length === 0) return;
 
-                const signalTime = entryTime.getTime();
+                        const signalTime = fetchStart;
+                const signalTime = fetchStart;
                 const validCandles = ohlcv.filter(c => c.timestamp >= signalTime - 300000); 
 
                 if (validCandles.length === 0) return;
 
                 let athPrice = entryPrice;
-                let athAt = entryTime;
-                let minPrice = entryPrice;
-                let minAt = entryTime;
+                let athAt = signal.metrics?.athAt || entryTime;
+                let minPrice = signal.metrics?.minLowPrice ?? entryPrice;
+                let minAt = signal.metrics?.minLowAt ?? entryTime;
                 let timeTo2x: number | null = null;
                 let timeTo5x: number | null = null;
                 let timeTo10x: number | null = null;
@@ -128,7 +131,7 @@ export const updateHistoricalMetrics = async (targetSignalIds?: number[]) => {
                 const maxDrawdown = ((minPrice - entryPrice) / entryPrice) * 100;
                 const currentPrice = validCandles[validCandles.length - 1].close;
                 const currentMultiple = currentPrice / entryPrice;
-                const timeToAth = athAt.getTime() - signalTime;
+                const timeToAth = athAt.getTime() - entryTime.getTime();
                 const timeFromDrawdownToAth = minAt.getTime() < athAt.getTime() ? athAt.getTime() - minAt.getTime() : null;
                 const entrySupply = signal.entrySupply || (signal.entryMarketCap && entryPrice ? signal.entryMarketCap / entryPrice : null);
                 const athMarketCap = entrySupply ? athPrice * entrySupply : (signal.entryMarketCap ? signal.entryMarketCap * athMultiple : null);
@@ -153,6 +156,9 @@ export const updateHistoricalMetrics = async (targetSignalIds?: number[]) => {
                         timeTo2x,
                         timeTo5x,
                         timeTo10x,
+                        ohlcvLastAt: validCandles.length > 0 ? new Date(validCandles[validCandles.length - 1].timestamp) : undefined,
+                        minLowPrice: minPrice,
+                        minLowAt: minAt,
                         updatedAt: new Date()
                     },
                     update: {
@@ -167,6 +173,9 @@ export const updateHistoricalMetrics = async (targetSignalIds?: number[]) => {
                         maxDrawdown,
                         maxDrawdownMarketCap: maxDrawdownMarketCap || undefined,
                         timeFromDrawdownToAth,
+                        ohlcvLastAt: validCandles.length > 0 ? new Date(validCandles[validCandles.length - 1].timestamp) : undefined,
+                        minLowPrice: minPrice,
+                        minLowAt: minAt,
                         timeTo2x: timeTo2x || undefined,
                         timeTo5x: timeTo5x || undefined,
                         timeTo10x: timeTo10x || undefined,
