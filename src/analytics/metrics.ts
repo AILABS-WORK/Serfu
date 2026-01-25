@@ -347,12 +347,15 @@ export const enrichSignalMetrics = async (
             // Since drawdown always occurs before ATH (we only check up to ATH time),
             // we can calculate this if we found a drawdown
             let timeFromDrawdownToAth: number | null = null;
+            let timeToDrawdown: number | null = null;
             if (maxDrawdown < 0 && maxDrawdownAt < maxAt) {
                 // Drawdown occurred before ATH, calculate recovery time
                 timeFromDrawdownToAth = maxAt - maxDrawdownAt;
+                timeToDrawdown = maxDrawdownAt - entryTimestamp;
             } else if (maxDrawdown < 0 && maxDrawdownAt === entryTimestamp) {
                 // Drawdown was at entry (never recovered), time to ATH is the recovery time
                 timeFromDrawdownToAth = timeToAth;
+                timeToDrawdown = 0;
             }
 
             // If ATH didn't change in incremental mode, keep existing drawdown metrics
@@ -360,6 +363,7 @@ export const enrichSignalMetrics = async (
                 maxDrawdown = sig.metrics.maxDrawdown ?? maxDrawdown;
                 maxDrawdownMarketCap = sig.metrics.maxDrawdownMarketCap ?? maxDrawdownMarketCap;
                 timeFromDrawdownToAth = sig.metrics.timeFromDrawdownToAth ?? timeFromDrawdownToAth;
+                timeToDrawdown = sig.metrics.timeToDrawdown ?? timeToDrawdown;
             }
 
             // Store max drawdown market cap and time from drawdown to ATH in metrics for display
@@ -377,6 +381,7 @@ export const enrichSignalMetrics = async (
                         maxDrawdown,
                         maxDrawdownMarketCap,
                         timeFromDrawdownToAth,
+                        timeToDrawdown,
                         ohlcvLastAt: lastCandleAt ? new Date(lastCandleAt) : sig.metrics.ohlcvLastAt,
                         minLowPrice,
                         minLowAt: minLowAt ? new Date(minLowAt) : sig.metrics.minLowAt,
@@ -392,6 +397,7 @@ export const enrichSignalMetrics = async (
                 sig.metrics.maxDrawdown = maxDrawdown;
                 sig.metrics.maxDrawdownMarketCap = maxDrawdownMarketCap;
                 sig.metrics.timeFromDrawdownToAth = timeFromDrawdownToAth;
+                sig.metrics.timeToDrawdown = timeToDrawdown;
                 sig.metrics.ohlcvLastAt = lastCandleAt ? new Date(lastCandleAt) : sig.metrics.ohlcvLastAt;
                 sig.metrics.minLowPrice = minLowPrice;
                 sig.metrics.minLowAt = minLowAt ? new Date(minLowAt) : sig.metrics.minLowAt;
@@ -414,6 +420,7 @@ export const enrichSignalMetrics = async (
                         maxDrawdown,
                         maxDrawdownMarketCap,
                         timeFromDrawdownToAth,
+                        timeToDrawdown,
                         ohlcvLastAt: lastCandleAt ? new Date(lastCandleAt) : null,
                         minLowPrice,
                         minLowAt: minLowAt ? new Date(minLowAt) : null

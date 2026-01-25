@@ -132,6 +132,7 @@ export const updateHistoricalMetrics = async (targetSignalIds?: number[]) => {
                 const currentPrice = validCandles[validCandles.length - 1].close;
                 const currentMultiple = currentPrice / entryPrice;
                 const timeToAth = athAt.getTime() - entryTime.getTime();
+                const timeToDrawdown = minAt.getTime() - entryTime.getTime();
                 const timeFromDrawdownToAth = minAt.getTime() < athAt.getTime() ? athAt.getTime() - minAt.getTime() : null;
                 const entrySupply = signal.entrySupply || (signal.entryMarketCap && entryPrice ? signal.entryMarketCap / entryPrice : null);
                 const athMarketCap = entrySupply ? athPrice * entrySupply : (signal.entryMarketCap ? signal.entryMarketCap * athMultiple : null);
@@ -173,6 +174,9 @@ export const updateHistoricalMetrics = async (targetSignalIds?: number[]) => {
                         maxDrawdown,
                         maxDrawdownMarketCap: maxDrawdownMarketCap || undefined,
                         timeFromDrawdownToAth,
+                        timeToDrawdown,
+                        timeFromDrawdownToAth,
+                        timeToDrawdown,
                         ohlcvLastAt: validCandles.length > 0 ? new Date(validCandles[validCandles.length - 1].timestamp) : undefined,
                         minLowPrice: minPrice,
                         minLowAt: minAt,

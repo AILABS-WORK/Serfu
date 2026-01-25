@@ -754,9 +754,31 @@ export const handleLiveSignals = async (ctx: BotContext, forceRefresh = false) =
 
       message += `\n${icon} *${displaySymbol}* (\`${item.mint.slice(0,4)}..${item.mint.slice(-4)}\`)\n`;
       message += `💰 *Entry:* ${entryStr} ➔ *Now:* ${currentStr} (*${pnlStr}*)\n`;
+      let timeToDdStr = 'N/A';
+      const timeToDdMs = sig?.metrics?.timeToDrawdown ?? null;
+      if (timeToDdMs !== null && timeToDdMs >= 0) {
+        const minutes = Math.floor(timeToDdMs / 60000);
+        const hours = Math.floor(minutes / 60);
+        const days = Math.floor(hours / 24);
+        if (timeToDdMs === 0) {
+          timeToDdStr = '<1m';
+        } else if (days > 0) {
+          timeToDdStr = `${days}d ${hours % 24}h`;
+        } else if (hours > 0) {
+          timeToDdStr = `${hours}h ${minutes % 60}m`;
+        } else if (minutes > 0) {
+          timeToDdStr = `${minutes}m`;
+        } else {
+          timeToDdStr = '<1m';
+        }
+      }
+
       message += `📈 *ATH:* ${athLabel} | 📉 *Max DD:* ${drawdownStr}${drawdownMcStr} | ⏱️ *To ATH:* ${timeToAthStr}\n`;
-      if (timeFromDrawdownToAthStr !== 'N/A') {
-        message += `📊 *DD→ATH:* ${timeFromDrawdownToAthStr}\n`;
+      const ddTimingParts = [];
+      if (timeToDdStr !== 'N/A') ddTimingParts.push(`⏱️ *To DD:* ${timeToDdStr}`);
+      if (timeFromDrawdownToAthStr !== 'N/A') ddTimingParts.push(`📊 *DD→ATH:* ${timeFromDrawdownToAthStr}`);
+      if (ddTimingParts.length > 0) {
+        message += `${ddTimingParts.join(' | ')}\n`;
       }
       message += `🍬 *Dex:* ${dexPaid} | 📦 *Mig:* ${migrated} | 👥 *Team:* ${hasTeam} | 𝕏 *X:* ${hasX}\n`;
       message += `⏱️ *Latest:* ${latestMentionAgo} | 🆕 *Created:* ${creationAgo} | 👤 *${callerLabel}*\n`;
