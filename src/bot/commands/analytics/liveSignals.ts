@@ -345,7 +345,7 @@ export const handleLiveSignals = async (ctx: BotContext, forceRefresh = false) =
     }
 
     // Calculate ATH for top items only
-    logger.info(`[LiveSignals] Starting ATH calculation for ${topItems.length} top items using Bitquery ATH`);
+    logger.info(`[LiveSignals] Starting ATH calculation for ${topItems.length} top items using GeckoTerminal OHLCV`);
     
     // Update loading message to show progress
     if (loadingMsg && topItems.length > 0) {
@@ -354,7 +354,7 @@ export const handleLiveSignals = async (ctx: BotContext, forceRefresh = false) =
           loadingMsg.chat.id,
           loadingMsg.message_id,
           undefined,
-          `⏳ Calculating ATH for ${topItems.length} signals using Bitquery...`,
+          `⏳ Calculating ATH for ${topItems.length} signals using GeckoTerminal...`,
           { parse_mode: 'Markdown' }
         );
       } catch {}
@@ -372,7 +372,7 @@ export const handleLiveSignals = async (ctx: BotContext, forceRefresh = false) =
       const batch = topItems.slice(i, i + BATCH_SIZE);
       const batchNum = Math.floor(i / BATCH_SIZE) + 1;
       const totalBatches = Math.ceil(topItems.length / BATCH_SIZE);
-      logger.info(`[LiveSignals] Processing ATH batch ${batchNum}/${totalBatches} (${batch.length} tokens) using Bitquery`);
+      logger.info(`[LiveSignals] Processing ATH batch ${batchNum}/${totalBatches} (${batch.length} tokens) using GeckoTerminal`);
       
       // Update loading message with progress
       if (loadingMsg && batchNum % 2 === 0) { // Update every 2 batches to avoid spam
@@ -397,13 +397,13 @@ export const handleLiveSignals = async (ctx: BotContext, forceRefresh = false) =
             sig.entrySupply = sig.entryMarketCap / sig.entryPrice;
           }
           
-          logger.info(`[LiveSignals] Calculating ATH for ${item.mint.slice(0, 8)}... using Bitquery ATH`);
+          logger.info(`[LiveSignals] Calculating ATH for ${item.mint.slice(0, 8)}... using GeckoTerminal OHLCV`);
           try {
             const beforeUpdatedAt = sig.metrics?.updatedAt?.getTime() ?? 0;
             const beforeAth = sig.metrics?.athMultiple ?? null;
             const beforeTimeToAth = sig.metrics?.timeToAth ?? null;
             await Promise.race([
-              enrichSignalMetrics(sig, false, item.currentPrice),
+              enrichSignalMetrics(sig, true, item.currentPrice),
               new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 15000))
             ]);
             const afterUpdatedAt = sig.metrics?.updatedAt?.getTime() ?? 0;
@@ -455,7 +455,7 @@ export const handleLiveSignals = async (ctx: BotContext, forceRefresh = false) =
           const beforeAth = sig.metrics?.athMultiple ?? null;
           const beforeTimeToAth = sig.metrics?.timeToAth ?? null;
           await Promise.race([
-            enrichSignalMetrics(sig, false, item.currentPrice),
+            enrichSignalMetrics(sig, true, item.currentPrice),
             new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 20000))
           ]);
           const afterUpdatedAt = sig.metrics?.updatedAt?.getTime() ?? 0;
@@ -484,7 +484,7 @@ export const handleLiveSignals = async (ctx: BotContext, forceRefresh = false) =
     }
     
     // CRITICAL: Re-fetch signals to get updated metrics from DB (including ATH market cap)
-    // This ensures we have the latest ATH data calculated by Bitquery
+    // This ensures we have the latest ATH data calculated by GeckoTerminal
     if (topItems.length > 0) {
       logger.info(`[LiveSignals] Re-fetching ${topItems.length} signals to get updated ATH metrics from DB`);
       const updatedSignals = await prisma.signal.findMany({
@@ -579,7 +579,7 @@ export const handleLiveSignals = async (ctx: BotContext, forceRefresh = false) =
         ? item.entryMc
         : (item.currentMc > 0 && currentMult > 0 ? item.currentMc / currentMult : 0);
       
-      // Calculate ATH market cap - prioritize stored value from DB (calculated by Bitquery)
+      // Calculate ATH market cap - prioritize stored value from DB (calculated by GeckoTerminal)
       let athMc = storedAthMc && storedAthMc > 0 ? storedAthMc : 0;
       
       // If not stored, calculate from ATH price and supply
