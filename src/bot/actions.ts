@@ -11,9 +11,68 @@ import { handleLiveSignals } from './commands/analytics/liveSignals';
 import { handleDistributions } from './commands/analytics/distributions';
 import { handleRecentCalls } from './commands/analytics/recentCalls';
 import { handleGroupLeaderboardCommand, handleUserLeaderboardCommand, handleSignalLeaderboardCommand } from './commands/analytics/leaderboards';
-import { updateHistoricalMetrics } from '../jobs/historicalMetrics';
+import { getHistoricalMetricsBackfillProgress, updateHistoricalMetrics } from '../jobs/historicalMetrics';
 import { getDeepHolderAnalysis } from '../analytics/holders';
 import { UIHelper } from '../utils/ui';
+
+const buildBackfillStatusView = () => {
+  const progress = getHistoricalMetricsBackfillProgress();
+  const now = Date.now();
+  const total = progress.totalSignals || 0;
+  const processed = progress.processedSignals || 0;
+  const pct = total > 0 ? (processed / total) * 100 : 0;
+  const elapsedMs = progress.startedAt ? now - progress.startedAt.getTime() : 0;
+  const elapsedMinutes = elapsedMs > 0 ? elapsedMs / 60000 : null;
+  let etaMinutes: number | null = null;
+  if (progress.status === 'running' && progress.startedAt && processed > 0 && total > 0) {
+    const ratePerMs = processed / Math.max(1, elapsedMs);
+    etaMinutes = ratePerMs > 0 ? ((total - processed) / ratePerMs) / 60000 : null;
+  }
+
+  let message = UIHelper.header('Metrics Backfill', '🧠');
+  const statusLabel = progress.status === 'running'
+    ? 'Running'
+    : progress.status === 'complete'
+      ? 'Complete'
+      : progress.status === 'error'
+        ? 'Error'
+        : 'Idle';
+  message += `Status: *${statusLabel}*\n`;
+
+  if (total > 0) {
+    message += `Progress: ${processed}/${total} (${pct.toFixed(1)}%) ${UIHelper.progressBar(pct, 100, 10)}\n`;
+  } else {
+    message += 'Progress: N/A\n';
+  }
+
+  if (progress.startedAt) {
+    message += `Elapsed: ${elapsedMinutes ? UIHelper.formatDurationMinutes(elapsedMinutes) : 'N/A'}`;
+    if (etaMinutes) {
+      message += ` | ETA: ${UIHelper.formatDurationMinutes(etaMinutes)}`;
+    }
+    message += '\n';
+  }
+
+  if (progress.lastBatchCount > 0) {
+    message += `Last Batch: ${progress.lastBatchCount} signals`;
+    if (progress.lastSignalId) message += ` (last id ${progress.lastSignalId})`;
+    message += '\n';
+  }
+
+  if (progress.status === 'error' && progress.errorMessage) {
+    message += `Error: \`${progress.errorMessage}\`\n`;
+  }
+
+  const keyboard = {
+    inline_keyboard: [
+      [{ text: '🔄 Refresh Status', callback_data: 'analytics_backfill_status' }],
+      [{ text: '🧠 Start Backfill', callback_data: 'analytics_backfill' }, { text: '🔙 Back', callback_data: 'analytics' }],
+      [{ text: '❌ Close', callback_data: 'delete_msg' }]
+    ]
+  };
+
+  return { message, keyboard };
+};
 
 export const registerActions = (bot: Telegraf<BotContext>) => {
   // --- EXISTING ACTIONS ---
@@ -1324,16 +1383,39 @@ ATH: ${ath.toFixed(2)}x
 
   bot.action('analytics_backfill', async (ctx) => {
       try {
+          const progress = getHistoricalMetricsBackfillProgress();
+          if (progress.status === 'running') {
+              await ctx.answerCbQuery('Backfill already running.');
+              const view = buildBackfillStatusView();
+              if (ctx.callbackQuery && ctx.callbackQuery.message) {
+                  await ctx.editMessageText(view.message, { parse_mode: 'Markdown', reply_markup: view.keyboard });
+              } else {
+                  await ctx.reply(view.message, { parse_mode: 'Markdown', reply_markup: view.keyboard });
+              }
+              return;
+          }
           await ctx.answerCbQuery('Starting full backfill...');
           await ctx.reply('⏳ Full ATH/DD backfill started in background. This may take a while.');
           const { runHistoricalMetricsBackfill } = await import('../jobs/historicalMetrics');
           const { runAthEnrichmentCycle } = await import('../jobs/athEnrichment');
           runHistoricalMetricsBackfill().catch(err => logger.error('Full backfill failed', err));
           runAthEnrichmentCycle().catch(err => logger.error('ATH enrichment failed', err));
+          const view = buildBackfillStatusView();
+          await ctx.reply(view.message, { parse_mode: 'Markdown', reply_markup: view.keyboard });
       } catch (error) {
           logger.error('Backfill action error:', error);
           ctx.reply('❌ Failed to start full backfill.');
       }
+  });
+
+  bot.action('analytics_backfill_status', async (ctx) => {
+      const view = buildBackfillStatusView();
+      if (ctx.callbackQuery && ctx.callbackQuery.message) {
+          await ctx.editMessageText(view.message, { parse_mode: 'Markdown', reply_markup: view.keyboard });
+      } else {
+          await ctx.reply(view.message, { parse_mode: 'Markdown', reply_markup: view.keyboard });
+      }
+      await ctx.answerCbQuery();
   });
 
   bot.action('leaderboards_menu', async (ctx) => {

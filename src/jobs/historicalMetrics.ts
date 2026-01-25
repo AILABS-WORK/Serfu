@@ -3,6 +3,43 @@ import { geckoTerminal } from '../providers/geckoTerminal';
 import { logger } from '../utils/logger';
 import { getEntryTime } from '../analytics/metricsUtils';
 
+export type HistoricalMetricsBackfillProgress = {
+  status: 'idle' | 'running' | 'complete' | 'error';
+  totalSignals: number;
+  processedSignals: number;
+  batchSize: number;
+  startedAt: Date | null;
+  updatedAt: Date | null;
+  endedAt: Date | null;
+  lastBatchCount: number;
+  lastSignalId: number | null;
+  errorMessage: string | null;
+};
+
+const backfillProgress: HistoricalMetricsBackfillProgress = {
+  status: 'idle',
+  totalSignals: 0,
+  processedSignals: 0,
+  batchSize: 0,
+  startedAt: null,
+  updatedAt: null,
+  endedAt: null,
+  lastBatchCount: 0,
+  lastSignalId: null,
+  errorMessage: null
+};
+
+const updateBackfillProgress = (patch: Partial<HistoricalMetricsBackfillProgress>) => {
+  Object.assign(backfillProgress, patch);
+  if (backfillProgress.status === 'running') {
+    backfillProgress.updatedAt = new Date();
+  }
+};
+
+export const getHistoricalMetricsBackfillProgress = (): HistoricalMetricsBackfillProgress => ({
+  ...backfillProgress
+});
+
 /**
  * Periodically checks historical data for active signals to ensure
  * we captured the true ATH and Drawdown, even if the bot missed a tick.
@@ -204,7 +241,39 @@ export const updateHistoricalMetrics = async (targetSignalIds?: number[]) => {
  */
 export const runHistoricalMetricsBackfill = async (batchSize = 200) => {
   try {
+    if (backfillProgress.status === 'running') {
+      logger.warn('[HistoricalMetrics] Backfill already running, skipping new request.');
+      return;
+    }
+
     logger.info(`[HistoricalMetrics] Starting full backfill (batchSize=${batchSize})...`);
+    const startedAt = new Date();
+    const totalSignals = await prisma.signal.count({
+      where: { entryPrice: { not: null } }
+    });
+    updateBackfillProgress({
+      status: 'running',
+      totalSignals,
+      processedSignals: 0,
+      batchSize,
+      startedAt,
+      updatedAt: startedAt,
+      endedAt: null,
+      lastBatchCount: 0,
+      lastSignalId: null,
+      errorMessage: null
+    });
+
+    if (totalSignals === 0) {
+      updateBackfillProgress({
+        status: 'complete',
+        processedSignals: 0,
+        endedAt: new Date()
+      });
+      logger.info('[HistoricalMetrics] Full backfill complete. No signals found.');
+      return;
+    }
+
     let lastId = 0;
     let totalProcessed = 0;
 
@@ -226,14 +295,29 @@ export const runHistoricalMetricsBackfill = async (batchSize = 200) => {
 
       logger.info(`[HistoricalMetrics] Backfill batch ${ids[0]}..${lastId} (${ids.length} signals)`);
       await updateHistoricalMetrics(ids);
+      updateBackfillProgress({
+        processedSignals: totalProcessed,
+        lastBatchCount: ids.length,
+        lastSignalId: lastId
+      });
 
       // Throttle between batches
       await new Promise(r => setTimeout(r, 1500));
     }
 
     logger.info(`[HistoricalMetrics] Full backfill complete. Processed ${totalProcessed} signals.`);
+    updateBackfillProgress({
+      status: 'complete',
+      processedSignals: totalProcessed,
+      endedAt: new Date()
+    });
   } catch (error) {
     logger.error('Error in runHistoricalMetricsBackfill:', error);
+    updateBackfillProgress({
+      status: 'error',
+      endedAt: new Date(),
+      errorMessage: error instanceof Error ? error.message : String(error)
+    });
   }
 };
 

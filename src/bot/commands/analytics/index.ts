@@ -35,7 +35,8 @@ export const handleAnalyticsCommand = async (ctx: Context) => {
             { text: '🔄 Refresh Metrics', callback_data: 'analytics_refresh' }
           ],
           [
-            { text: '🧠 Full Metrics Backfill', callback_data: 'analytics_backfill' }
+            { text: '🧠 Full Metrics Backfill', callback_data: 'analytics_backfill' },
+            { text: '📈 Backfill Progress', callback_data: 'analytics_backfill_status' }
           ]
         ]
       }
