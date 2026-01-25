@@ -774,6 +774,14 @@ export interface DistributionStats {
     wins: number;
     avgMult: number;
   }>;
+  confluenceBuckets: Array<{
+    label: string;
+    min: number;
+    max: number;
+    count: number;
+    wins: number;
+    avgMult: number;
+  }>;
   currentStreak: { type: 'win' | 'loss'; count: number };
   totalSignals: number;
 }
@@ -918,6 +926,12 @@ export const getDistributionStats = async (
       { label: '50k-100k', min: 50000, max: 100000, count: 0, wins: 0, avgMult: 0 },
       { label: '100k+', min: 100000, max: 1000000000, count: 0, wins: 0, avgMult: 0 },
     ],
+    confluenceBuckets: [
+      { label: '1 source', min: 1, max: 1, count: 0, wins: 0, avgMult: 0 },
+      { label: '2 sources', min: 2, max: 2, count: 0, wins: 0, avgMult: 0 },
+      { label: '3-4 sources', min: 3, max: 4, count: 0, wins: 0, avgMult: 0 },
+      { label: '5+ sources', min: 5, max: 1000, count: 0, wins: 0, avgMult: 0 }
+    ],
     currentStreak: { type: 'loss', count: 0 },
     totalSignals: signals.length
   };
@@ -953,8 +967,17 @@ export const getDistributionStats = async (
   let timeTo10xSum = 0;
   let timeTo10xCount = 0;
 
+  const confluenceMap = new Map<string, { groups: Set<number>; maxMult: number }>();
   for (const s of sortedSignals) {
     const mult = s.metrics?.athMultiple || s.metrics?.currentMultiple || 0;
+    // Confluence: count distinct groups per mint and keep max multiple
+    if (s.mint) {
+      const entry = confluenceMap.get(s.mint) || { groups: new Set<number>(), maxMult: 0 };
+      if (s.groupId) entry.groups.add(s.groupId);
+      else entry.groups.add(0);
+      if (mult > entry.maxMult) entry.maxMult = mult;
+      confluenceMap.set(s.mint, entry);
+    }
     const entryMc = s.entryMarketCap || 0;
     const maxDrawdown = s.metrics?.maxDrawdown || 0;
     const isWin = mult >= WIN_MULTIPLE;
@@ -1238,6 +1261,20 @@ export const getDistributionStats = async (
     if (b.count > 0) {
       b.avgMult /= b.count;
   }
+  });
+
+  // Confluence buckets
+  for (const entry of confluenceMap.values()) {
+    const groupCount = entry.groups.size;
+    const bucket = stats.confluenceBuckets.find(b => groupCount >= b.min && groupCount <= b.max);
+    if (bucket) {
+      bucket.count++;
+      if (entry.maxMult >= WIN_MULTIPLE) bucket.wins++;
+      bucket.avgMult += entry.maxMult;
+    }
+  }
+  stats.confluenceBuckets.forEach(b => {
+    if (b.count > 0) b.avgMult /= b.count;
   });
 
   stats.currentStreak = { type: streakType, count: currentStreak };

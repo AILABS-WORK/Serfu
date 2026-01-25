@@ -43,6 +43,12 @@ export interface BacktestResult {
   returnPct: number;
 }
 
+export interface OptimizedTpSl {
+  takeProfitMultiple: number;
+  stopLossMultiple: number;
+  result: BacktestResult;
+}
+
 const applyRules = (
   mult: number,
   minMultiple: number,
@@ -167,5 +173,41 @@ export const runBacktest = (signals: BacktestSignalInput[], options: BacktestOpt
     endBalance: balance,
     returnPct
   };
+};
+
+export const optimizeTpSl = (
+  signals: BacktestSignalInput[],
+  candidates: { tps: number[]; sls: number[] },
+  baseOptions: Omit<BacktestOptions, 'takeProfitMultiple' | 'stopLossMultiple' | 'perTradeAmount'>
+): OptimizedTpSl | null => {
+  if (signals.length === 0) return null;
+  const perTrade = 1;
+  let best: OptimizedTpSl | null = null;
+
+  for (const tp of candidates.tps) {
+    for (const sl of candidates.sls) {
+      const result = runBacktest(signals, {
+        ...baseOptions,
+        takeProfitMultiple: tp,
+        stopLossMultiple: sl,
+        perTradeAmount: perTrade
+      });
+
+      if (!best) {
+        best = { takeProfitMultiple: tp, stopLossMultiple: sl, result };
+        continue;
+      }
+
+      // Prefer higher return; break ties with lower max drawdown
+      if (
+        result.returnPct > best.result.returnPct ||
+        (result.returnPct === best.result.returnPct && result.maxDrawdown < best.result.maxDrawdown)
+      ) {
+        best = { takeProfitMultiple: tp, stopLossMultiple: sl, result };
+      }
+    }
+  }
+
+  return best;
 };
 

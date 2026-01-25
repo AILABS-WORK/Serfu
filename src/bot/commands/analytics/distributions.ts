@@ -120,6 +120,7 @@ export const handleDistributions = async (ctx: Context, view: string = 'mcap') =
         ],
         [{ text: '🕐 Time of Day', callback_data: 'dist_view:time' }, { text: '📅 Day of Week', callback_data: 'dist_view:day' }],
         [{ text: '👥 Group Compare', callback_data: 'dist_view:groups' }, { text: '📊 Volume', callback_data: 'dist_view:volume' }],
+        [{ text: '🤝 Confluence', callback_data: 'dist_view:confluence' }],
         [{ text: '💀 Rug Ratio', callback_data: 'dist_view:rug' }, { text: '🚀 Moonshot', callback_data: 'dist_view:moonshot' }],
         [{ text: '🔥 Streaks', callback_data: 'dist_view:streak' }, { text: '⏰ Token Age', callback_data: 'dist_view:age' }],
         [{ text: '💧 Liquidity', callback_data: 'dist_view:liquidity' }, { text: '🔙 Back', callback_data: 'analytics' }, { text: '❌ Close', callback_data: 'delete_msg' }]
@@ -225,6 +226,20 @@ export const handleDistributions = async (ctx: Context, view: string = 'mcap') =
         message += `\`${label} | ${winStr} | ${avgStr} | ${countStr}\`\n`;
       }
       message += `\n_Note: Volume data depends on provider coverage._\n`;
+      keyboard = [[{ text: '🔙 MCap View', callback_data: 'dist_view:mcap' }, { text: '❌ Close', callback_data: 'delete_msg' }]];
+    } else if (view === 'confluence') {
+      message = UIHelper.header('CONFLUENCE IMPACT', '🤝');
+      message += `\`Sources    | Win Rate | Avg X | Count\`\n`;
+      message += `\`───────────┼──────────┼───────┼──────\`\n`;
+      for (const b of stats.confluenceBuckets) {
+        const winRate = b.count > 0 ? (b.wins / b.count) * 100 : 0;
+        const icon = winRate >= 50 ? '🟢' : winRate >= 30 ? '🟡' : b.count === 0 ? '⚪' : '🔴';
+        const label = b.label.padEnd(9, ' ');
+        const winStr = `${icon} ${winRate.toFixed(0)}%`.padEnd(8, ' ');
+        const avgStr = `${b.avgMult.toFixed(1)}x`.padEnd(5, ' ');
+        const countStr = `${b.count}`.padEnd(4, ' ');
+        message += `\`${label} | ${winStr} | ${avgStr} | ${countStr}\`\n`;
+      }
       keyboard = [[{ text: '🔙 MCap View', callback_data: 'dist_view:mcap' }, { text: '❌ Close', callback_data: 'delete_msg' }]];
     } else if (view === 'rug') {
       message = UIHelper.header('RUG PULL ANALYSIS', '💀');

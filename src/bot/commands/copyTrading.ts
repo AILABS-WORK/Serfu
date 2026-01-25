@@ -1,6 +1,6 @@
 import { Context } from 'telegraf';
 import { getTopStrategies, simulateCopyTrading, computeGroupStrategy, computeUserStrategy } from '../../analytics/copyTrading';
-import { runBacktest } from '../../analytics/backtest';
+import { optimizeTpSl, runBacktest } from '../../analytics/backtest';
 import { logger } from '../../utils/logger';
 import { prisma } from '../../db';
 import { getGroupByChatId } from '../../db/groups';
@@ -73,13 +73,65 @@ export const handleStrategyAutoGenerate = async (ctx: Context, profile: 'winrate
 
   const primary = picks[0];
   const avgMultiple = Math.max(1.2, primary.stats.avgMultiple || 1.2);
-  const avgDrawdown = Math.max(0.1, primary.stats.avgDrawdown || 0.3);
-  const recTp = profile === 'return'
+  const avgDrawdown = Math.max(5, Math.abs(primary.stats.avgDrawdown || 30));
+  let recTp = profile === 'return'
     ? Math.min(10, Math.max(3, avgMultiple * 1.4))
     : profile === 'balanced'
       ? Math.min(8, Math.max(2.2, avgMultiple * 1.1))
       : Math.min(6, Math.max(1.8, avgMultiple * 0.9));
-  const recSl = Math.max(0.55, Math.min(0.9, 1 - Math.min(0.5, avgDrawdown)));
+  let recSl = Math.max(0.55, Math.min(0.9, 1 - Math.min(0.5, avgDrawdown / 100)));
+
+  // Optional TP/SL optimization using recent signals of the top group
+  try {
+    const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    const autoSignals = await prisma.signal.findMany({
+      where: {
+        groupId: primary.group.id,
+        OR: [
+          { entryPriceAt: { gte: since } },
+          { entryPriceAt: null, detectedAt: { gte: since } }
+        ],
+        metrics: { isNot: null }
+      },
+      include: { metrics: true }
+    });
+    const candidates = profile === 'return'
+      ? { tps: [3, 4, 5, 7, 10], sls: [0.4, 0.5, 0.6] }
+      : profile === 'balanced'
+        ? { tps: [2, 2.5, 3.5, 5], sls: [0.5, 0.6, 0.7] }
+        : { tps: [1.6, 2, 2.5, 3], sls: [0.6, 0.7, 0.8] };
+    const optimized = optimizeTpSl(
+      autoSignals.map(s => ({
+        id: s.id,
+        mint: s.mint,
+        entryPrice: s.entryPrice,
+        entryMarketCap: s.entryMarketCap,
+        detectedAt: s.detectedAt,
+        metrics: s.metrics
+          ? {
+              athMultiple: s.metrics.athMultiple,
+              timeToAth: s.metrics.timeToAth,
+              maxDrawdown: s.metrics.maxDrawdown,
+              drawdownDuration: s.metrics.drawdownDuration
+            }
+          : null
+      })),
+      candidates,
+      {
+        takeProfitRules: [],
+        stopLossRules: [],
+        stopOnFirstRuleHit: false,
+        rulePriority: 'TP_FIRST',
+        feePerSide: 0
+      }
+    );
+    if (optimized) {
+      recTp = optimized.takeProfitMultiple;
+      recSl = optimized.stopLossMultiple;
+    }
+  } catch (e) {
+    logger.debug('TP/SL optimization skipped:', e);
+  }
 
   const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
   const dayGroups: Record<string, number[]> = {};

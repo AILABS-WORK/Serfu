@@ -3,6 +3,7 @@ import { subDays } from 'date-fns';
 import { prisma } from '../../../db';
 import { logger } from '../../../utils/logger';
 import { getGroupStats, getUserStats, getLeaderboard, EntityStats } from '../../../analytics/aggregator';
+import { optimizeTpSl } from '../../../analytics/backtest';
 import { updateHistoricalMetrics } from '../../../jobs/historicalMetrics';
 import { UIHelper } from '../../../utils/ui';
 
@@ -598,6 +599,51 @@ export const handleStrategyCommand = async (ctx: Context, type: 'GROUP' | 'USER'
 
     message += `*📝 Execution Plan:*\n`;
     advice.forEach(line => message += `${line}\n`);
+
+    // Optional TP/SL optimization summary (30D)
+    try {
+      const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+      const signals = await prisma.signal.findMany({
+        where: {
+          ...(type === 'GROUP' ? { groupId: entityId } : { userId: entityId }),
+          OR: [
+            { entryPriceAt: { gte: since } },
+            { entryPriceAt: null, detectedAt: { gte: since } }
+          ],
+          metrics: { isNot: null }
+        },
+        include: { metrics: true }
+      });
+      const optimized = optimizeTpSl(
+        signals.map(s => ({
+          id: s.id,
+          mint: s.mint,
+          entryPrice: s.entryPrice,
+          entryMarketCap: s.entryMarketCap,
+          detectedAt: s.detectedAt,
+          metrics: s.metrics
+            ? {
+                athMultiple: s.metrics.athMultiple,
+                timeToAth: s.metrics.timeToAth,
+                maxDrawdown: s.metrics.maxDrawdown,
+                drawdownDuration: s.metrics.drawdownDuration
+              }
+            : null
+        })),
+        { tps: [1.6, 2, 2.5, 3, 4, 5], sls: [0.5, 0.6, 0.7, 0.8] },
+        {
+          takeProfitRules: [],
+          stopLossRules: [],
+          stopOnFirstRuleHit: false,
+          rulePriority: 'TP_FIRST',
+          feePerSide: 0
+        }
+      );
+      if (optimized) {
+        message += `🎯 *Optimized TP/SL (30D):* TP ${optimized.takeProfitMultiple}x | SL ${optimized.stopLossMultiple}x\n`;
+        message += `   Expected Return: ${(optimized.result.returnPct * 100).toFixed(1)}% | Max DD: ${optimized.result.maxDrawdown.toFixed(1)}%\n\n`;
+      }
+    } catch {}
 
     message += UIHelper.separator('LIGHT');
     message += `*📊 Key Stats (30D):*\n`;
