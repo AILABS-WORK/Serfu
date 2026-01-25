@@ -589,7 +589,15 @@ export const handleLiveSignals = async (ctx: BotContext, forceRefresh = false) =
       } else if (item.entryPrice > 0 && item.currentPrice > 0) {
         currentMult = item.currentPrice / item.entryPrice;
       }
-      const effectiveAth = Math.max(athMult, currentMult);
+      if (!isFinite(currentMult) || currentMult <= 0) {
+        if (item.entryPrice > 0 && item.currentPrice > 0) {
+          currentMult = item.currentPrice / item.entryPrice;
+        } else if (item.entryMc > 0 && item.currentMc > 0) {
+          currentMult = item.currentMc / item.entryMc;
+        }
+      }
+      const effectiveAthRaw = Math.max(athMult, currentMult);
+      const effectiveAth = isFinite(effectiveAthRaw) ? effectiveAthRaw : (athMult > 0 ? athMult : 0);
       const inferredEntryMc = item.entryMc > 0
         ? item.entryMc
         : (item.currentMc > 0 && currentMult > 0 ? item.currentMc / currentMult : 0);
@@ -667,7 +675,13 @@ export const handleLiveSignals = async (ctx: BotContext, forceRefresh = false) =
       }
 
       // Time to ATH (from metrics, in ms, convert to readable format)
-      const timeToAthMs = sig?.metrics?.timeToAth ?? null;
+      let timeToAthMs = sig?.metrics?.timeToAth ?? null;
+      if ((timeToAthMs === null || timeToAthMs === undefined) && sig?.metrics?.athAt) {
+        const entryAt = sig?.entryPriceAt ?? sig?.detectedAt;
+        if (entryAt) {
+          timeToAthMs = Math.max(0, sig.metrics.athAt.getTime() - entryAt.getTime());
+        }
+      }
       let timeToAthStr = 'N/A';
       if (timeToAthMs !== null && timeToAthMs !== undefined && timeToAthMs >= 0) {
         const minutes = Math.floor(timeToAthMs / 60000);
@@ -693,7 +707,14 @@ export const handleLiveSignals = async (ctx: BotContext, forceRefresh = false) =
       
       // Time from max drawdown to ATH - prefer stored value
       let timeFromDrawdownToAthStr = 'N/A';
-      const storedTimeFromDdToAth = sig?.metrics?.timeFromDrawdownToAth ?? null;
+      let storedTimeFromDdToAth = sig?.metrics?.timeFromDrawdownToAth ?? null;
+      if ((storedTimeFromDdToAth === null || storedTimeFromDdToAth === undefined) && sig?.metrics?.athAt && sig?.metrics?.minLowAt) {
+        const athAt = sig.metrics.athAt.getTime();
+        const ddAt = sig.metrics.minLowAt.getTime();
+        if (ddAt < athAt) {
+          storedTimeFromDdToAth = athAt - ddAt;
+        }
+      }
       
       if (storedTimeFromDdToAth !== null && storedTimeFromDdToAth >= 0) {
         const minutes = Math.floor(storedTimeFromDdToAth / 60000);

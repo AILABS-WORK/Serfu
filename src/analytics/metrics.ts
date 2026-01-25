@@ -186,31 +186,61 @@ export const enrichSignalMetrics = async (
 
         const currentPrice = currentPriceOverride ?? sig.metrics?.currentPrice ?? 0;
 
-        logger.debug(`[Metrics] Starting GeckoTerminal OHLCV fetch for ${sig.mint.slice(0, 8)}... (entry: ${entryPriceValue}, current: ${currentPrice})`);
+        const lastOhlcvAt = sig.metrics?.ohlcvLastAt?.getTime?.() ?? null;
+        const hasBaseline = (sig.metrics?.athPrice ?? 0) > 0 && !!sig.metrics?.athAt;
+        const useIncremental = !!lastOhlcvAt && hasBaseline;
 
-        const ageHours = (nowTimestamp - entryTimestamp) / (1000 * 60 * 60);
+        logger.debug(`[Metrics] Starting GeckoTerminal OHLCV fetch for ${sig.mint.slice(0, 8)}... (entry: ${entryPriceValue}, current: ${currentPrice}, incremental=${useIncremental})`);
+
+        const fetchStart = useIncremental ? lastOhlcvAt! : entryTimestamp;
+        const ageHours = (nowTimestamp - fetchStart) / (1000 * 60 * 60);
         let timeframe: 'minute' | 'hour' | 'day' = ageHours <= 16 ? 'minute' : ageHours <= 720 ? 'hour' : 'day';
-        let ohlcv = await geckoTerminal.getOHLCV(sig.mint, timeframe, 1000);
+        const tfMs = timeframe === 'minute' ? 60 * 1000 : timeframe === 'hour' ? 60 * 60 * 1000 : 24 * 60 * 60 * 1000;
+        const computedLimit = useIncremental
+            ? Math.min(1000, Math.max(10, Math.ceil((nowTimestamp - fetchStart) / tfMs) + 5))
+            : 1000;
+        let ohlcv = await geckoTerminal.getOHLCV(sig.mint, timeframe, computedLimit);
 
         // If minute candles don't cover entry period, try hourly candles
         if (timeframe === 'minute' && ohlcv.length > 0) {
             const oldest = ohlcv[0];
-            if (oldest.timestamp > entryTimestamp + 300000) {
+            if (oldest.timestamp > fetchStart + 300000) {
                 timeframe = 'hour';
-                ohlcv = await geckoTerminal.getOHLCV(sig.mint, timeframe, 1000);
+                ohlcv = await geckoTerminal.getOHLCV(sig.mint, timeframe, useIncremental ? Math.min(1000, Math.max(10, Math.ceil((nowTimestamp - fetchStart) / (60 * 60 * 1000)) + 5)) : 1000);
             }
         }
 
         // If hourly candles still don't cover entry period, try daily candles
         if (timeframe === 'hour' && ohlcv.length > 0) {
             const oldest = ohlcv[0];
-            if (oldest.timestamp > entryTimestamp + 60 * 60 * 1000) {
+            if (oldest.timestamp > fetchStart + 60 * 60 * 1000) {
                 timeframe = 'day';
-                ohlcv = await geckoTerminal.getOHLCV(sig.mint, timeframe, 1000);
+                ohlcv = await geckoTerminal.getOHLCV(sig.mint, timeframe, useIncremental ? Math.min(1000, Math.max(10, Math.ceil((nowTimestamp - fetchStart) / (24 * 60 * 60 * 1000)) + 5)) : 1000);
             }
         }
 
-        const validCandles = ohlcv.filter(c => c.timestamp >= entryTimestamp - 300000);
+        const lastCandleAt = ohlcv.length > 0 ? ohlcv[ohlcv.length - 1].timestamp : null;
+        const incrementalCandles = useIncremental && lastOhlcvAt
+            ? ohlcv.filter(c => c.timestamp > lastOhlcvAt)
+            : ohlcv;
+        let validCandles = useIncremental
+            ? incrementalCandles
+            : ohlcv.filter(c => c.timestamp >= entryTimestamp - 300000);
+
+        if (validCandles.length === 0 && sig.priceSamples?.length > 0) {
+            validCandles = sig.priceSamples
+                .filter(p => p.sampledAt.getTime() >= entryTimestamp - 300000)
+                .map(p => ({
+                    timestamp: p.sampledAt.getTime(),
+                    open: p.price,
+                    high: p.price,
+                    low: p.price,
+                    close: p.price,
+                    volume: p.volume ?? 0
+                }));
+            logger.debug(`[Metrics] Using price samples as fallback for ${sig.mint.slice(0, 8)}... (${validCandles.length} samples)`);
+        }
+
         if (validCandles.length === 0) {
             logger.debug(`[Metrics] No GeckoTerminal candles for ${sig.mint.slice(0, 8)}..., using cached ATH if available`);
             if (!sig.metrics?.athPrice || sig.metrics.athPrice <= 0) {
@@ -220,8 +250,10 @@ export const enrichSignalMetrics = async (
             maxHigh = sig.metrics.athPrice;
             maxAt = sig.metrics.athAt?.getTime?.() || entryTimestamp;
         } else {
-            let athPrice = entryPriceValue;
-            let athAt = entryTimestamp;
+            const startingAth = useIncremental ? (sig.metrics?.athPrice ?? entryPriceValue) : entryPriceValue;
+            const startingAthAt = useIncremental ? (sig.metrics?.athAt?.getTime?.() ?? entryTimestamp) : entryTimestamp;
+            let athPrice = startingAth;
+            let athAt = startingAthAt;
             for (const candle of validCandles) {
                 if (candle.high > athPrice) {
                     athPrice = candle.high;
@@ -256,6 +288,18 @@ export const enrichSignalMetrics = async (
             
             const timeToAth = maxAt - entryTimestamp;
 
+            // Track lowest low since entry (for incremental updates)
+            const prevMinLowPrice = sig.metrics?.minLowPrice ?? entryPriceValue;
+            const prevMinLowAt = sig.metrics?.minLowAt?.getTime?.() ?? entryTimestamp;
+            let minLowPrice = prevMinLowPrice;
+            let minLowAt = prevMinLowAt;
+            for (const candle of validCandles) {
+                if (candle.low < minLowPrice) {
+                    minLowPrice = candle.low;
+                    minLowAt = candle.timestamp;
+                }
+            }
+
             // Calculate max drawdown: find lowest price between entry and ATH time ONLY
             // Max drawdown = percentage decrease from entry price to lowest price in that period
             // CRITICAL: Drawdown always occurs BEFORE ATH, so we only check candles up to ATH time
@@ -263,9 +307,14 @@ export const enrichSignalMetrics = async (
             let maxDrawdownPrice = entryPriceValue; // Price at max drawdown
             let maxDrawdownAt = entryTimestamp; // Time of max drawdown
 
-            if (validCandles.length > 0) {
+            const athUpdated = useIncremental ? maxHigh > (sig.metrics?.athPrice ?? 0) : true;
+            if (validCandles.length > 0 && athUpdated) {
                 let lowestPrice = entryPriceValue;
                 let lowestAt = entryTimestamp;
+                const baseLowPrice = useIncremental ? prevMinLowPrice : entryPriceValue;
+                const baseLowAt = useIncremental ? prevMinLowAt : entryTimestamp;
+                lowestPrice = baseLowPrice;
+                lowestAt = baseLowAt;
                 for (const candle of validCandles) {
                     if (candle.timestamp > maxAt) break;
                     if (candle.low < lowestPrice) {
@@ -306,6 +355,13 @@ export const enrichSignalMetrics = async (
                 timeFromDrawdownToAth = timeToAth;
             }
 
+            // If ATH didn't change in incremental mode, keep existing drawdown metrics
+            if (useIncremental && !athUpdated && sig.metrics) {
+                maxDrawdown = sig.metrics.maxDrawdown ?? maxDrawdown;
+                maxDrawdownMarketCap = sig.metrics.maxDrawdownMarketCap ?? maxDrawdownMarketCap;
+                timeFromDrawdownToAth = sig.metrics.timeFromDrawdownToAth ?? timeFromDrawdownToAth;
+            }
+
             // Store max drawdown market cap and time from drawdown to ATH in metrics for display
             
             if (sig.metrics) {
@@ -321,6 +377,9 @@ export const enrichSignalMetrics = async (
                         maxDrawdown,
                         maxDrawdownMarketCap,
                         timeFromDrawdownToAth,
+                        ohlcvLastAt: lastCandleAt ? new Date(lastCandleAt) : sig.metrics.ohlcvLastAt,
+                        minLowPrice,
+                        minLowAt: minLowAt ? new Date(minLowAt) : sig.metrics.minLowAt,
                         updatedAt: new Date()
                     }
                 });
@@ -333,6 +392,9 @@ export const enrichSignalMetrics = async (
                 sig.metrics.maxDrawdown = maxDrawdown;
                 sig.metrics.maxDrawdownMarketCap = maxDrawdownMarketCap;
                 sig.metrics.timeFromDrawdownToAth = timeFromDrawdownToAth;
+                sig.metrics.ohlcvLastAt = lastCandleAt ? new Date(lastCandleAt) : sig.metrics.ohlcvLastAt;
+                sig.metrics.minLowPrice = minLowPrice;
+                sig.metrics.minLowAt = minLowAt ? new Date(minLowAt) : sig.metrics.minLowAt;
                 sig.metrics.updatedAt = new Date();
                 // Store derived values for display (not in DB schema yet, but available in memory)
                 (sig.metrics as any).maxDrawdownPrice = maxDrawdownPrice;
@@ -351,7 +413,10 @@ export const enrichSignalMetrics = async (
                         timeToAth,
                         maxDrawdown,
                         maxDrawdownMarketCap,
-                        timeFromDrawdownToAth
+                        timeFromDrawdownToAth,
+                        ohlcvLastAt: lastCandleAt ? new Date(lastCandleAt) : null,
+                        minLowPrice,
+                        minLowAt: minLowAt ? new Date(minLowAt) : null
                     }
                 });
                 sig.metrics = newMetrics;

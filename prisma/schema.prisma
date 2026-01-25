@@ -144,6 +144,9 @@ model SignalMetric {
   maxDrawdown      Float    @default(0) @map("max_drawdown") // negative % (market cap based)
   maxDrawdownMarketCap Float? @map("max_drawdown_market_cap") // Market cap at max drawdown
   timeFromDrawdownToAth Int?  @map("time_from_drawdown_to_ath") // ms from max drawdown to ATH
+  ohlcvLastAt      DateTime? @map("ohlcv_last_at") // Last OHLCV candle processed
+  minLowPrice      Float?   @map("min_low_price") // Lowest low since entry (price)
+  minLowAt         DateTime? @map("min_low_at") // Timestamp of lowest low since entry
   stagnationTime   Int?     @map("stagnation_time") // ms spent < 1.1x before pumping
   drawdownDuration Int?     @map("drawdown_duration") // ms spent underwater before ATH
   updatedAt        DateTime @default(now()) @map("updated_at")
