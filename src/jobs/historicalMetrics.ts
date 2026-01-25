@@ -77,7 +77,7 @@ export const updateHistoricalMetrics = async (targetSignalIds?: number[]) => {
                     // If minute candles don't cover entry period, try hour candles
                     if (timeframe === 'minute' && ohlcv.length > 0) {
                         const oldestCandle = ohlcv[0];
-                        const signalTime = signal.detectedAt.getTime();
+                        const signalTime = fetchStart;
                         // If oldest candle is > 5 minutes after signal, try hourly
                         if (oldestCandle.timestamp > signalTime + 300000) {
                             timeframe = 'hour';
@@ -89,8 +89,6 @@ export const updateHistoricalMetrics = async (targetSignalIds?: number[]) => {
                 }
 
                 if (!ohlcv || ohlcv.length === 0) return;
-
-                        const signalTime = fetchStart;
                 const signalTime = fetchStart;
                 const validCandles = ohlcv.filter(c => c.timestamp >= signalTime - 300000); 
 
@@ -173,8 +171,6 @@ export const updateHistoricalMetrics = async (targetSignalIds?: number[]) => {
                         timeToAth,
                         maxDrawdown,
                         maxDrawdownMarketCap: maxDrawdownMarketCap || undefined,
-                        timeFromDrawdownToAth,
-                        timeToDrawdown,
                         timeFromDrawdownToAth,
                         timeToDrawdown,
                         ohlcvLastAt: validCandles.length > 0 ? new Date(validCandles[validCandles.length - 1].timestamp) : undefined,

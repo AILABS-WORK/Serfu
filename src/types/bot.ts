@@ -95,6 +95,7 @@ export interface SessionData {
       | 'strategy_time_window'
       | 'strategy_cond_volume'
       | 'strategy_cond_mentions'
+      | 'strategy_cond_confluence'
       | 'strategy_cond_min_mc'
       | 'strategy_cond_max_mc'
       | 'strategy_cond_tp'
