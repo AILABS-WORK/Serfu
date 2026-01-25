@@ -202,4 +202,43 @@ export const updateHistoricalMetrics = async (targetSignalIds?: number[]) => {
   }
 };
 
+/**
+ * Full backfill for ALL signals with entry data.
+ * Runs in batches to avoid rate limits and timeouts.
+ */
+export const runHistoricalMetricsBackfill = async (batchSize = 200) => {
+  try {
+    logger.info(`[HistoricalMetrics] Starting full backfill (batchSize=${batchSize})...`);
+    let lastId = 0;
+    let totalProcessed = 0;
+
+    while (true) {
+      const batch = await prisma.signal.findMany({
+        where: {
+          id: { gt: lastId },
+          entryPrice: { not: null }
+        },
+        select: { id: true },
+        orderBy: { id: 'asc' },
+        take: batchSize
+      });
+
+      if (batch.length === 0) break;
+      const ids = batch.map(b => b.id);
+      lastId = ids[ids.length - 1];
+      totalProcessed += ids.length;
+
+      logger.info(`[HistoricalMetrics] Backfill batch ${ids[0]}..${lastId} (${ids.length} signals)`);
+      await updateHistoricalMetrics(ids);
+
+      // Throttle between batches
+      await new Promise(r => setTimeout(r, 1500));
+    }
+
+    logger.info(`[HistoricalMetrics] Full backfill complete. Processed ${totalProcessed} signals.`);
+  } catch (error) {
+    logger.error('Error in runHistoricalMetricsBackfill:', error);
+  }
+};
+
 
