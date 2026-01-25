@@ -43,7 +43,7 @@ const buildCache = async (
   let forwardedSignalIds: number[] = [];
   if (destinationGroupIds.length > 0) {
     const forwarded = await prisma.forwardedSignal.findMany({
-      where: { destGroupId: { in: destinationGroupIds.map((id: number) => BigInt(id)) } },
+        where: { destGroupId: { in: destinationGroupIds.map((id: number) => BigInt(id)) } },
       select: { signalId: true }
     });
     forwardedSignalIds = forwarded.map((f: any) => f.signalId);
@@ -104,7 +104,7 @@ const buildCache = async (
     }
     if (!latestDetected || sig.detectedAt.getTime() > latestDetected.getTime()) {
       mintLatestDetected.set(sig.mint, sig.detectedAt);
-    }
+  }
   }
   const uniqueSignals = Array.from(mintMap.values());
   logger.info(`[LiveSignals] Deduplicated ${signals.length} signals to ${uniqueSignals.length} unique mints`);
@@ -197,23 +197,23 @@ const buildCache = async (
       // Calculate PnL (EXACT SAME AS TEST SCRIPT - lines 37-42)
       let pnl = -Infinity;
       if (currentPrice !== null && currentPrice > 0 && entryPrice !== null && entryPrice > 0) {
-        pnl = ((currentPrice - entryPrice) / entryPrice) * 100;
+      pnl = ((currentPrice - entryPrice) / entryPrice) * 100;
       } else if (currentMc !== null && currentMc > 0 && entryMc !== null && entryMc > 0) {
-        pnl = ((currentMc - entryMc) / entryMc) * 100;
-      }
+      pnl = ((currentMc - entryMc) / entryMc) * 100;
+    }
       
       // Store with first and latest detection times
       const firstDetectedAt = mintFirstDetected.get(sig.mint) || sig.detectedAt;
       const latestDetectedAt = mintLatestDetected.get(sig.mint) || sig.detectedAt;
-      
-      return {
+
+    return {
         mint: sig.mint,
         symbol: sig.symbol || 'N/A',
         entryPrice: entryPrice ?? 0,
         entryMc: entryMc ?? 0,
         currentPrice: currentPrice ?? 0,
         currentMc: currentMc ?? 0,
-        pnl,
+      pnl,
         detectedAt: latestDetectedAt, // Latest mention time
         firstDetectedAt, // Creation time
         groupId: sig.groupId ?? null,
@@ -223,8 +223,8 @@ const buildCache = async (
           ? `@${sig.user.username}`
           : sig.user?.firstName || '',
         signalId: sig.id
-      };
-    });
+    };
+  });
 
   return {
     signals: cachedSignals,
@@ -283,24 +283,24 @@ export const handleLiveSignals = async (ctx: BotContext, forceRefresh = false) =
         logger.info('[LiveSignals] Force refresh requested - rebuilding cache');
       }
       // Show loading message only when rebuilding cache
-      if (ctx.callbackQuery && ctx.callbackQuery.message) {
-        loadingMsg = ctx.callbackQuery.message;
-        try {
-          await ctx.telegram.editMessageText(
-            loadingMsg.chat.id,
-            loadingMsg.message_id,
-            undefined,
+    if (ctx.callbackQuery && ctx.callbackQuery.message) {
+      loadingMsg = ctx.callbackQuery.message;
+      try {
+        await ctx.telegram.editMessageText(
+          loadingMsg.chat.id,
+          loadingMsg.message_id,
+          undefined,
             '⏳ Loading live signals and calculating ATH...',
-            { parse_mode: 'Markdown' }
-          );
-        } catch {}
-      } else {
+          { parse_mode: 'Markdown' }
+        );
+      } catch {}
+    } else {
         loadingMsg = await ctx.reply('⏳ Loading live signals and calculating ATH...');
-      }
-      
+    }
+
       logger.info('[LiveSignals] Building fresh cache with real-time prices');
       cache = await buildCache(ctx, timeframeCutoff, timeframeLabel, chain, timeBasis);
-      ctx.session.liveSignalsCache = cache;
+    ctx.session.liveSignalsCache = cache;
     }
 
     // Filter by gainers/multipliers - works with ANY timeframe including ALL
@@ -403,14 +403,14 @@ export const handleLiveSignals = async (ctx: BotContext, forceRefresh = false) =
       }
       
       for (const item of batch) {
-        const sig = signalMap.get(item.signalId);
+      const sig = signalMap.get(item.signalId);
         if (sig && item.currentPrice > 0) {
           // Ensure entry data is populated for enrichSignalMetrics
-          if (!sig.entryMarketCap && item.entryMc > 0) sig.entryMarketCap = item.entryMc;
-          if (!sig.entryPrice && item.entryPrice > 0) sig.entryPrice = item.entryPrice;
-          if (!sig.entrySupply && sig.entryMarketCap && sig.entryPrice) {
-            sig.entrySupply = sig.entryMarketCap / sig.entryPrice;
-          }
+        if (!sig.entryMarketCap && item.entryMc > 0) sig.entryMarketCap = item.entryMc;
+        if (!sig.entryPrice && item.entryPrice > 0) sig.entryPrice = item.entryPrice;
+        if (!sig.entrySupply && sig.entryMarketCap && sig.entryPrice) {
+          sig.entrySupply = sig.entryMarketCap / sig.entryPrice;
+        }
           
           logger.info(`[LiveSignals] Calculating ATH for ${item.mint.slice(0, 8)}... using GeckoTerminal OHLCV`);
           try {
@@ -485,7 +485,7 @@ export const handleLiveSignals = async (ctx: BotContext, forceRefresh = false) =
             logger.debug(`[LiveSignals] ✅ Retry successful for ${item.mint.slice(0, 8)}...`);
           } else {
             logger.warn(`[LiveSignals] ⚠️ Retry metrics unchanged for ${item.mint.slice(0, 8)}...`);
-          }
+      }
         } catch (err) {
           logger.warn(`[LiveSignals] ❌ Retry failed for ${item.mint.slice(0, 8)}...: ${err}`);
         }

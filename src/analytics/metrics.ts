@@ -136,9 +136,9 @@ export const enrichSignalMetrics = async (
                 // Only skip if metrics are relatively fresh (< 1 hour)
                 // If very stale, recalculate anyway (might have missed activity)
                 if (metricsAge < 60 * 60 * 1000) {
-                    return;
-                }
+                return;
             }
+        }
         }
         const entryTimestamp = (
             sig.entryPriceAt ||
@@ -239,7 +239,7 @@ export const enrichSignalMetrics = async (
                     volume: p.volume ?? 0
                 }));
             logger.debug(`[Metrics] Using price samples as fallback for ${sig.mint.slice(0, 8)}... (${validCandles.length} samples)`);
-        }
+                    }
 
         if (validCandles.length === 0) {
             logger.debug(`[Metrics] No GeckoTerminal candles for ${sig.mint.slice(0, 8)}..., using cached ATH if available`);
@@ -265,14 +265,14 @@ export const enrichSignalMetrics = async (
         }
 
         // Ensure ATH is never below entry price
-        if (maxHigh < entryPriceValue) {
-            maxHigh = entryPriceValue;
-            maxAt = entryTimestamp;
-        }
+            if (maxHigh < entryPriceValue) {
+                maxHigh = entryPriceValue;
+                maxAt = entryTimestamp;
+            }
 
         // Do not override candle-derived ATH with current or cached values when candles exist
 
-            // Calculate ATH multiple
+        // Calculate ATH multiple
         if (maxHigh > 0 && entryPriceValue > 0) {
             const athMultiple = maxHigh / entryPriceValue;
             logger.debug(`[Metrics] Calculated ATH for ${sig.mint.slice(0, 8)}...: ${athMultiple.toFixed(2)}x (price: ${maxHigh}, entry: ${entryPriceValue})`);
@@ -367,7 +367,7 @@ export const enrichSignalMetrics = async (
             }
 
             // Store max drawdown market cap and time from drawdown to ATH in metrics for display
-            
+
             if (sig.metrics) {
                 // UPDATE
                 await prisma.signalMetric.update({

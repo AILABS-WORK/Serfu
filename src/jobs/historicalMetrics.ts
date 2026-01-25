@@ -86,167 +86,210 @@ export const updateHistoricalMetrics = async (targetSignalIds?: number[]) => {
 
     logger.info(`Checking history for ${signals.length} active signals...`);
 
-    // Process in batches of 5 to speed up if using Bitquery (concurrent requests)
-    const BATCH_SIZE = 5;
-    for (let i = 0; i < signals.length; i += BATCH_SIZE) {
-        const batch = signals.slice(i, i + BATCH_SIZE);
-        await Promise.all(batch.map(async (signal) => {
+    // Process in batches of unique mints (avoid duplicate OHLCV fetches)
+    const signalsByMint = new Map<string, typeof signals>();
+    for (const signal of signals) {
+      const list = signalsByMint.get(signal.mint) || [];
+      list.push(signal);
+      signalsByMint.set(signal.mint, list);
+    }
+
+    const uniqueMints = Array.from(signalsByMint.keys());
+    const MINT_BATCH_SIZE = 5;
+    for (let i = 0; i < uniqueMints.length; i += MINT_BATCH_SIZE) {
+        const mintBatch = uniqueMints.slice(i, i + MINT_BATCH_SIZE);
+        await Promise.all(mintBatch.map(async (mint) => {
+            const mintSignals = signalsByMint.get(mint) || [];
+            let sharedOhlcv: any[] = [];
+            let sharedTimeframe: 'minute' | 'hour' | 'day' = 'hour';
+            let sharedLimit = 0;
+            let sharedFetchStart = 0;
+
             try {
-                const lastSample = signal.priceSamples?.[0];
-                if (signal.metrics?.updatedAt) {
-                    if (!lastSample || lastSample.sampledAt <= signal.metrics.updatedAt) return;
-                    if ((lastSample.volume ?? 0) <= 0) return;
+                const now = Date.now();
+                const fetchStarts = mintSignals
+                  .map(s => {
+                    const entryTime = getEntryTime(s);
+                    if (!entryTime) return null;
+                    return s.metrics?.ohlcvLastAt ? s.metrics.ohlcvLastAt.getTime() : entryTime.getTime();
+                  })
+                  .filter((t): t is number => !!t);
+
+                if (fetchStarts.length === 0) {
+                  mintSignals.forEach(s => markProcessed(s.id));
+                  return;
                 }
 
-                const entryPrice = signal.entryPrice || (signal.entryMarketCap && signal.entrySupply ? signal.entryMarketCap / signal.entrySupply : null);
-                const entryTime = getEntryTime(signal);
-                if (!entryPrice || !entryTime) return;
+                sharedFetchStart = Math.min(...fetchStarts);
+                const ageMs = now - sharedFetchStart;
+                const minuteMs = 60 * 1000;
+                const hourMs = 60 * 60 * 1000;
+                const dayMs = 24 * 60 * 60 * 1000;
+                const minuteLimit = Math.ceil(ageMs / minuteMs) + 5;
+                const hourLimit = Math.ceil(ageMs / hourMs) + 5;
 
-                const now = Date.now();
-                const fetchStart = signal.metrics?.ohlcvLastAt ? signal.metrics.ohlcvLastAt.getTime() : entryTime.getTime();
-                const ageHours = (now - fetchStart) / (1000 * 60 * 60);
-                
-                // OPTIMIZED: Use GeckoTerminal first (fastest, best success rate)
-                // Benchmark showed GeckoTerminal minute parallel: 248.83ms/token with 3/6 success
-                // Bitquery: 0% success rate
-                // Priority 1: GeckoTerminal (Fastest, best success rate)
-                // Use progressive timeframe strategy: minute for recent, hour for older
-                let timeframe: 'minute' | 'hour' | 'day' = ageHours <= 16 ? 'minute' : ageHours <= 720 ? 'hour' : 'day';
-                const tfMs = timeframe === 'minute' ? 60 * 1000 : timeframe === 'hour' ? 60 * 60 * 1000 : 24 * 60 * 60 * 1000;
-                const limit = Math.min(1000, Math.max(10, Math.ceil((now - fetchStart) / tfMs) + 5));
-                let ohlcv: any[] = [];
-                const cacheKey = `${signal.mint}:${timeframe}:${limit}:${fetchStart}`;
-                
-                try {
-                    const cached = ohlcvCache.get(cacheKey);
-                    if (cached) {
-                      ohlcv = cached;
-                    } else {
-                      ohlcv = await geckoTerminal.getOHLCV(signal.mint, timeframe, limit);
-                      ohlcvCache.set(cacheKey, ohlcv);
-                    }
-                    
-                    // If minute candles don't cover entry period, try hour candles
-                    if (timeframe === 'minute' && ohlcv.length > 0) {
-                        const oldestCandle = ohlcv[0];
-                        const signalTime = fetchStart;
-                        // If oldest candle is > 5 minutes after signal, try hourly
-                        if (oldestCandle.timestamp > signalTime + 300000) {
-                            timeframe = 'hour';
-                            const fallbackKey = `${signal.mint}:${timeframe}:1000:${fetchStart}`;
-                            const cachedFallback = ohlcvCache.get(fallbackKey);
-                            if (cachedFallback) {
-                              ohlcv = cachedFallback;
-                            } else {
-                              ohlcv = await geckoTerminal.getOHLCV(signal.mint, timeframe, 1000);
-                              ohlcvCache.set(fallbackKey, ohlcv);
-                            }
+                if (minuteLimit <= 1000) sharedTimeframe = 'minute';
+                else if (hourLimit <= 1000) sharedTimeframe = 'hour';
+                else sharedTimeframe = 'day';
+
+                const tfMs = sharedTimeframe === 'minute' ? minuteMs : sharedTimeframe === 'hour' ? hourMs : dayMs;
+                sharedLimit = Math.min(1000, Math.max(10, Math.ceil(ageMs / tfMs) + 5));
+                const cacheKey = `${mint}:${sharedTimeframe}:${sharedLimit}:${sharedFetchStart}`;
+
+                const cached = ohlcvCache.get(cacheKey);
+                if (cached) {
+                  sharedOhlcv = cached;
+                } else {
+                  sharedOhlcv = await geckoTerminal.getOHLCV(mint, sharedTimeframe, sharedLimit);
+                  ohlcvCache.set(cacheKey, sharedOhlcv);
+                }
+
+                if (sharedTimeframe === 'minute' && sharedOhlcv.length > 0) {
+                    const oldestCandle = sharedOhlcv[0];
+                    if (oldestCandle.timestamp > sharedFetchStart + 300000) {
+                        sharedTimeframe = 'hour';
+                        const fallbackKey = `${mint}:${sharedTimeframe}:1000:${sharedFetchStart}`;
+                        const cachedFallback = ohlcvCache.get(fallbackKey);
+                        if (cachedFallback) {
+                          sharedOhlcv = cachedFallback;
+                        } else {
+                          sharedOhlcv = await geckoTerminal.getOHLCV(mint, sharedTimeframe, 1000);
+                          ohlcvCache.set(fallbackKey, sharedOhlcv);
                         }
                     }
-                } catch (e) {
-                    logger.debug(`GeckoTerminal failed for ${signal.mint}, trying Bitquery fallback:`, e);
                 }
-
-                if (!ohlcv || ohlcv.length === 0) return;
-                const signalTime = fetchStart;
-                const validCandles = ohlcv.filter(c => c.timestamp >= signalTime - 300000); 
-
-                if (validCandles.length === 0) return;
-
-                let athPrice = entryPrice;
-                let athAt = signal.metrics?.athAt || entryTime;
-                let minPrice = signal.metrics?.minLowPrice ?? entryPrice;
-                let minAt = signal.metrics?.minLowAt ?? entryTime;
-                let timeTo2x: number | null = null;
-                let timeTo5x: number | null = null;
-                let timeTo10x: number | null = null;
-
-                for (const candle of validCandles) {
-                    if (candle.high > athPrice) {
-                        athPrice = candle.high;
-                        athAt = new Date(candle.timestamp);
-                    }
-                    if (candle.low < minPrice) {
-                        minPrice = candle.low;
-                        minAt = new Date(candle.timestamp);
-                    }
-                    if (!timeTo2x && candle.high >= entryPrice * 2) {
-                        timeTo2x = candle.timestamp - signalTime;
-                    }
-                    if (!timeTo5x && candle.high >= entryPrice * 5) {
-                        timeTo5x = candle.timestamp - signalTime;
-                    }
-                    if (!timeTo10x && candle.high >= entryPrice * 10) {
-                        timeTo10x = candle.timestamp - signalTime;
-                    }
-                }
-
-                // Force ATH >= Entry
-                if (athPrice < entryPrice) athPrice = entryPrice;
-
-                const athMultiple = athPrice / entryPrice;
-                const maxDrawdown = ((minPrice - entryPrice) / entryPrice) * 100;
-                const currentPrice = validCandles[validCandles.length - 1].close;
-                const currentMultiple = currentPrice / entryPrice;
-                const timeToAth = athAt.getTime() - entryTime.getTime();
-                const timeToDrawdown = minAt.getTime() - entryTime.getTime();
-                const timeFromDrawdownToAth = minAt.getTime() < athAt.getTime() ? athAt.getTime() - minAt.getTime() : null;
-                const entrySupply = signal.entrySupply || (signal.entryMarketCap && entryPrice ? signal.entryMarketCap / entryPrice : null);
-                const athMarketCap = entrySupply ? athPrice * entrySupply : (signal.entryMarketCap ? signal.entryMarketCap * athMultiple : null);
-                const maxDrawdownMarketCap = entrySupply ? minPrice * entrySupply : (signal.entryMarketCap ? signal.entryMarketCap * (minPrice / entryPrice) : null);
-                const currentMarketCap = entrySupply ? currentPrice * entrySupply : null;
-
-                await prisma.signalMetric.upsert({
-                    where: { signalId: signal.id },
-                    create: {
-                        signalId: signal.id,
-                        currentPrice,
-                        currentMultiple,
-                        currentMarketCap: currentMarketCap || undefined,
-                        athPrice,
-                        athMultiple,
-                        athMarketCap: athMarketCap || undefined,
-                        athAt,
-                        timeToAth,
-                        maxDrawdown,
-                        maxDrawdownMarketCap: maxDrawdownMarketCap || undefined,
-                        timeFromDrawdownToAth,
-                        timeTo2x,
-                        timeTo5x,
-                        timeTo10x,
-                        ohlcvLastAt: validCandles.length > 0 ? new Date(validCandles[validCandles.length - 1].timestamp) : undefined,
-                        minLowPrice: minPrice,
-                        minLowAt: minAt,
-                        updatedAt: new Date()
-                    },
-                    update: {
-                        currentPrice,
-                        currentMultiple,
-                        currentMarketCap: currentMarketCap || undefined,
-                        athPrice,
-                        athMultiple,
-                        athMarketCap: athMarketCap || undefined,
-                        athAt,
-                        timeToAth,
-                        maxDrawdown,
-                        maxDrawdownMarketCap: maxDrawdownMarketCap || undefined,
-                        timeFromDrawdownToAth,
-                        timeToDrawdown,
-                        ohlcvLastAt: validCandles.length > 0 ? new Date(validCandles[validCandles.length - 1].timestamp) : undefined,
-                        minLowPrice: minPrice,
-                        minLowAt: minAt,
-                        timeTo2x: timeTo2x || undefined,
-                        timeTo5x: timeTo5x || undefined,
-                        timeTo10x: timeTo10x || undefined,
-                        updatedAt: new Date()
-                    }
-                });
-                markProcessed(signal.id);
-                
-            } catch (err) {
-                logger.error(`Error updating history for ${signal.mint}:`, err);
-                markProcessed(signal.id);
+            } catch (e) {
+                logger.debug(`GeckoTerminal failed for ${mint}, trying Bitquery fallback:`, e);
             }
+
+            if (!sharedOhlcv || sharedOhlcv.length === 0) {
+              mintSignals.forEach(s => markProcessed(s.id));
+              return;
+            }
+
+            await Promise.all(mintSignals.map(async (signal) => {
+                try {
+                    const lastSample = signal.priceSamples?.[0];
+                    if (signal.metrics?.updatedAt) {
+                        if (!lastSample || lastSample.sampledAt <= signal.metrics.updatedAt) {
+                          markProcessed(signal.id);
+                          return;
+                        }
+                        if ((lastSample.volume ?? 0) <= 0) {
+                          markProcessed(signal.id);
+                          return;
+                        }
+                    }
+
+                    const entryPrice = signal.entryPrice || (signal.entryMarketCap && signal.entrySupply ? signal.entryMarketCap / signal.entrySupply : null);
+                    const entryTime = getEntryTime(signal);
+                    if (!entryPrice || !entryTime) {
+                      markProcessed(signal.id);
+                      return;
+                    }
+
+                    const fetchStart = signal.metrics?.ohlcvLastAt ? signal.metrics.ohlcvLastAt.getTime() : entryTime.getTime();
+                    const validCandles = sharedOhlcv.filter(c => c.timestamp >= fetchStart - 300000); 
+
+                    if (validCandles.length === 0) {
+                      markProcessed(signal.id);
+                      return;
+                    }
+
+                    let athPrice = entryPrice;
+                    let athAt = signal.metrics?.athAt || entryTime;
+                    let minPrice = signal.metrics?.minLowPrice ?? entryPrice;
+                    let minAt = signal.metrics?.minLowAt ?? entryTime;
+                    let timeTo2x: number | null = null;
+                    let timeTo5x: number | null = null;
+                    let timeTo10x: number | null = null;
+
+                    for (const candle of validCandles) {
+                        if (candle.high > athPrice) {
+                            athPrice = candle.high;
+                            athAt = new Date(candle.timestamp);
+                        }
+                        if (candle.low < minPrice) {
+                            minPrice = candle.low;
+                            minAt = new Date(candle.timestamp);
+                        }
+                        if (!timeTo2x && candle.high >= entryPrice * 2) {
+                            timeTo2x = candle.timestamp - fetchStart;
+                        }
+                        if (!timeTo5x && candle.high >= entryPrice * 5) {
+                            timeTo5x = candle.timestamp - fetchStart;
+                        }
+                        if (!timeTo10x && candle.high >= entryPrice * 10) {
+                            timeTo10x = candle.timestamp - fetchStart;
+                        }
+                    }
+
+                    // Force ATH >= Entry
+                    if (athPrice < entryPrice) athPrice = entryPrice;
+
+                    const athMultiple = athPrice / entryPrice;
+                    const maxDrawdown = ((minPrice - entryPrice) / entryPrice) * 100;
+                    const currentPrice = validCandles[validCandles.length - 1].close;
+                    const currentMultiple = currentPrice / entryPrice;
+                    const timeToAth = athAt.getTime() - entryTime.getTime();
+                    const timeToDrawdown = minAt.getTime() - entryTime.getTime();
+                    const timeFromDrawdownToAth = minAt.getTime() < athAt.getTime() ? athAt.getTime() - minAt.getTime() : null;
+                    const entrySupply = signal.entrySupply || (signal.entryMarketCap && entryPrice ? signal.entryMarketCap / entryPrice : null);
+                    const athMarketCap = entrySupply ? athPrice * entrySupply : (signal.entryMarketCap ? signal.entryMarketCap * athMultiple : null);
+                    const maxDrawdownMarketCap = entrySupply ? minPrice * entrySupply : (signal.entryMarketCap ? signal.entryMarketCap * (minPrice / entryPrice) : null);
+                    const currentMarketCap = entrySupply ? currentPrice * entrySupply : null;
+
+                    await prisma.signalMetric.upsert({
+                        where: { signalId: signal.id },
+                        create: {
+                            signalId: signal.id,
+                            currentPrice,
+                            currentMultiple,
+                            currentMarketCap: currentMarketCap || undefined,
+                            athPrice,
+                            athMultiple,
+                            athMarketCap: athMarketCap || undefined,
+                            athAt,
+                            timeToAth,
+                            maxDrawdown,
+                            maxDrawdownMarketCap: maxDrawdownMarketCap || undefined,
+                            timeFromDrawdownToAth,
+                            timeTo2x,
+                            timeTo5x,
+                            timeTo10x,
+                            ohlcvLastAt: validCandles.length > 0 ? new Date(validCandles[validCandles.length - 1].timestamp) : undefined,
+                            minLowPrice: minPrice,
+                            minLowAt: minAt,
+                            updatedAt: new Date()
+                        },
+                        update: {
+                            currentPrice,
+                            currentMultiple,
+                            currentMarketCap: currentMarketCap || undefined,
+                            athPrice,
+                            athMultiple,
+                            athMarketCap: athMarketCap || undefined,
+                            athAt,
+                            timeToAth,
+                            maxDrawdown, 
+                            maxDrawdownMarketCap: maxDrawdownMarketCap || undefined,
+                            timeFromDrawdownToAth,
+                            timeToDrawdown,
+                            ohlcvLastAt: validCandles.length > 0 ? new Date(validCandles[validCandles.length - 1].timestamp) : undefined,
+                            minLowPrice: minPrice,
+                            minLowAt: minAt,
+                            timeTo2x: timeTo2x || undefined,
+                            timeTo5x: timeTo5x || undefined,
+                            timeTo10x: timeTo10x || undefined,
+                            updatedAt: new Date()
+                        }
+                    });
+                    markProcessed(signal.id);
+                } catch (err) {
+                    logger.error(`Error updating history for ${signal.mint}:`, err);
+                    markProcessed(signal.id);
+                }
+            }));
         }));
 
         // Rate limit delay between batches
