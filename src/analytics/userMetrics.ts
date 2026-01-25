@@ -1,5 +1,6 @@
 import { prisma } from '../db';
 import { logger } from '../utils/logger';
+import { getEntryTime } from './metricsUtils';
 
 export const computeUserMetrics = async (userId: number, window: '7D' | '30D' | 'ALL') => {
   try {
@@ -10,7 +11,10 @@ export const computeUserMetrics = async (userId: number, window: '7D' | '30D' | 
     const signals = await prisma.signal.findMany({
       where: {
         userId,
-        detectedAt: { gte: cutoff },
+        OR: [
+          { entryPriceAt: { gte: cutoff } },
+          { entryPriceAt: null, detectedAt: { gte: cutoff } }
+        ]
       },
       include: {
         metrics: true,
@@ -64,8 +68,9 @@ export const computeUserMetrics = async (userId: number, window: '7D' | '30D' | 
     const timesTo2x = signals
       .map((s: any) => {
         const event = s.thresholdEvents.find((e: any) => e.multipleThreshold === 2);
-        if (!event || !s.detectedAt) return null;
-        return (event.hitAt.getTime() - s.detectedAt.getTime()) / 1000; // seconds
+        const entryTime = getEntryTime(s);
+        if (!event || !entryTime) return null;
+        return (event.hitAt.getTime() - entryTime.getTime()) / 1000; // seconds
       })
       .filter((t: number | null): t is number => t !== null)
       .sort((a: number, b: number) => a - b);
@@ -88,7 +93,7 @@ export const computeUserMetrics = async (userId: number, window: '7D' | '30D' | 
     const avgDrawdown = dds.length > 0 
       ? dds.reduce((sum: number, dd: number) => sum + Math.abs(dd), 0) / dds.length 
       : 0;
-    const riskScore = Math.max(0, Math.min(1, Math.abs(avgDrawdown)));
+    const riskScore = Math.max(0, Math.min(1, Math.abs(avgDrawdown) / 100));
 
     return {
       signalCount: count,

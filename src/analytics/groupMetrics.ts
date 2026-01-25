@@ -1,5 +1,6 @@
 import { prisma } from '../db';
 import { logger } from '../utils/logger';
+import { getEntryTime } from './metricsUtils';
 
 export const computeGroupMetrics = async (groupId: number, window: '7D' | '30D' | 'ALL') => {
   try {
@@ -10,7 +11,10 @@ export const computeGroupMetrics = async (groupId: number, window: '7D' | '30D' 
     const signals = await prisma.signal.findMany({
       where: {
         groupId,
-        detectedAt: { gte: cutoff },
+        OR: [
+          { entryPriceAt: { gte: cutoff } },
+          { entryPriceAt: null, detectedAt: { gte: cutoff } }
+        ]
       },
       include: {
         metrics: true,
@@ -63,8 +67,9 @@ export const computeGroupMetrics = async (groupId: number, window: '7D' | '30D' 
     const timesTo2x = signals
       .map((s: any) => {
         const event = s.thresholdEvents.find((e: any) => e.multipleThreshold === 2);
-        if (!event || !s.detectedAt) return null;
-        return (event.hitAt.getTime() - s.detectedAt.getTime()) / 1000; // seconds
+        const entryTime = getEntryTime(s);
+        if (!event || !entryTime) return null;
+        return (event.hitAt.getTime() - entryTime.getTime()) / 1000; // seconds
       })
       .filter((t: number | null): t is number => t !== null)
       .sort((a: number, b: number) => a - b);

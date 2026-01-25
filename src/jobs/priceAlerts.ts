@@ -60,9 +60,8 @@ export const checkPriceAlerts = async () => {
         const athMultiple = athPrice / signal.entryPrice;
         
         // Calculate Drawdown
-        // Drawdown logic: Calculate the lowest point relative to ENTRY price (simple version)
-        // (Current - Entry) / Entry
-        const currentDrawdown = (currentPrice - signal.entryPrice) / signal.entryPrice;
+        // Drawdown logic (percent): (Current - Entry) / Entry * 100
+        const currentDrawdown = ((currentPrice - signal.entryPrice) / signal.entryPrice) * 100;
         
         // Stored max drawdown is usually the lowest number (e.g. -0.5 is lower than -0.2)
         // We initialize maxDrawdown to 0. If currentDrawdown is -0.1, it becomes new max.

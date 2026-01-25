@@ -22,7 +22,10 @@ export const runAggregationCycle = async () => {
       const categories = await prisma.signal.groupBy({
         by: ['category'],
         where: {
-           detectedAt: { gte: cutoff }
+          OR: [
+            { entryPriceAt: { gte: cutoff } },
+            { entryPriceAt: null, detectedAt: { gte: cutoff } }
+          ]
         }
       });
 
@@ -33,7 +36,10 @@ export const runAggregationCycle = async () => {
         const signals = await prisma.signal.findMany({
           where: {
             category,
-            detectedAt: { gte: cutoff }
+            OR: [
+              { entryPriceAt: { gte: cutoff } },
+              { entryPriceAt: null, detectedAt: { gte: cutoff } }
+            ]
           },
           include: {
             metrics: true,

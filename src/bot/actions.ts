@@ -65,7 +65,7 @@ export const registerActions = (bot: Telegraf<BotContext>) => {
       const currentMc = signal.entrySupply && currentPrice ? currentPrice * signal.entrySupply : (signal.metrics?.currentMarketCap || 0);
       const multiple = entryMc > 0 && currentMc > 0 ? currentMc / entryMc : 0;
       const ath = signal.metrics?.athMultiple || multiple; // Use stored ATH if available
-      const dd = signal.metrics?.maxDrawdown || 0;
+      const dd = signal.metrics?.maxDrawdown ?? null;
 
       const msg = `
 📊 *Signal Stats*
@@ -73,7 +73,7 @@ Token: ${signal.symbol}
 Entry MC: ${UIHelper.formatMarketCap(entryMc)}
 Current MC: ${UIHelper.formatMarketCap(currentMc)} (${multiple.toFixed(2)}x)
 ATH: ${ath.toFixed(2)}x
-Max Drawdown: ${(dd * 100).toFixed(2)}%
+      Max Drawdown: ${dd !== null ? UIHelper.formatPercent(dd) : 'N/A'}
       `.trim();
 
       await ctx.reply(msg, {

@@ -67,6 +67,14 @@ export const handleRecentCalls = async (ctx: Context, window: string = '7D') => 
     }
 
     const since = resolveSince(effectiveWindow);
+    const timeFilter = since
+      ? {
+          OR: [
+            { entryPriceAt: { gte: since } },
+            { entryPriceAt: null, detectedAt: { gte: since } }
+          ]
+        }
+      : {};
     const rawSignals = await prisma.signal.findMany({
       where: {
         OR: [
@@ -74,7 +82,7 @@ export const handleRecentCalls = async (ctx: Context, window: string = '7D') => 
           { id: { in: forwardedSignalIds } }
         ],
         ...(chain !== 'both' ? { chain } : {}),
-        ...(since ? { detectedAt: { gte: since } } : {})
+        ...timeFilter
       },
       orderBy: { detectedAt: 'desc' },
       take: 40,
@@ -135,7 +143,7 @@ export const handleRecentCalls = async (ctx: Context, window: string = '7D') => 
       const icon = UIHelper.getStatusIcon(pnl);
 
       const ath = sig.metrics?.athMultiple || 0;
-      const drawdown = sig.metrics?.maxDrawdown ? sig.metrics.maxDrawdown * 100 : 0;
+      const drawdown = sig.metrics?.maxDrawdown ?? null;
       const athMc = sig.metrics?.athMarketCap || 0;
       const timeTo2x = UIHelper.formatDurationMinutes(sig.metrics?.timeTo2x ? sig.metrics.timeTo2x / (1000 * 60) : null);
       const timeTo5x = UIHelper.formatDurationMinutes(sig.metrics?.timeTo5x ? sig.metrics.timeTo5x / (1000 * 60) : null);
@@ -149,7 +157,8 @@ export const handleRecentCalls = async (ctx: Context, window: string = '7D') => 
       message += `🕒 *${time}* | ${icon} *${sig.symbol || 'UNKNOWN'}*\n`;
       message += `   via ${source}\n`;
       message += `   💰 Entry MC: ${entryStr} ➔ Now MC: ${currStr} (${pnlStr})\n`;
-      message += `   🏔️ ATH: ${ath > 0 ? `${ath.toFixed(2)}x` : 'N/A'} | ATH MC: ${athMc ? UIHelper.formatMarketCap(athMc) : 'N/A'} | 📉 Drawdown: ${drawdown ? `${drawdown.toFixed(0)}%` : 'N/A'}\n`;
+      const drawdownStr = drawdown !== null ? UIHelper.formatPercent(drawdown) : 'N/A';
+      message += `   🏔️ ATH: ${ath > 0 ? `${ath.toFixed(2)}x` : 'N/A'} | ATH MC: ${athMc ? UIHelper.formatMarketCap(athMc) : 'N/A'} | 📉 Drawdown: ${drawdownStr}\n`;
       message += `   ⏱️ Time to 2x/5x/10x: ${timeTo2x} / ${timeTo5x} / ${timeTo10x}\n`;
       message += UIHelper.separator('LIGHT');
     }

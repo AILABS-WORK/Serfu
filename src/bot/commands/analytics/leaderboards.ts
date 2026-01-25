@@ -177,7 +177,7 @@ export const handleSignalLeaderboardCommand = async (ctx: Context, window: TimeW
         ? s.timeToAth < 60 ? `${Math.round(s.timeToAth)}m` : `${(s.timeToAth / 60).toFixed(1)}h`
         : 'N/A';
       const dd = metricsMap.get(s.id)?.maxDrawdown;
-      const ddStr = dd !== undefined ? UIHelper.formatPercent(dd * 100) : 'N/A';
+      const ddStr = dd !== undefined ? UIHelper.formatPercent(dd) : 'N/A';
 
       message += `   Entry MC: ${entryMcStr} | ATH MC: ${athMcStr} | Now MC: ${currentMcStr}\n`;
       message += `   Time to ATH: ${timeToAthStr} | Drawdown: ${ddStr}\n`;

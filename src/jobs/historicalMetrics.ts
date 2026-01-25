@@ -1,7 +1,7 @@
 import { prisma } from '../db';
 import { geckoTerminal } from '../providers/geckoTerminal';
-import { bitquery } from '../providers/bitquery';
 import { logger } from '../utils/logger';
+import { getEntryTime } from '../analytics/metricsUtils';
 
 /**
  * Periodically checks historical data for active signals to ensure
@@ -22,9 +22,11 @@ export const updateHistoricalMetrics = async (targetSignalIds?: number[]) => {
     if (targetSignalIds && targetSignalIds.length > 0) {
         whereClause.id = { in: targetSignalIds };
     } else {
-        whereClause.detectedAt = {
-             gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) // Last 7 days
-        };
+        const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+        whereClause.OR = [
+            { entryPriceAt: { gte: since } },
+            { entryPriceAt: null, detectedAt: { gte: since } }
+        ];
     }
 
     const signals = await prisma.signal.findMany({
@@ -51,16 +53,16 @@ export const updateHistoricalMetrics = async (targetSignalIds?: number[]) => {
                 }
 
                 const entryPrice = signal.entryPrice || (signal.entryMarketCap && signal.entrySupply ? signal.entryMarketCap / signal.entrySupply : null);
-                if (!entryPrice || !signal.detectedAt) return;
+                const entryTime = getEntryTime(signal);
+                if (!entryPrice || !entryTime) return;
 
                 const now = Date.now();
-                const ageHours = (now - signal.detectedAt.getTime()) / (1000 * 60 * 60);
+                const ageHours = (now - entryTime.getTime()) / (1000 * 60 * 60);
                 
                 // OPTIMIZED: Use GeckoTerminal first (fastest, best success rate)
                 // Benchmark showed GeckoTerminal minute parallel: 248.83ms/token with 3/6 success
                 // Bitquery: 0% success rate
                 let ohlcv: any[] = [];
-                let source = 'gecko';
 
                 // Priority 1: GeckoTerminal (Fastest, best success rate)
                 // Use progressive timeframe strategy: minute for recent, hour for older
@@ -84,28 +86,17 @@ export const updateHistoricalMetrics = async (targetSignalIds?: number[]) => {
                     logger.debug(`GeckoTerminal failed for ${signal.mint}, trying Bitquery fallback:`, e);
                 }
 
-                // Priority 2: Bitquery (Fallback only if GeckoTerminal fails)
-                if (ohlcv.length === 0 && process.env.BIT_QUERY_API_KEY) {
-                    const bitqueryTimeframe = ageHours > 24 ? 'hour' : 'minute';
-                    const bitqueryLimit = ageHours > 24 ? 1000 : 1440; 
-                    try {
-                        ohlcv = await (bitquery as any).getOHLCV(signal.mint, bitqueryTimeframe, bitqueryLimit);
-                        if (ohlcv.length > 0) source = 'bitquery';
-                    } catch (e) {
-                        logger.debug(`Bitquery fallback failed for ${signal.mint}:`, e);
-                    }
-                }
-                
                 if (!ohlcv || ohlcv.length === 0) return;
 
-                const signalTime = signal.detectedAt.getTime();
+                const signalTime = entryTime.getTime();
                 const validCandles = ohlcv.filter(c => c.timestamp >= signalTime - 300000); 
 
                 if (validCandles.length === 0) return;
 
                 let athPrice = entryPrice;
-                let athAt = signal.detectedAt;
+                let athAt = entryTime;
                 let minPrice = entryPrice;
+                let minAt = entryTime;
                 let timeTo2x: number | null = null;
                 let timeTo5x: number | null = null;
                 let timeTo10x: number | null = null;
@@ -117,6 +108,7 @@ export const updateHistoricalMetrics = async (targetSignalIds?: number[]) => {
                     }
                     if (candle.low < minPrice) {
                         minPrice = candle.low;
+                        minAt = new Date(candle.timestamp);
                     }
                     if (!timeTo2x && candle.high >= entryPrice * 2) {
                         timeTo2x = candle.timestamp - signalTime;
@@ -133,9 +125,15 @@ export const updateHistoricalMetrics = async (targetSignalIds?: number[]) => {
                 if (athPrice < entryPrice) athPrice = entryPrice;
 
                 const athMultiple = athPrice / entryPrice;
-                const maxDrawdown = (minPrice - entryPrice) / entryPrice;
+                const maxDrawdown = ((minPrice - entryPrice) / entryPrice) * 100;
                 const currentPrice = validCandles[validCandles.length - 1].close;
                 const currentMultiple = currentPrice / entryPrice;
+                const timeToAth = athAt.getTime() - signalTime;
+                const timeFromDrawdownToAth = minAt.getTime() < athAt.getTime() ? athAt.getTime() - minAt.getTime() : null;
+                const entrySupply = signal.entrySupply || (signal.entryMarketCap && entryPrice ? signal.entryMarketCap / entryPrice : null);
+                const athMarketCap = entrySupply ? athPrice * entrySupply : (signal.entryMarketCap ? signal.entryMarketCap * athMultiple : null);
+                const maxDrawdownMarketCap = entrySupply ? minPrice * entrySupply : (signal.entryMarketCap ? signal.entryMarketCap * (minPrice / entryPrice) : null);
+                const currentMarketCap = entrySupply ? currentPrice * entrySupply : null;
 
                 await prisma.signalMetric.upsert({
                     where: { signalId: signal.id },
@@ -143,10 +141,15 @@ export const updateHistoricalMetrics = async (targetSignalIds?: number[]) => {
                         signalId: signal.id,
                         currentPrice,
                         currentMultiple,
+                        currentMarketCap: currentMarketCap || undefined,
                         athPrice,
                         athMultiple,
+                        athMarketCap: athMarketCap || undefined,
                         athAt,
+                        timeToAth,
                         maxDrawdown,
+                        maxDrawdownMarketCap: maxDrawdownMarketCap || undefined,
+                        timeFromDrawdownToAth,
                         timeTo2x,
                         timeTo5x,
                         timeTo10x,
@@ -155,10 +158,15 @@ export const updateHistoricalMetrics = async (targetSignalIds?: number[]) => {
                     update: {
                         currentPrice,
                         currentMultiple,
+                        currentMarketCap: currentMarketCap || undefined,
                         athPrice,
                         athMultiple,
+                        athMarketCap: athMarketCap || undefined,
                         athAt,
-                        maxDrawdown, 
+                        timeToAth,
+                        maxDrawdown,
+                        maxDrawdownMarketCap: maxDrawdownMarketCap || undefined,
+                        timeFromDrawdownToAth,
                         timeTo2x: timeTo2x || undefined,
                         timeTo5x: timeTo5x || undefined,
                         timeTo10x: timeTo10x || undefined,

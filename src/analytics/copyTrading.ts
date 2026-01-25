@@ -71,7 +71,7 @@ export const computeGroupStrategy = async (
     const expectedReturn = metrics.medianAth;
     const winRate = metrics.hit2Rate;
     const consistencyScore = 0.7; // Placeholder - could compute from variance
-    const riskScore = Math.abs(metrics.medianDrawdown);
+    const riskScore = Math.abs(metrics.medianDrawdown) / 100;
 
     const { recommendation, reasoning } = calculateRecommendation(
       winRate,

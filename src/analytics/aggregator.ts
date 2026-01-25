@@ -1,8 +1,8 @@
 import { prisma } from '../db';
-import { Prisma, Signal, SignalMetric } from '../generated/client';
+import { Signal, SignalMetric } from '../generated/client';
 import { logger } from '../utils/logger';
 import { getMultipleTokenPrices } from '../providers/jupiter';
-import { bitquery } from '../providers/bitquery';
+import { getEntryTime } from './metricsUtils';
 
 export interface EntityStats {
   id: number;
@@ -80,91 +80,12 @@ const getDateFilter = (timeframe: TimeFrame) => {
 
 const WIN_MULTIPLE = 1.4;
 
-const deriveEntryPrice = (s: SignalWithMetrics): number => {
-  if (s.entryPrice && s.entryPrice > 0) return s.entryPrice;
-  if (s.entryMarketCap && s.entrySupply && s.entrySupply > 0) return s.entryMarketCap / s.entrySupply;
-  return 0;
-};
-
-const refreshAthForSignals = async (signals: SignalWithMetrics[]) => {
-  if (signals.length === 0) return;
-  const uniqueMints = [...new Set(signals.map(s => s.mint))];
-  const priceMap = await getMultipleTokenPrices(uniqueMints);
-  const now = Date.now();
-
-  const mintsToRefresh = new Set<string>();
-  for (const s of signals) {
-    const currentPrice = priceMap[s.mint] ?? 0;
-    if (currentPrice <= 0) continue;
-    const entryPrice = deriveEntryPrice(s);
-    if (entryPrice <= 0) continue;
-
-    const athPrice = s.metrics?.athPrice || 0;
-    const metricsAge = s.metrics?.updatedAt ? now - s.metrics.updatedAt.getTime() : Infinity;
-
-    if (!s.metrics || athPrice <= 0) {
-      mintsToRefresh.add(s.mint);
-      continue;
-    }
-
-    if (currentPrice > athPrice * 1.01) {
-      mintsToRefresh.add(s.mint);
-      continue;
-    }
-
-    if (metricsAge > 2 * 60 * 1000 && currentPrice > athPrice * 0.95) {
-      mintsToRefresh.add(s.mint);
-    }
-  }
-
-  if (mintsToRefresh.size === 0) return;
-
-  const athMap = await bitquery.getBulkTokenATH([...mintsToRefresh]);
-  for (const s of signals) {
-    const ath = athMap.get(s.mint);
-    if (!ath || ath.athPrice <= 0) continue;
-
-    const entryPrice = deriveEntryPrice(s);
-    if (entryPrice <= 0) continue;
-
-    const athMultiple = ath.athPrice / entryPrice;
-    let athMarketCap = 0;
-    if (s.entrySupply && s.entrySupply > 0) {
-      athMarketCap = ath.athPrice * s.entrySupply;
-    } else if (s.entryMarketCap && s.entryMarketCap > 0) {
-      athMarketCap = s.entryMarketCap * athMultiple;
-    } else if (ath.athMarketCap > 0) {
-      athMarketCap = ath.athMarketCap;
-    }
-
-    await prisma.signalMetric.upsert({
-      where: { signalId: s.id },
-      update: {
-        athMultiple,
-        athPrice: ath.athPrice,
-        athMarketCap,
-        updatedAt: new Date()
-      },
-      create: {
-        signalId: s.id,
-        currentPrice: entryPrice,
-        currentMultiple: 1.0,
-        athMultiple,
-        athPrice: ath.athPrice,
-        athMarketCap,
-        athAt: s.detectedAt,
-        timeToAth: 0
-      }
-    });
-
-    if (s.metrics) {
-      s.metrics.athMultiple = athMultiple;
-      s.metrics.athPrice = ath.athPrice;
-      s.metrics.athMarketCap = athMarketCap;
-      s.metrics.updatedAt = new Date();
-    }
-  }
-};
+const buildEntryTimeFilter = (since: Date) => ({
+  OR: [
+    { entryPriceAt: { gte: since } },
+    { entryPriceAt: null, detectedAt: { gte: since } }
+  ]
+});
 
 const calculateStats = (signals: SignalWithMetrics[]): EntityStats => {
   if (!signals.length) {
@@ -272,15 +193,16 @@ const calculateStats = (signals: SignalWithMetrics[]): EntityStats => {
       bestSignal = s;
     }
 
-    // Rug Rate: ATH < 0.5 OR Drawdown < -0.9
-    if (mult < 0.5 || dd < -0.9) rugCount++;
+    // Rug Rate: ATH < 0.5 OR Drawdown <= -90%
+    if (mult < 0.5 || dd <= -90) rugCount++;
 
     // Drawdown (stored as negative decimal e.g. -0.4)
     totalDrawdown += dd;
 
     // Time to ATH (use calculated athAt if available)
-    if (athAt && s.detectedAt) {
-      const diffMs = new Date(athAt).getTime() - new Date(s.detectedAt).getTime();
+    const entryTime = getEntryTime(s);
+    if (athAt && entryTime) {
+      const diffMs = new Date(athAt).getTime() - entryTime.getTime();
       if (diffMs > 0) {
         totalTime += diffMs / (1000 * 60); // minutes
         timeCount++;
@@ -450,7 +372,8 @@ const calculateStats = (signals: SignalWithMetrics[]): EntityStats => {
   const followThrough = winRate; 
 
   // Improved Score Algorithm
-  const score = (winRate * 40) + (winRate5x * 20) + (avgMultiple * 5) - (avgDrawdown * 50) - (rugRate * 50);
+  const drawdownPenalty = Math.abs(avgDrawdown) / 100;
+  const score = (winRate * 40) + (winRate5x * 20) + (avgMultiple * 5) - (drawdownPenalty * 50) - (rugRate * 50);
 
   return {
     id: 0, // Placeholder
@@ -523,7 +446,7 @@ export const getGroupStats = async (groupId: number, timeframe: TimeFrame, chain
   const signals = await prisma.signal.findMany({
     where: {
       groupId: { in: groupIds },
-      detectedAt: { gte: since },
+      ...buildEntryTimeFilter(since),
       ...(chain !== 'both' ? { chain } : {})
     },
     include: { 
@@ -531,8 +454,6 @@ export const getGroupStats = async (groupId: number, timeframe: TimeFrame, chain
       priceSamples: { orderBy: { sampledAt: 'asc' }, take: 1 } 
     }
   });
-
-  await refreshAthForSignals(signals as any);
 
   // Cache-only: do not enrich here (background job updates metrics)
 
@@ -553,13 +474,11 @@ export const getUserStats = async (userId: number, timeframe: TimeFrame, chain: 
   const signals = await prisma.signal.findMany({
     where: {
       userId,
-      detectedAt: { gte: since },
+      ...buildEntryTimeFilter(since),
       ...(chain !== 'both' ? { chain } : {})
     },
     include: { metrics: true, priceSamples: { orderBy: { sampledAt: 'asc' }, take: 1 } }
   });
-
-  await refreshAthForSignals(signals as any);
 
   // Cache-only: do not enrich here (background job updates metrics)
 
@@ -607,7 +526,7 @@ export const getLeaderboard = async (
   // 1. Fetch all signals in window (cache-only)
   const signals = await prisma.signal.findMany({
     where: {
-      detectedAt: { gte: since },
+      ...buildEntryTimeFilter(since),
       ...scopeFilter,
       ...(chain !== 'both' ? { chain } : {})
     },
@@ -715,7 +634,7 @@ export const getSignalLeaderboard = async (
   // Include all signals in timeframe so ATH can be computed for ranking
   const signals = await prisma.signal.findMany({
     where: {
-      detectedAt: { gte: since },
+      ...buildEntryTimeFilter(since),
       ...scopeFilter,
       ...(chain !== 'both' ? { chain } : {}),
     },
@@ -760,13 +679,13 @@ export const getSignalLeaderboard = async (
       if (timeMs > 0) {
         timeToAth = timeMs / (1000 * 60);
       }
-    } else if (s.metrics?.athAt && s.detectedAt) {
-      const diffMs = s.metrics.athAt.getTime() - s.detectedAt.getTime();
-      if (diffMs > 0) { // VALIDATION: Ensure athAt >= detectedAt
+    } else if (s.metrics?.athAt) {
+      const entryTime = getEntryTime(s);
+      const diffMs = entryTime ? s.metrics.athAt.getTime() - entryTime.getTime() : 0;
+      if (diffMs > 0) {
         timeToAth = diffMs / (1000 * 60);
       } else {
-        // Log warning for negative time (shouldn't happen, but handle gracefully)
-        logger.warn(`Negative timeToAth for signal ${s.id}: athAt=${s.metrics.athAt}, detectedAt=${s.detectedAt}`);
+        logger.warn(`Negative timeToAth for signal ${s.id}: athAt=${s.metrics.athAt}, entryTime=${entryTime}`);
       }
     }
     
@@ -906,7 +825,7 @@ export const getDistributionStats = async (
   // Cache-only: include signals, but skip those missing metrics during computation
   const signals = await prisma.signal.findMany({
     where: {
-      detectedAt: { gte: since },
+      ...buildEntryTimeFilter(since),
       ...scopeFilter
     },
     include: { 
@@ -1017,7 +936,11 @@ export const getDistributionStats = async (
   }>();
   
   // Streak tracking
-  const sortedSignals = [...signals].sort((a, b) => a.detectedAt.getTime() - b.detectedAt.getTime());
+  const sortedSignals = [...signals].sort((a, b) => {
+    const aTime = getEntryTime(a)?.getTime() ?? a.detectedAt.getTime();
+    const bTime = getEntryTime(b)?.getTime() ?? b.detectedAt.getTime();
+    return aTime - bTime;
+  });
   let currentStreak = 0;
   let streakType: 'win' | 'loss' = 'loss';
   let lastStreakWasWin = false;
@@ -1035,7 +958,7 @@ export const getDistributionStats = async (
     const entryMc = s.entryMarketCap || 0;
     const maxDrawdown = s.metrics?.maxDrawdown || 0;
     const isWin = mult >= WIN_MULTIPLE;
-    const isRug = mult < 0.5 || maxDrawdown < -0.9;
+    const isRug = mult < 0.5 || maxDrawdown <= -90;
     const isMoonshot = mult > 10;
 
     // Win Rate Buckets
@@ -1057,7 +980,7 @@ export const getDistributionStats = async (
     }
 
     // Time of Day Analysis (UTC)
-    const date = s.detectedAt;
+    const date = getEntryTime(s) ?? s.detectedAt;
     const hour = date.getUTCHours();
     stats.timeOfDay[hour].count++;
     if (isWin) stats.timeOfDay[hour].winRate++;
@@ -1191,7 +1114,8 @@ export const getDistributionStats = async (
     // Token Age Preference (requires token creation timestamps; mark data only if available)
     const tokenCreatedAt = (s as any).tokenCreatedAt || (s as any).createdAt || null;
     if (tokenCreatedAt) {
-      const ageMinutes = (s.detectedAt.getTime() - new Date(tokenCreatedAt).getTime()) / (1000 * 60);
+      const entryTime = getEntryTime(s) ?? s.detectedAt;
+      const ageMinutes = (entryTime.getTime() - new Date(tokenCreatedAt).getTime()) / (1000 * 60);
       const aBucket = stats.tokenAgeBuckets.find(b => ageMinutes >= b.minMinutes && ageMinutes < b.maxMinutes);
       if (aBucket) {
         aBucket.count++;
