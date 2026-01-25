@@ -1,6 +1,6 @@
 import { prisma } from '../db';
 import { logger } from '../utils/logger';
-import { bitquery } from '../providers/bitquery';
+import { geckoTerminal } from '../providers/geckoTerminal';
 import { Signal, SignalMetric, PriceSample } from '../generated/client';
 
 export type SignalWithRelations = Signal & {
@@ -110,7 +110,9 @@ export const enrichSignalMetrics = async (
     // Check if we need to calculate
     const metricsUncomputed = !!sig.metrics
         && sig.metrics.athMultiple === 1.0
-        && sig.metrics.timeToAth === null;
+        && (sig.metrics.timeToAth === null || sig.metrics.timeToAth === 0)
+        && (sig.metrics.maxDrawdown ?? 0) === 0
+        && (sig.metrics.athPrice ?? 0) <= 0;
     if (!force && sig.metrics?.updatedAt && !metricsUncomputed) {
         const age = now - sig.metrics.updatedAt.getTime();
         if (age < STALE_METRICS_MS) return; // Metrics are fresh enough
@@ -138,8 +140,12 @@ export const enrichSignalMetrics = async (
                 }
             }
         }
-        const entryTimestamp = (sig.entryPriceAt || sig.detectedAt).getTime();
-        logger.debug(`[Metrics] Entry window for ${sig.mint.slice(0, 8)}...: entryPriceAt=${sig.entryPriceAt?.toISOString?.() || 'N/A'}, detectedAt=${sig.detectedAt.toISOString()}, entryTimestamp=${entryTimestamp}`);
+        const entryTimestamp = (
+            sig.entryPriceAt ||
+            sig.priceSamples?.[0]?.sampledAt ||
+            sig.detectedAt
+        ).getTime();
+        logger.debug(`[Metrics] Entry window for ${sig.mint.slice(0, 8)}...: entryPriceAt=${sig.entryPriceAt?.toISOString?.() || 'N/A'}, firstSampleAt=${sig.priceSamples?.[0]?.sampledAt?.toISOString?.() || 'N/A'}, detectedAt=${sig.detectedAt.toISOString()}, entryTimestamp=${entryTimestamp}`);
         
         // Determine Entry Data (Price & Supply)
         let entryPrice = sig.entryPrice;
@@ -180,20 +186,50 @@ export const enrichSignalMetrics = async (
 
         const currentPrice = currentPriceOverride ?? sig.metrics?.currentPrice ?? 0;
 
-        logger.debug(`[Metrics] Starting Bitquery price extremes fetch for ${sig.mint.slice(0, 8)}... (entry: ${entryPriceValue}, current: ${currentPrice})`);
+        logger.debug(`[Metrics] Starting GeckoTerminal OHLCV fetch for ${sig.mint.slice(0, 8)}... (entry: ${entryPriceValue}, current: ${currentPrice})`);
 
-        const extremes = await bitquery.getPriceExtremes(sig.mint, new Date(entryTimestamp));
-        maxHigh = extremes.maxPrice || 0;
-        maxAt = extremes.maxAt?.getTime?.() || entryTimestamp;
+        const ageHours = (nowTimestamp - entryTimestamp) / (1000 * 60 * 60);
+        let timeframe: 'minute' | 'hour' | 'day' = ageHours <= 16 ? 'minute' : ageHours <= 720 ? 'hour' : 'day';
+        let ohlcv = await geckoTerminal.getOHLCV(sig.mint, timeframe, 1000);
 
-        if (maxHigh <= 0) {
-            logger.debug(`[Metrics] No Bitquery ATH for ${sig.mint.slice(0, 8)}..., using cached ATH if available`);
+        // If minute candles don't cover entry period, try hourly candles
+        if (timeframe === 'minute' && ohlcv.length > 0) {
+            const oldest = ohlcv[0];
+            if (oldest.timestamp > entryTimestamp + 300000) {
+                timeframe = 'hour';
+                ohlcv = await geckoTerminal.getOHLCV(sig.mint, timeframe, 1000);
+            }
+        }
+
+        // If hourly candles still don't cover entry period, try daily candles
+        if (timeframe === 'hour' && ohlcv.length > 0) {
+            const oldest = ohlcv[0];
+            if (oldest.timestamp > entryTimestamp + 60 * 60 * 1000) {
+                timeframe = 'day';
+                ohlcv = await geckoTerminal.getOHLCV(sig.mint, timeframe, 1000);
+            }
+        }
+
+        const validCandles = ohlcv.filter(c => c.timestamp >= entryTimestamp - 300000);
+        if (validCandles.length === 0) {
+            logger.debug(`[Metrics] No GeckoTerminal candles for ${sig.mint.slice(0, 8)}..., using cached ATH if available`);
             if (!sig.metrics?.athPrice || sig.metrics.athPrice <= 0) {
                 logger.debug(`[Metrics] No cached ATH for ${sig.mint.slice(0, 8)}..., skipping`);
                 return;
             }
             maxHigh = sig.metrics.athPrice;
             maxAt = sig.metrics.athAt?.getTime?.() || entryTimestamp;
+        } else {
+            let athPrice = entryPriceValue;
+            let athAt = entryTimestamp;
+            for (const candle of validCandles) {
+                if (candle.high > athPrice) {
+                    athPrice = candle.high;
+                    athAt = candle.timestamp;
+                }
+            }
+            maxHigh = athPrice;
+            maxAt = athAt;
         }
 
         // Ensure ATH is never below entry price
@@ -226,21 +262,27 @@ export const enrichSignalMetrics = async (
             let maxDrawdown = 0;
             let maxDrawdownPrice = entryPriceValue; // Price at max drawdown
             let maxDrawdownAt = entryTimestamp; // Time of max drawdown
-            
-                    // Use Bitquery min/max. Drawdown must occur before ATH.
-                    if (extremes.minPrice > 0 && extremes.minAt && extremes.minAt.getTime() <= maxAt) {
-                        const lowestPrice = extremes.minPrice;
-                        const lowestPriceAt = extremes.minAt.getTime();
-                        maxDrawdownPrice = lowestPrice;
-                        maxDrawdownAt = lowestPriceAt;
-                        if (entryPriceValue > 0 && lowestPrice < entryPriceValue) {
-                            maxDrawdown = ((lowestPrice - entryPriceValue) / entryPriceValue) * 100;
-                        }
-                    } else if (currentPrice > 0 && entryPriceValue > 0 && currentPrice < entryPriceValue) {
-                        maxDrawdown = ((currentPrice - entryPriceValue) / entryPriceValue) * 100;
-                        maxDrawdownPrice = currentPrice;
-                        maxDrawdownAt = nowTimestamp;
+
+            if (validCandles.length > 0) {
+                let lowestPrice = entryPriceValue;
+                let lowestAt = entryTimestamp;
+                for (const candle of validCandles) {
+                    if (candle.timestamp > maxAt) break;
+                    if (candle.low < lowestPrice) {
+                        lowestPrice = candle.low;
+                        lowestAt = candle.timestamp;
                     }
+                }
+                maxDrawdownPrice = lowestPrice;
+                maxDrawdownAt = lowestAt;
+                if (entryPriceValue > 0 && lowestPrice < entryPriceValue) {
+                    maxDrawdown = ((lowestPrice - entryPriceValue) / entryPriceValue) * 100;
+                }
+            } else if (currentPrice > 0 && entryPriceValue > 0 && currentPrice < entryPriceValue) {
+                maxDrawdown = ((currentPrice - entryPriceValue) / entryPriceValue) * 100;
+                maxDrawdownPrice = currentPrice;
+                maxDrawdownAt = nowTimestamp;
+            }
             
             // Calculate max drawdown market cap
             let maxDrawdownMarketCap = 0;

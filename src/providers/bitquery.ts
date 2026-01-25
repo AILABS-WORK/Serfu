@@ -240,20 +240,25 @@ export class BitqueryProvider {
    * Bulk ATH and starting market cap for multiple tokens in one query.
    * Uses a fixed 1B supply assumption from Bitquery examples.
    */
-  async getBulkTokenATH(mints: string[]): Promise<Map<string, BitqueryBulkAthResult>> {
+  async getBulkTokenATH(mints: string[], since: Date = new Date(0)): Promise<Map<string, BitqueryBulkAthResult>> {
     const resultsMap = new Map<string, BitqueryBulkAthResult>();
     if (!this.apiKey || this.disabled || mints.length === 0) return resultsMap;
 
     const query = `
-      query GetAthMarketCap($tokens: [String!]!) {
+      query GetAthMarketCap($tokens: [String!]!, $since: DateTime!) {
         Solana(dataset: combined) {
           DEXTradeByTokens(
-            limitBy: { by: Trade_Side_Currency_MintAddress, count: 1 }
+            limitBy: { by: Trade_Currency_MintAddress, count: 1 }
             where: {
               Trade: {
                 Currency: { MintAddress: { in: $tokens } }
-                Side: { AmountInUSD: { gt: "1" } }
+                Side: {
+                  Currency: {
+                    MintAddress: { in: ["11111111111111111111111111111111", "So11111111111111111111111111111111111111112"] }
+                  }
+                }
               }
+              Block: { Time: { since: $since } }
             }
           ) {
             Trade {
@@ -263,11 +268,12 @@ export class BitqueryProvider {
                 Symbol
               }
               PriceInUSD(maximum: Trade_PriceInUSD)
-              Starting_Price: PriceInUSD(minimum: Block_Slot)
+              Side {
+                Currency { Symbol }
+              }
             }
             max: quantile(of: Trade_PriceInUSD, level: 0.98)
-            quantile_price_ATH_Marketcap: calculate(expression: "$max * 1000000000")
-            Starting_Marketcap: calculate(expression: "$Trade_Starting_Price * 1000000000")
+            ATH_Marketcap: calculate(expression: "$max * 1000000000")
           }
         }
       }
@@ -278,7 +284,7 @@ export class BitqueryProvider {
         BITQUERY_ENDPOINT,
         {
           query,
-          variables: { tokens: mints },
+          variables: { tokens: mints, since: since.toISOString() },
         },
         {
           headers: {
@@ -298,9 +304,9 @@ export class BitqueryProvider {
         const mint = row?.Trade?.Currency?.MintAddress;
         if (!mint) continue;
         const athPrice = Number(row.max || row?.Trade?.PriceInUSD || 0);
-        const startingPrice = Number(row?.Trade?.Starting_Price || 0);
-        const athMarketCap = Number(row.quantile_price_ATH_Marketcap || 0);
-        const startingMarketCap = Number(row.Starting_Marketcap || 0);
+        const startingPrice = 0;
+        const athMarketCap = Number(row.ATH_Marketcap || 0);
+        const startingMarketCap = 0;
 
         resultsMap.set(mint, {
           mint,
@@ -433,7 +439,7 @@ export class BitqueryProvider {
               Block: { Time: { since: $since } }
               Trade: {
                 Currency: { MintAddress: { is: $mint } }
-                Side: { AmountInUSD: { gt: "1" } }
+                Side: { AmountInUSD: { gt: "0" } }
               }
             }
           ) {
