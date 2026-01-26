@@ -1,7 +1,8 @@
 import { prisma } from '../db';
 import { geckoTerminal } from '../providers/geckoTerminal';
+import { getMultipleTokenPrices } from '../providers/jupiter';
 import { logger } from '../utils/logger';
-import { getEntryTime } from '../analytics/metricsUtils';
+import { getEntryTime, hasComputedAth, hasComputedDrawdown, hasComputedTimes } from '../analytics/metricsUtils';
 
 export type HistoricalMetricsBackfillProgress = {
   status: 'idle' | 'running' | 'complete' | 'error';
@@ -88,18 +89,80 @@ export const updateHistoricalMetrics = async (targetSignalIds?: number[]) => {
 
     logger.info(`Checking history for ${signals.length} active signals...`);
 
+    const RECENT_METRICS_MS = 6 * 60 * 60 * 1000;
+    const VERY_RECENT_MS = 30 * 60 * 1000;
+    const PRICE_ATH_BUFFER = 1.02; // 2% above ATH triggers recalculation
+
+    const uniqueMints = Array.from(new Set(signals.map(s => s.mint)));
+    let priceMap: Record<string, number | null> = {};
+    if (uniqueMints.length > 0) {
+      try {
+        priceMap = await getMultipleTokenPrices(uniqueMints);
+      } catch (err) {
+        logger.warn('[HistoricalMetrics] Failed to fetch current prices for backfill gating:', err);
+        priceMap = {};
+      }
+    }
+
+    const signalsToProcess: typeof signals = [];
+    let skippedFresh = 0;
+    let skippedComplete = 0;
+    for (const signal of signals) {
+      const metrics = signal.metrics;
+      if (!metrics) {
+        signalsToProcess.push(signal);
+        continue;
+      }
+
+      const metricsAge = Date.now() - metrics.updatedAt.getTime();
+      const incomplete = !hasComputedAth(metrics) || !hasComputedDrawdown(metrics) || !hasComputedTimes(metrics);
+      if (incomplete) {
+        signalsToProcess.push(signal);
+        continue;
+      }
+
+      const currentPrice = priceMap[signal.mint];
+      if (currentPrice && metrics.athPrice > 0 && currentPrice > metrics.athPrice * PRICE_ATH_BUFFER) {
+        signalsToProcess.push(signal);
+        continue;
+      }
+
+      if (metricsAge < VERY_RECENT_MS) {
+        skippedFresh++;
+        markProcessed(signal.id);
+        continue;
+      }
+
+      if (metricsAge < RECENT_METRICS_MS && currentPrice !== undefined) {
+        skippedComplete++;
+        markProcessed(signal.id);
+        continue;
+      }
+
+      if (metricsAge < 24 * 60 * 60 * 1000 && (currentPrice === null || currentPrice === undefined)) {
+        skippedComplete++;
+        markProcessed(signal.id);
+        continue;
+      }
+
+      signalsToProcess.push(signal);
+    }
+
+    if (skippedFresh > 0 || skippedComplete > 0) {
+      logger.info(`[HistoricalMetrics] Skipping ${skippedFresh} fresh + ${skippedComplete} complete signals (using current price check).`);
+    }
+
     // Process in batches of unique mints (avoid duplicate OHLCV fetches)
     const signalsByMint = new Map<string, typeof signals>();
-    for (const signal of signals) {
+    for (const signal of signalsToProcess) {
       const list = signalsByMint.get(signal.mint) || [];
       list.push(signal);
       signalsByMint.set(signal.mint, list);
     }
-
-    const uniqueMints = Array.from(signalsByMint.keys());
+    const uniqueMintsToProcess = Array.from(signalsByMint.keys());
     const MINT_BATCH_SIZE = Number(process.env.GECKO_OHLCV_PARALLEL ?? 3);
-    for (let i = 0; i < uniqueMints.length; i += MINT_BATCH_SIZE) {
-        const mintBatch = uniqueMints.slice(i, i + MINT_BATCH_SIZE);
+    for (let i = 0; i < uniqueMintsToProcess.length; i += MINT_BATCH_SIZE) {
+        const mintBatch = uniqueMintsToProcess.slice(i, i + MINT_BATCH_SIZE);
         await Promise.all(mintBatch.map(async (mint) => {
             const mintSignals = signalsByMint.get(mint) || [];
             let sharedOhlcv: any[] = [];
