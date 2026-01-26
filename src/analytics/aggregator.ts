@@ -634,6 +634,9 @@ export const getSignalLeaderboard = async (
     };
   }
 
+  // Log the timeframe filter for debugging
+  logger.info(`[SignalLeaderboard] Timeframe: ${timeframe}, Cutoff: ${since.toISOString()}`);
+  
   // Include all signals in timeframe so ATH can be computed for ranking
   const signals = await prisma.signal.findMany({
     where: {
@@ -648,6 +651,8 @@ export const getSignalLeaderboard = async (
       priceSamples: { orderBy: { sampledAt: 'asc' }, take: 1 } // Add for entryMarketCap fallback
     }
   });
+  
+  logger.info(`[SignalLeaderboard] Found ${signals.length} signals in timeframe ${timeframe}`);
   
   // Cache-only: filter out signals missing metrics, and log if any missing
   const missingMetricsCount = signals.filter(s => !s.metrics).length;
@@ -675,15 +680,29 @@ export const getSignalLeaderboard = async (
   const uniqueSignals = Array.from(mintMap.values());
   logger.info(`[SignalLeaderboard] Deduplicated ${signalsWithMetrics.length} signals to ${uniqueSignals.length} unique mints`);
   
+  // CRITICAL: Verify all signals are within timeframe (double-check)
+  const validSignals = uniqueSignals.filter(s => {
+    const entryTime = getEntryTime(s) ?? s.detectedAt;
+    const isValid = entryTime.getTime() >= since.getTime();
+    if (!isValid) {
+      logger.warn(`[SignalLeaderboard] Signal ${s.id} (${s.mint.slice(0,8)}) has entry time ${entryTime.toISOString()} which is BEFORE cutoff ${since.toISOString()}`);
+    }
+    return isValid;
+  });
+  
+  if (validSignals.length !== uniqueSignals.length) {
+    logger.warn(`[SignalLeaderboard] Filtered out ${uniqueSignals.length - validSignals.length} signals that were outside timeframe`);
+  }
+  
   // Sort by ATH (highest first)
-  uniqueSignals.sort((a, b) => {
+  validSignals.sort((a, b) => {
     const aAth = a.metrics?.athMultiple || 0;
     const bAth = b.metrics?.athMultiple || 0;
     return bAth - aAth;
   });
   
   // Take top limit after sorting
-  const topSignals = uniqueSignals.slice(0, limit);
+  const topSignals = validSignals.slice(0, limit);
   const topMints = [...new Set(topSignals.map(s => s.mint))];
   const currentPriceMap = await getMultipleTokenPrices(topMints);
 
