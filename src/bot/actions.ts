@@ -1593,6 +1593,7 @@ ATH: ${ath.toFixed(2)}x
               inline_keyboard: [
                   [{ text: '🔄 Re-validate', callback_data: 'analytics_validate' }],
                   [{ text: '🛠️ Auto-Fix Issues', callback_data: 'analytics_validate_fix' }],
+                  [{ text: '🎯 Fix Timing (Minute Candles)', callback_data: 'analytics_fix_timing' }],
                   [{ text: '🔙 Back', callback_data: 'analytics' }, { text: '❌ Close', callback_data: 'delete_msg' }]
               ]
           };
@@ -1632,6 +1633,7 @@ ATH: ${ath.toFixed(2)}x
           const keyboard = {
               inline_keyboard: [
                   [{ text: '🔍 Re-validate', callback_data: 'analytics_validate' }],
+                  [{ text: '🎯 Fix Timing (Minute Candles)', callback_data: 'analytics_fix_timing' }],
                   [{ text: '🔙 Back', callback_data: 'analytics' }]
               ]
           };
@@ -1641,6 +1643,45 @@ ATH: ${ath.toFixed(2)}x
       } catch (error) {
           logger.error('Auto-fix action error:', error);
           ctx.reply('❌ Failed to run auto-fix.');
+      }
+  });
+
+  // Targeted fix using minute candles for precise timing
+  bot.action('analytics_fix_timing', async (ctx) => {
+      try {
+          await ctx.answerCbQuery('Starting timing fix...');
+          await ctx.reply('🎯 *Fixing Timing Issues with Minute Candles*\n_This fetches minute-level data for signals with invalid ATH timing..._', { parse_mode: 'Markdown' });
+          
+          const { fixTimingIssues } = await import('../analytics/backfillValidation');
+          
+          const result = await fixTimingIssues({ limit: 500, dryRun: false });
+          
+          let msg = `🎯 *Timing Fix Complete*\n\n`;
+          msg += `📊 Processed: ${result.processed}\n`;
+          msg += `✅ Fixed: ${result.fixed}\n`;
+          msg += `⏭️ Skipped: ${result.skipped}\n`;
+          msg += `❌ Errors: ${result.errors}\n\n`;
+          
+          if (result.details.length > 0) {
+              msg += `📋 *Sample Fixes:*\n`;
+              for (const detail of result.details.slice(0, 8)) {
+                  msg += `• ${detail.length > 80 ? detail.slice(0, 77) + '...' : detail}\n`;
+              }
+          }
+          
+          const keyboard = {
+              inline_keyboard: [
+                  [{ text: '🔍 Re-validate', callback_data: 'analytics_validate' }],
+                  [{ text: '🎯 Fix More', callback_data: 'analytics_fix_timing' }],
+                  [{ text: '🔙 Back', callback_data: 'analytics' }]
+              ]
+          };
+          
+          await ctx.reply(msg, { parse_mode: 'Markdown', reply_markup: keyboard });
+          
+      } catch (error) {
+          logger.error('Timing fix action error:', error);
+          ctx.reply('❌ Failed to run timing fix.');
       }
   });
 

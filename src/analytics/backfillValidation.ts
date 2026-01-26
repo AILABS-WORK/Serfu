@@ -1,6 +1,7 @@
 import { prisma } from '../db';
 import { logger } from '../utils/logger';
 import { getEntryTime } from './metricsUtils';
+import axios from 'axios';
 
 // ============================================================================
 // TYPES
@@ -387,6 +388,226 @@ export const autoFixIssues = async (report: ValidationReport): Promise<{
   logger.info(`[Validation] Auto-fix complete. Fixed: ${fixedCount}, Failed: ${failedCount}`);
   
   return { fixedCount, failedCount, details };
+};
+
+// ============================================================================
+// TARGETED FIX: Re-fetch with minute candles for problematic signals
+// ============================================================================
+
+interface MinuteCandle {
+  timestamp: number;
+  high: number;
+  low: number;
+  close: number;
+}
+
+const poolCache = new Map<string, string | null>();
+
+const fetchMinuteCandles = async (mint: string, fromTime: number): Promise<MinuteCandle[]> => {
+  try {
+    // Check cache for pool address
+    let poolAddress = poolCache.get(mint);
+    
+    if (poolAddress === undefined) {
+      const poolResponse = await axios.get(
+        `https://api.geckoterminal.com/api/v2/networks/solana/tokens/${mint}/pools`,
+        { params: { page: 1, limit: 1 }, timeout: 5000 }
+      );
+      const addr = poolResponse.data?.data?.[0]?.attributes?.address;
+      poolAddress = addr ? String(addr) : null;
+      poolCache.set(mint, poolAddress);
+    }
+    
+    if (!poolAddress) return [];
+    
+    // Fetch minute candles (most accurate for entry timing)
+    const response = await axios.get(
+      `https://api.geckoterminal.com/api/v2/networks/solana/pools/${poolAddress}/ohlcv/minute`,
+      { params: { limit: 1000 }, timeout: 10000 }
+    );
+    
+    const list = response.data?.data?.attributes?.ohlcv_list || [];
+    return list.map((c: any[]) => ({
+      timestamp: c[0] * 1000,
+      high: c[2],
+      low: c[3],
+      close: c[4]
+    })).reverse();
+    
+  } catch (err) {
+    return [];
+  }
+};
+
+/**
+ * Targeted fix for signals with timing issues.
+ * Uses minute candles for precision instead of full re-backfill.
+ */
+export const fixTimingIssues = async (options?: {
+  limit?: number;
+  dryRun?: boolean;
+}): Promise<{
+  processed: number;
+  fixed: number;
+  skipped: number;
+  errors: number;
+  details: string[];
+}> => {
+  const dryRun = options?.dryRun ?? false;
+  const limit = options?.limit ?? 500;
+  
+  logger.info(`[ValidationFix] Starting targeted timing fix (dryRun=${dryRun}, limit=${limit})`);
+  
+  // Find signals with negative timeToAth or athAt before entry
+  const problematicSignals = await prisma.signal.findMany({
+    where: {
+      entryPrice: { not: null, gt: 0 },
+      metrics: {
+        OR: [
+          { timeToAth: { lt: 0 } },
+          // We'll check athAt < entryTime in code
+        ]
+      }
+    },
+    include: { metrics: true },
+    take: limit
+  });
+  
+  // Also find signals where athAt < entryTime
+  const allWithMetrics = await prisma.signal.findMany({
+    where: {
+      entryPrice: { not: null, gt: 0 },
+      metrics: { isNot: null }
+    },
+    include: { metrics: true },
+    take: 10000
+  });
+  
+  const invalidTimeSignals = allWithMetrics.filter(s => {
+    if (!s.metrics || !s.metrics.athAt) return false;
+    const entryTime = getEntryTime(s)?.getTime() || s.detectedAt.getTime();
+    return s.metrics.athAt.getTime() < entryTime - 60000; // 1 min tolerance
+  });
+  
+  // Combine and dedupe
+  const signalMap = new Map<number, typeof problematicSignals[0]>();
+  for (const s of [...problematicSignals, ...invalidTimeSignals]) {
+    signalMap.set(s.id, s);
+  }
+  const signals = Array.from(signalMap.values()).slice(0, limit);
+  
+  logger.info(`[ValidationFix] Found ${signals.length} signals with timing issues`);
+  
+  const details: string[] = [];
+  let processed = 0;
+  let fixed = 0;
+  let skipped = 0;
+  let errors = 0;
+  
+  for (const signal of signals) {
+    try {
+      if (!signal.entryPrice || !signal.metrics) {
+        skipped++;
+        continue;
+      }
+      
+      const entryTime = getEntryTime(signal)?.getTime() || signal.detectedAt.getTime();
+      const entryPrice = signal.entryPrice;
+      
+      // Fetch minute candles
+      const candles = await fetchMinuteCandles(signal.mint, entryTime);
+      
+      if (candles.length === 0) {
+        // No candles - just fix to entry price/time
+        if (!dryRun) {
+          await prisma.signalMetric.update({
+            where: { signalId: signal.id },
+            data: {
+              athAt: new Date(entryTime),
+              timeToAth: 0,
+              updatedAt: new Date()
+            }
+          });
+        }
+        details.push(`Signal ${signal.id}: No candles, set to entry time`);
+        fixed++;
+        processed++;
+        continue;
+      }
+      
+      // Filter to ONLY candles AFTER entry
+      const validCandles = candles.filter(c => c.timestamp >= entryTime);
+      
+      // Calculate ATH from valid candles
+      let athPrice = entryPrice;
+      let athAt = entryTime;
+      let minLow = entryPrice;
+      let minLowAt = entryTime;
+      
+      for (const c of validCandles) {
+        if (c.high > athPrice) {
+          athPrice = c.high;
+          athAt = c.timestamp;
+        }
+        if (c.low > 0 && c.low < minLow) {
+          minLow = c.low;
+          minLowAt = c.timestamp;
+        }
+      }
+      
+      // Ensure ATH >= entry
+      if (athPrice < entryPrice) {
+        athPrice = entryPrice;
+        athAt = entryTime;
+      }
+      
+      const athMultiple = athPrice / entryPrice;
+      const timeToAth = Math.max(0, athAt - entryTime);
+      const maxDrawdown = minLow < entryPrice ? ((minLow - entryPrice) / entryPrice) * 100 : 0;
+      
+      const oldTimeToAth = signal.metrics.timeToAth;
+      const oldAthAt = signal.metrics.athAt?.getTime();
+      
+      if (!dryRun) {
+        await prisma.signalMetric.update({
+          where: { signalId: signal.id },
+          data: {
+            athPrice,
+            athMultiple,
+            athAt: new Date(athAt),
+            timeToAth,
+            maxDrawdown,
+            minLowPrice: minLow,
+            minLowAt: new Date(minLowAt),
+            updatedAt: new Date()
+          }
+        });
+      }
+      
+      details.push(
+        `Signal ${signal.id} (${signal.mint.slice(0, 8)}...): ` +
+        `timeToAth ${oldTimeToAth}ms → ${timeToAth}ms, ` +
+        `athMult ${signal.metrics.athMultiple.toFixed(2)}x → ${athMultiple.toFixed(2)}x`
+      );
+      fixed++;
+      processed++;
+      
+      // Small delay to respect rate limits
+      await new Promise(r => setTimeout(r, 100));
+      
+      if (processed % 50 === 0) {
+        logger.info(`[ValidationFix] Progress: ${processed}/${signals.length} (${fixed} fixed)`);
+      }
+      
+    } catch (err: any) {
+      errors++;
+      details.push(`Signal ${signal.id}: Error - ${err.message}`);
+    }
+  }
+  
+  logger.info(`[ValidationFix] Complete: ${fixed} fixed, ${skipped} skipped, ${errors} errors`);
+  
+  return { processed, fixed, skipped, errors, details };
 };
 
 /**
