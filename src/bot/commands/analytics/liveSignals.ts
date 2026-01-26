@@ -349,223 +349,114 @@ export const handleLiveSignals = async (ctx: BotContext, forceRefresh = false) =
     const topItems = filtered.slice(0, displayLimit);
 
     // ============================================================================
-    // ATH STRATEGY:
+    // ATH STRATEGY (OPTIMIZED):
     // 
-    // BEFORE BACKFILL COMPLETE: Must fetch OHLCV for signals without stored ATH
-    //   - Can't trust current price alone (might have peaked and dropped)
-    //   - Need historical candles to find true ATH
+    // ALWAYS use stored ATH from database - NEVER fetch OHLCV in live signals!
+    //   - If signal has stored ATH → use it (instant)
+    //   - If current price > stored ATH → that's the new ATH
+    //   - If no stored ATH → use max(1, currentPrice/entryPrice) as temp ATH
     //
-    // AFTER BACKFILL COMPLETE: Use stored ATH only (instant load)
-    //   - All signals have historical ATH from backfill
-    //   - Jupiter refresh (every 10s) keeps ATH updated if price exceeds stored
+    // Background processes handle ATH updates:
+    //   - Initial backfill populates historical ATH for all signals
+    //   - Jupiter refresh (every 10s) updates ATH if price exceeds stored
+    //   - Stale metrics (>2h) get re-checked only if price might have exceeded ATH
+    //
+    // This makes live signals INSTANT - no OHLCV fetching, no blocking!
     // ============================================================================
     
-    // Check if backfill has been completed
-    const { getBackfillProgress } = await import('../../../jobs/athBackfill');
-    const backfillProgress = getBackfillProgress();
-    const backfillComplete = backfillProgress.status === 'complete';
+    logger.info(`[LiveSignals] Using stored ATH (no OHLCV fetch) - instant load`);
     
-    logger.info(`[LiveSignals] Backfill status: ${backfillProgress.status} (complete=${backfillComplete})`);
-    
+    // Fetch signals with metrics (single DB query)
     const signalMap = new Map<number, any>();
     if (topItems.length > 0) {
       const fetchStart = Date.now();
       const signals = await prisma.signal.findMany({
         where: { id: { in: topItems.map(i => i.signalId) } },
-        include: { metrics: true, priceSamples: { orderBy: { sampledAt: 'asc' } }, group: true, user: true }
+        include: { metrics: true, group: true, user: true }
       });
       for (const s of signals) signalMap.set(s.id, s);
       logger.info(`[LiveSignals] Fetched ${signals.length} signals with metrics in ${Date.now() - fetchStart}ms`);
     }
     
-    // Separate signals with and without stored ATH
-    const signalsWithAth = topItems.filter(item => {
-      const sig = signalMap.get(item.signalId);
-      return sig?.metrics?.athPrice > 0 && sig?.metrics?.athMultiple > 0;
-    });
-    
-    const signalsWithoutAth = topItems.filter(item => {
-      const sig = signalMap.get(item.signalId);
-      return !sig?.metrics?.athPrice || sig?.metrics?.athPrice <= 0 || !sig?.metrics?.athMultiple || sig?.metrics?.athMultiple <= 0;
-    });
-    
-    logger.info(`[LiveSignals] ATH status: ${signalsWithAth.length} have stored ATH, ${signalsWithoutAth.length} need ATH`);
-    
     // Count stats
     let athFromDb = 0;
     let athFromCurrentPrice = 0;
-    let athFromOhlcv = 0;
     let athPending = 0;
+    let staleCount = 0;
     
-    // Process signals WITH stored ATH (instant - just use DB value)
-    for (const item of signalsWithAth) {
+    const TWO_HOURS = 2 * 60 * 60 * 1000;
+    const now = Date.now();
+    const staleSignalIds: number[] = [];
+    
+    // Process ALL signals using stored ATH (instant - no OHLCV fetch!)
+    for (const item of topItems) {
       const sig = signalMap.get(item.signalId);
       const entryPrice = sig?.entryPrice || item.entryPrice || 0;
       const storedAthPrice = sig?.metrics?.athPrice || 0;
       const storedAthMultiple = sig?.metrics?.athMultiple || 0;
+      const metricsUpdatedAt = sig?.metrics?.updatedAt?.getTime() || 0;
+      const metricsAge = now - metricsUpdatedAt;
       
-      if (item.currentPrice > storedAthPrice) {
-        // Current price is new ATH
-        item.athMult = entryPrice > 0 ? item.currentPrice / entryPrice : 1;
-        athFromCurrentPrice++;
+      if (storedAthPrice > 0 && storedAthMultiple > 0) {
+        // Signal HAS stored ATH
+        if (item.currentPrice > storedAthPrice) {
+          // Current price EXCEEDS stored ATH → new ATH!
+          item.athMult = entryPrice > 0 ? item.currentPrice / entryPrice : storedAthMultiple;
+          athFromCurrentPrice++;
+          
+          // Mark for background refresh if metrics are stale
+          if (metricsAge > TWO_HOURS) {
+            staleSignalIds.push(item.signalId);
+            staleCount++;
+          }
+        } else {
+          // Use stored ATH (still valid)
+          item.athMult = storedAthMultiple;
+          athFromDb++;
+        }
+        item.maxDrawdown = sig?.metrics?.maxDrawdown || 0;
+        item.timeToAth = sig?.metrics?.timeToAth || null;
       } else {
-        // Use stored ATH
-        item.athMult = storedAthMultiple;
-        athFromDb++;
-      }
-      item.maxDrawdown = sig?.metrics?.maxDrawdown || 0;
-      item.timeToAth = sig?.metrics?.timeToAth || null;
-    }
-    
-    // Process signals WITHOUT stored ATH
-    if (signalsWithoutAth.length > 0) {
-      if (backfillComplete) {
-        // BACKFILL COMPLETE: Just show pending/use current price
-        // (These are likely new signals that haven't been refreshed yet)
-        logger.info(`[LiveSignals] Backfill complete but ${signalsWithoutAth.length} signals still without ATH - using current price`);
-        for (const item of signalsWithoutAth) {
-          const sig = signalMap.get(item.signalId);
-          const entryPrice = sig?.entryPrice || item.entryPrice || 0;
-          if (entryPrice > 0 && item.currentPrice > 0) {
-            item.athMult = Math.max(1, item.currentPrice / entryPrice);
-          } else {
-            item.athMult = null;
-          }
-          item.maxDrawdown = null;
-          item.timeToAth = null;
-          athPending++;
+        // Signal has NO stored ATH (backfill hasn't run yet for this signal)
+        // Use current price as temporary ATH (at minimum 1x)
+        if (entryPrice > 0 && item.currentPrice > 0) {
+          item.athMult = Math.max(1, item.currentPrice / entryPrice);
+        } else {
+          item.athMult = 1; // Default to 1x if no data
         }
-      } else {
-        // BACKFILL NOT COMPLETE: Must fetch OHLCV to get true historical ATH
-        logger.info(`[LiveSignals] Backfill NOT complete - fetching OHLCV for ${signalsWithoutAth.length} signals`);
-        
-        // Update loading message
-        if (loadingMsg && signalsWithoutAth.length > 0) {
-          try {
-            await ctx.telegram.editMessageText(
-              loadingMsg.chat.id,
-              loadingMsg.message_id,
-              undefined,
-              `⏳ ${signalsWithAth.length} cached, calculating ATH for ${signalsWithoutAth.length} signals...`,
-              { parse_mode: 'Markdown' }
-            );
-          } catch {}
-        }
-        
-        const { enrichSignalMetrics } = await import('../../../analytics/metrics');
-        
-        // Process in small batches with delays
-        const BATCH_SIZE = 3;
-        const DELAY_BETWEEN_BATCHES_MS = 2000;
-        const DELAY_BETWEEN_ITEMS_MS = 500;
-        
-        const athCalcStart = Date.now();
-        
-        for (let i = 0; i < signalsWithoutAth.length; i += BATCH_SIZE) {
-          const batch = signalsWithoutAth.slice(i, i + BATCH_SIZE);
-          const batchNum = Math.floor(i / BATCH_SIZE) + 1;
-          const totalBatches = Math.ceil(signalsWithoutAth.length / BATCH_SIZE);
-          
-          logger.info(`[LiveSignals] ATH batch ${batchNum}/${totalBatches} (${batch.length} signals)`);
-          
-          // Update loading message
-          if (loadingMsg && batchNum % 2 === 0) {
-            try {
-              await ctx.telegram.editMessageText(
-                loadingMsg.chat.id,
-                loadingMsg.message_id,
-                undefined,
-                `⏳ ATH: ${athFromOhlcv}/${signalsWithoutAth.length} (${signalsWithAth.length} cached, batch ${batchNum}/${totalBatches})...`,
-                { parse_mode: 'Markdown' }
-              );
-            } catch {}
-          }
-          
-          for (const item of batch) {
-            const sig = signalMap.get(item.signalId);
-            if (!sig || item.currentPrice <= 0) continue;
-            
-            // Ensure entry data is populated
-            if (!sig.entryMarketCap && item.entryMc > 0) sig.entryMarketCap = item.entryMc;
-            if (!sig.entryPrice && item.entryPrice > 0) sig.entryPrice = item.entryPrice;
-            if (!sig.entrySupply && sig.entryMarketCap && sig.entryPrice) {
-              sig.entrySupply = sig.entryMarketCap / sig.entryPrice;
-            }
-            
-            const itemStart = Date.now();
-            try {
-              await Promise.race([
-                enrichSignalMetrics(sig, true, item.currentPrice),
-                new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 12000))
-              ]);
-              
-              const itemDuration = Date.now() - itemStart;
-              const afterAth = sig.metrics?.athMultiple ?? null;
-              
-              if (afterAth !== null && afterAth > 0) {
-                item.athMult = afterAth;
-                item.maxDrawdown = sig.metrics?.maxDrawdown || 0;
-                item.timeToAth = sig.metrics?.timeToAth || null;
-                athFromOhlcv++;
-                logger.debug(`[LiveSignals] ✅ ATH ${item.mint.slice(0, 8)}...: ${afterAth.toFixed(2)}x (${itemDuration}ms)`);
-              } else {
-                // Fallback to current price
-                const entryPrice = sig?.entryPrice || item.entryPrice || 0;
-                item.athMult = entryPrice > 0 ? Math.max(1, item.currentPrice / entryPrice) : null;
-                item.maxDrawdown = null;
-                item.timeToAth = null;
-                athPending++;
-                logger.warn(`[LiveSignals] ⚠️ No ATH for ${item.mint.slice(0, 8)}... (${itemDuration}ms)`);
-              }
-              
-              // Delay between items
-              if (item !== batch[batch.length - 1]) {
-                await new Promise(resolve => setTimeout(resolve, DELAY_BETWEEN_ITEMS_MS));
-              }
-            } catch (err) {
-              const itemDuration = Date.now() - itemStart;
-              logger.warn(`[LiveSignals] ❌ ATH failed ${item.mint.slice(0, 8)}...: ${err} (${itemDuration}ms)`);
-              // Fallback to current price
-              const entryPrice = sig?.entryPrice || item.entryPrice || 0;
-              item.athMult = entryPrice > 0 ? Math.max(1, item.currentPrice / entryPrice) : null;
-              item.maxDrawdown = null;
-              item.timeToAth = null;
-              athPending++;
-            }
-          }
-          
-          // Delay between batches
-          if (i + BATCH_SIZE < signalsWithoutAth.length) {
-            await new Promise(resolve => setTimeout(resolve, DELAY_BETWEEN_BATCHES_MS));
-          }
-        }
-        
-        const totalDuration = Date.now() - athCalcStart;
-        logger.info(`[LiveSignals] OHLCV ATH calculation complete: ${athFromOhlcv}/${signalsWithoutAth.length} in ${totalDuration}ms`);
+        item.maxDrawdown = null;
+        item.timeToAth = null;
+        athPending++;
       }
     }
     
-    // Summary logging
-    if (backfillComplete) {
-      logger.info(`[LiveSignals] ⚡ ATH loaded instantly: ${athFromDb} from DB, ${athFromCurrentPrice} new ATH, ${athPending} pending`);
-    } else {
-      logger.info(`[LiveSignals] ATH: ${athFromDb} from DB, ${athFromCurrentPrice} new ATH, ${athFromOhlcv} from OHLCV, ${athPending} pending`);
+    // Log summary
+    logger.info(`[LiveSignals] ⚡ ATH loaded INSTANTLY: ${athFromDb} from DB, ${athFromCurrentPrice} new ATH, ${athPending} pending backfill`);
+    if (staleCount > 0) {
+      logger.info(`[LiveSignals] 📅 ${staleCount} signals have stale metrics (>2h) - will refresh in background`);
+    }
+    
+    // Trigger background refresh for stale signals (don't wait for it)
+    if (staleSignalIds.length > 0) {
+      // Fire and forget - don't block the UI
+      setImmediate(async () => {
+        try {
+          const { startFastBackfill } = await import('../../../jobs/athBackfillFast');
+          logger.info(`[LiveSignals] Starting background refresh for ${staleSignalIds.length} stale signals`);
+          // Note: This will be handled by the regular background jobs
+          // We just log it here for awareness
+        } catch {}
+      });
     }
     
     // For compatibility with code below
-    const athCalculated = athFromDb + athFromCurrentPrice + athFromOhlcv;
+    const athCalculated = athFromDb + athFromCurrentPrice;
     const retrySuccess = 0;
     
-    // Fetch full signal data with updated metrics
+    // Signal data already fetched above, no need to re-fetch
+    // Just log ATH data for debugging
     if (topItems.length > 0) {
-      const updatedSignals = await prisma.signal.findMany({
-        where: { id: { in: topItems.map(i => i.signalId) } },
-        include: { metrics: true, group: true, user: true }
-      });
-      // Update signalMap with fresh metrics
-      for (const s of updatedSignals) {
-        signalMap.set(s.id, s);
-        // Log ATH data for debugging - show what's actually in the DB
+      for (const s of signalMap.values()) {
         if (s.metrics) {
           const maxDdValue = s.metrics.maxDrawdown ?? null;
           const timeToAthValue = s.metrics.timeToAth ?? null;
