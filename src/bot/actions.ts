@@ -20,6 +20,7 @@ const buildBackfillStatusView = () => {
   const now = Date.now();
   const total = progress.totalSignals || 0;
   const processed = progress.processedSignals || 0;
+  const totalMints = progress.totalMints || 0;
   const pct = total > 0 ? (processed / total) * 100 : 0;
   const elapsedMs = progress.startedAt ? now - progress.startedAt.getTime() : 0;
   const elapsedMinutes = elapsedMs > 0 ? elapsedMs / 60000 : null;
@@ -43,6 +44,9 @@ const buildBackfillStatusView = () => {
     message += `Progress: ${processed}/${total} (${pct.toFixed(1)}%) ${UIHelper.progressBar(pct, 100, 10)}\n`;
   } else {
     message += 'Progress: N/A\n';
+  }
+  if (totalMints > 0) {
+    message += `Unique Mints: ${totalMints}\n`;
   }
 
   if (progress.startedAt) {

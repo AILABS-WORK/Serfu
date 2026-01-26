@@ -20,9 +20,10 @@ export const getMultipleTokenPrices = async (mints: string[]): Promise<Record<st
     // Jupiter price/v3 supports batch requests with comma-separated IDs
     // Based on API docs, test with reasonable chunk sizes
     // Start conservative, can increase if no rate limits
-    const CHUNK_SIZE = Number(process.env.JUP_PRICE_CHUNK ?? 40); // Lower default to reduce rate limits
+    const defaultChunk = JUP_API_KEY ? 2000 : 200;
+    const CHUNK_SIZE = Number(process.env.JUP_PRICE_CHUNK ?? defaultChunk);
     const REQUEST_TIMEOUT_MS = 20000; // 20 seconds per request
-    const MAX_PARALLEL_CHUNKS = Number(process.env.JUP_PRICE_PARALLEL ?? 2); // Lower default concurrency
+    const MAX_PARALLEL_CHUNKS = Number(process.env.JUP_PRICE_PARALLEL ?? (JUP_API_KEY ? 1 : 2)); // Lower default concurrency
     const DELAY_BETWEEN_BATCHES_MS = Number(process.env.JUP_PRICE_BATCH_DELAY_MS ?? 200);
     const MAX_RETRIES = Number(process.env.JUP_PRICE_MAX_RETRIES ?? 2);
     const RATE_LIMIT_WAIT_MS = Number(process.env.JUP_PRICE_RATE_LIMIT_WAIT_MS ?? 1000);

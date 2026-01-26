@@ -6,6 +6,7 @@ import { getEntryTime } from '../analytics/metricsUtils';
 export type HistoricalMetricsBackfillProgress = {
   status: 'idle' | 'running' | 'complete' | 'error';
   totalSignals: number;
+  totalMints: number;
   processedSignals: number;
   batchSize: number;
   startedAt: Date | null;
@@ -19,6 +20,7 @@ export type HistoricalMetricsBackfillProgress = {
 const backfillProgress: HistoricalMetricsBackfillProgress = {
   status: 'idle',
   totalSignals: 0,
+  totalMints: 0,
   processedSignals: 0,
   batchSize: 0,
   startedAt: null,
@@ -318,9 +320,15 @@ export const runHistoricalMetricsBackfill = async (batchSize = 200) => {
     const totalSignals = await prisma.signal.count({
       where: { entryPrice: { not: null } }
     });
+    const totalMints = await prisma.signal.findMany({
+      where: { entryPrice: { not: null } },
+      distinct: ['mint'],
+      select: { mint: true }
+    });
     updateBackfillProgress({
       status: 'running',
       totalSignals,
+      totalMints: totalMints.length,
       processedSignals: 0,
       batchSize,
       startedAt,
