@@ -92,8 +92,7 @@ export const handleDistributions = async (ctx: Context, view: string = 'mcap') =
       }
       
       message += `Target: *${targetLabel}*\n`;
-      const coverage = stats.rawSignals > 0 ? `${stats.metricsSignals}/${stats.rawSignals}` : `${stats.metricsSignals}`;
-      message += `Based on *${stats.metricsSignals}* calls (coverage ${coverage})\n`;
+      message += `*Unique Mints:* ${stats.totalUniqueMints} | *With Metrics:* ${stats.metricsSignals}\n`;
       if (stats.totalSignals < 10) {
         message += `⚠️ *Low sample size — results may be noisy*\n`;
       }
@@ -138,10 +137,10 @@ export const handleDistributions = async (ctx: Context, view: string = 'mcap') =
           { text: timeframe === 'ALL' ? '✅ ALL' : 'ALL', callback_data: 'dist_time:ALL' },
           { text: 'Custom', callback_data: 'dist_time:custom' }
         ],
+        [{ text: '📊 Returns', callback_data: 'dist_view:returns' }, { text: '🚀 Moonshot', callback_data: 'dist_view:moonshot' }],
         [{ text: '🕐 Time of Day', callback_data: 'dist_view:time' }, { text: '📅 Day of Week', callback_data: 'dist_view:day' }],
         [{ text: '👥 Group Compare', callback_data: 'dist_view:groups' }, { text: '📊 Volume', callback_data: 'dist_view:volume' }],
-        [{ text: '🤝 Confluence', callback_data: 'dist_view:confluence' }],
-        [{ text: '💀 Rug Ratio', callback_data: 'dist_view:rug' }, { text: '🚀 Moonshot', callback_data: 'dist_view:moonshot' }],
+        [{ text: '🤝 Confluence', callback_data: 'dist_view:confluence' }, { text: '💀 Rug Ratio', callback_data: 'dist_view:rug' }],
         [{ text: '🔥 Streaks', callback_data: 'dist_view:streak' }, { text: '⏰ Token Age', callback_data: 'dist_view:age' }],
         [{ text: '💧 Liquidity', callback_data: 'dist_view:liquidity' }, { text: '🔙 Back', callback_data: 'analytics' }, { text: '❌ Close', callback_data: 'delete_msg' }]
       ];
@@ -333,6 +332,46 @@ export const handleDistributions = async (ctx: Context, view: string = 'mcap') =
         const countStr = `${b.count}`.padEnd(4, ' ');
         message += `\`${label} | ${winStr} | ${avgStr} | ${countStr}\`\n`;
       }
+      keyboard = [[{ text: '🔙 MCap View', callback_data: 'dist_view:mcap' }, { text: '❌ Close', callback_data: 'delete_msg' }]];
+    } else if (view === 'returns') {
+      // NEW: ATH Return Distribution View
+      message = UIHelper.header('RETURN DISTRIBUTION', '📊');
+      message += `*Unique Mints:* ${stats.totalUniqueMints} | *With Metrics:* ${stats.metricsSignals}\n`;
+      message += `*Avg Return:* ${stats.avgReturn.toFixed(2)}x | *Median:* ${stats.medianReturn.toFixed(2)}x | *StdDev:* ${stats.stdDevReturn.toFixed(2)}\n`;
+      message += UIHelper.separator('HEAVY');
+      message += `\`ATH Range  | Count  | %     | Avg Entry MC\`\n`;
+      message += `\`───────────┼────────┼───────┼─────────────\`\n`;
+      
+      for (const b of stats.returnBuckets) {
+        const pct = stats.metricsSignals > 0 ? (b.count / stats.metricsSignals) * 100 : 0;
+        const label = b.label.padEnd(9, ' ');
+        const countStr = `${b.count}`.padStart(6, ' ');
+        const pctStr = `${pct.toFixed(1)}%`.padStart(5, ' ');
+        const mcStr = b.avgEntryMc > 0 ? UIHelper.formatMarketCap(b.avgEntryMc).padStart(11, ' ') : '         N/A';
+        
+        // Visual bar
+        const barLen = Math.min(10, Math.round(pct / 5));
+        const bar = '▓'.repeat(barLen) + '░'.repeat(10 - barLen);
+        
+        message += `\`${label} | ${countStr} | ${pctStr} | ${mcStr}\`\n`;
+      }
+      
+      message += UIHelper.separator('LIGHT');
+      message += `\n*Concentration Insight:*\n`;
+      
+      // Find the peak bucket
+      const peakBucket = stats.returnBuckets.reduce((prev, curr) => 
+        curr.count > prev.count ? curr : prev
+      );
+      const peakPct = stats.metricsSignals > 0 ? (peakBucket.count / stats.metricsSignals) * 100 : 0;
+      message += `📍 Most calls land at *${peakBucket.label}* (${peakPct.toFixed(0)}% of all)\n`;
+      
+      // Profitable vs unprofitable
+      const unprofitable = stats.returnBuckets.filter(b => b.max <= 1).reduce((sum, b) => sum + b.count, 0);
+      const profitable = stats.metricsSignals - unprofitable;
+      const profitPct = stats.metricsSignals > 0 ? (profitable / stats.metricsSignals) * 100 : 0;
+      message += `✅ *${profitPct.toFixed(0)}%* of calls are profitable (>1x ATH)\n`;
+      
       keyboard = [[{ text: '🔙 MCap View', callback_data: 'dist_view:mcap' }, { text: '❌ Close', callback_data: 'delete_msg' }]];
     }
 

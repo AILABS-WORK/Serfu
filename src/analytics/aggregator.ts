@@ -603,7 +603,10 @@ export const getSignalLeaderboard = async (
   entryMarketCap: number | null,
   athMarketCap: number | null,
   currentMarketCap: number | null,
-  timeToAth: number | null
+  timeToAth: number | null,
+  maxDrawdown: number | null,
+  timeFromDdToAth: number | null, // minutes
+  signalAge: number // hours since detection
 }>> => {
   const since = getDateFilter(timeframe);
   
@@ -711,6 +714,22 @@ export const getSignalLeaderboard = async (
     // Ensure entryMarketCap has fallback from first priceSample
     const entryMc = s.entryMarketCap || s.priceSamples?.[0]?.marketCap || null;
     
+    // Max Drawdown
+    const maxDrawdown = s.metrics?.maxDrawdown ?? null;
+    
+    // Time from drawdown to ATH (minutes)
+    let timeFromDdToAth: number | null = null;
+    if (s.metrics?.athAt && s.metrics?.minLowAt) {
+      const diffMs = s.metrics.athAt.getTime() - s.metrics.minLowAt.getTime();
+      if (diffMs > 0) {
+        timeFromDdToAth = diffMs / (1000 * 60);
+      }
+    }
+    
+    // Signal age in hours
+    const entryTime = getEntryTime(s) ?? s.detectedAt;
+    const signalAge = (Date.now() - entryTime.getTime()) / (1000 * 60 * 60);
+    
     return {
       id: s.id,
       mint: s.mint,
@@ -721,7 +740,10 @@ export const getSignalLeaderboard = async (
       entryMarketCap: entryMc, // Use fallback from priceSamples if needed
       athMarketCap,
       currentMarketCap: currentMc,
-      timeToAth
+      timeToAth,
+      maxDrawdown,
+      timeFromDdToAth,
+      signalAge
     };
   });
 };
@@ -805,6 +827,18 @@ export interface DistributionStats {
   totalSignals: number;
   rawSignals: number;
   metricsSignals: number;
+  // NEW: ATH Return Distribution
+  returnBuckets: Array<{
+    label: string;
+    min: number;
+    max: number;
+    count: number;
+    avgEntryMc: number;
+  }>;
+  avgReturn: number;
+  medianReturn: number;
+  stdDevReturn: number;
+  totalUniqueMints: number;
 }
 
 export const getDistributionStats = async (
@@ -867,16 +901,35 @@ export const getDistributionStats = async (
     }
   });
 
-  logger.info(`[DistributionStats] Processing ${signals.length} signals for distribution stats`);
+  logger.info(`[DistributionStats] Processing ${signals.length} total signals`);
   
-  const signalsWithMetrics = signals.filter(s =>
+  // CRITICAL: Deduplicate by mint - only keep FIRST detection per token
+  // This ensures distributions reflect unique token performance, not duplicate mentions
+  const mintMap = new Map<string, typeof signals[0]>();
+  for (const s of signals) {
+    const entryTime = getEntryTime(s);
+    const existing = mintMap.get(s.mint);
+    if (!existing) {
+      mintMap.set(s.mint, s);
+    } else {
+      // Keep the earliest signal (first caller)
+      const existingEntryTime = getEntryTime(existing);
+      if (entryTime && existingEntryTime && entryTime.getTime() < existingEntryTime.getTime()) {
+        mintMap.set(s.mint, s);
+      }
+    }
+  }
+  const uniqueSignals = Array.from(mintMap.values());
+  logger.info(`[DistributionStats] Deduplicated ${signals.length} signals to ${uniqueSignals.length} unique mints`);
+  
+  const signalsWithMetrics = uniqueSignals.filter(s =>
     !!s.metrics &&
     (s.metrics.athMultiple ?? 0) > 0 &&
     (s.metrics.athPrice ?? 0) > 0
   );
-  const missingMetricsCount = signals.length - signalsWithMetrics.length;
+  const missingMetricsCount = uniqueSignals.length - signalsWithMetrics.length;
   if (missingMetricsCount > 0) {
-    logger.info(`[DistributionStats] ${missingMetricsCount}/${signals.length} signals missing ATH metrics (skipping for distributions)`);
+    logger.info(`[DistributionStats] ${missingMetricsCount}/${uniqueSignals.length} unique mints missing ATH metrics (skipping for distributions)`);
   }
 
   // 3. Process Distributions - Initialize all stats
@@ -960,8 +1013,26 @@ export const getDistributionStats = async (
     ],
     currentStreak: { type: 'loss', count: 0 },
     totalSignals: signalsWithMetrics.length,
-    rawSignals: signals.length,
-    metricsSignals: signalsWithMetrics.length
+    rawSignals: uniqueSignals.length, // Unique mints only
+    metricsSignals: signalsWithMetrics.length,
+    // NEW: ATH Return Distribution buckets
+    returnBuckets: [
+      { label: '<0.5x', min: 0, max: 0.5, count: 0, avgEntryMc: 0 },
+      { label: '0.5-1x', min: 0.5, max: 1, count: 0, avgEntryMc: 0 },
+      { label: '1-1.5x', min: 1, max: 1.5, count: 0, avgEntryMc: 0 },
+      { label: '1.5-2x', min: 1.5, max: 2, count: 0, avgEntryMc: 0 },
+      { label: '2-3x', min: 2, max: 3, count: 0, avgEntryMc: 0 },
+      { label: '3-5x', min: 3, max: 5, count: 0, avgEntryMc: 0 },
+      { label: '5-10x', min: 5, max: 10, count: 0, avgEntryMc: 0 },
+      { label: '10-25x', min: 10, max: 25, count: 0, avgEntryMc: 0 },
+      { label: '25-50x', min: 25, max: 50, count: 0, avgEntryMc: 0 },
+      { label: '50-100x', min: 50, max: 100, count: 0, avgEntryMc: 0 },
+      { label: '100x+', min: 100, max: 1000000, count: 0, avgEntryMc: 0 },
+    ],
+    avgReturn: 0,
+    medianReturn: 0,
+    stdDevReturn: 0,
+    totalUniqueMints: uniqueSignals.length
   };
 
   // Group tracking for win rates
@@ -994,6 +1065,9 @@ export const getDistributionStats = async (
   let timeTo5xCount = 0;
   let timeTo10xSum = 0;
   let timeTo10xCount = 0;
+
+  // For return distribution statistics
+  const allMultiples: number[] = [];
 
   const confluenceMap = new Map<string, { groups: Set<number>; maxMult: number }>();
   for (const s of sortedSignals) {
@@ -1108,6 +1182,14 @@ export const getDistributionStats = async (
     if (mult > 50) stats.moonshotCounts.gt50x++;
     if (mult > 100) stats.moonshotCounts.gt100x++;
     if (isMoonshot) stats.moonshotProbability++;
+
+    // NEW: ATH Return Distribution Buckets
+    const rBucket = stats.returnBuckets.find(b => mult >= b.min && mult < b.max);
+    if (rBucket) {
+      rBucket.count++;
+      if (entryMc > 0) rBucket.avgEntryMc += entryMc;
+    }
+    allMultiples.push(mult);
 
     // Moonshot Times (ms -> minutes)
     if (s.metrics?.timeTo2x) {
@@ -1306,6 +1388,27 @@ export const getDistributionStats = async (
   });
 
   stats.currentStreak = { type: streakType, count: currentStreak };
+
+  // Finalize Return Distribution Statistics
+  stats.returnBuckets.forEach(b => {
+    if (b.count > 0) {
+      b.avgEntryMc /= b.count;
+    }
+  });
+
+  // Calculate avg, median, stddev of returns
+  if (allMultiples.length > 0) {
+    stats.avgReturn = allMultiples.reduce((a, b) => a + b, 0) / allMultiples.length;
+    
+    // Median
+    const sorted = [...allMultiples].sort((a, b) => a - b);
+    const mid = Math.floor(sorted.length / 2);
+    stats.medianReturn = sorted.length % 2 !== 0 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+    
+    // Standard Deviation
+    const squaredDiffs = allMultiples.map(x => Math.pow(x - stats.avgReturn, 2));
+    stats.stdDevReturn = Math.sqrt(squaredDiffs.reduce((a, b) => a + b, 0) / allMultiples.length);
+  }
 
   return stats;
 };

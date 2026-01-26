@@ -146,26 +146,20 @@ export const handleSignalLeaderboardCommand = async (ctx: Context, window: TimeW
       return ctx.reply(`No signal data available for ${window}.\n\nTry a different timeframe or ensure you have signals in your workspace.`);
     }
 
-    const signalIds = signals.map((s: any) => s.id);
-    const metricsMap = new Map<number, { maxDrawdown?: number }>();
-    if (signalIds.length > 0) {
-      const raw = await prisma.signal.findMany({
-        where: { id: { in: signalIds } },
-        include: { metrics: true }
-      });
-      for (const s of raw) {
-        metricsMap.set(s.id, { maxDrawdown: s.metrics?.maxDrawdown ?? undefined });
-      }
-    }
-
     const windowLabel = ['1D','3D','7D','30D','ALL'].includes(String(window)) ? String(window) : `Custom ${window}`;
-    let message = `💎 *Top Signals (${windowLabel})*\n_Sorted by ATH Multiple_\n\n`;
+    let message = `💎 *Top Signals (${windowLabel})*\n_Sorted by ATH Multiple | Unique Mints Only_\n\n`;
     const signalButtons: any[] = [];
 
     signals.forEach((s: any, i: number) => {
       const rank = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `${i+1}.`;
+      
+      // Format signal age
+      const ageStr = s.signalAge < 24 
+        ? `${s.signalAge.toFixed(1)}h ago` 
+        : `${Math.floor(s.signalAge / 24)}d ago`;
+      
       message += `${rank} *${s.symbol}* (${s.athMultiple.toFixed(2)}x)\n`;
-      message += `   Caller: ${s.sourceName} | 📅 ${s.detectedAt.toLocaleDateString()}\n`;
+      message += `   👤 ${s.sourceName} | 📅 ${s.detectedAt.toLocaleDateString()} | ⏱️ ${ageStr}\n`;
 
       const entryMcStr = s.entryMarketCap ? UIHelper.formatMarketCap(s.entryMarketCap) : 'N/A';
       const derivedAthMc = !s.athMarketCap && s.entryMarketCap && s.athMultiple
@@ -173,14 +167,24 @@ export const handleSignalLeaderboardCommand = async (ctx: Context, window: TimeW
         : s.athMarketCap;
       const athMcStr = derivedAthMc ? UIHelper.formatMarketCap(derivedAthMc) : 'N/A';
       const currentMcStr = s.currentMarketCap ? UIHelper.formatMarketCap(s.currentMarketCap) : 'N/A';
+      
+      // Time to ATH
       const timeToAthStr = s.timeToAth
         ? s.timeToAth < 60 ? `${Math.round(s.timeToAth)}m` : `${(s.timeToAth / 60).toFixed(1)}h`
         : 'N/A';
-      const dd = metricsMap.get(s.id)?.maxDrawdown;
-      const ddStr = dd !== undefined ? UIHelper.formatPercent(dd) : 'N/A';
+      
+      // Max Drawdown
+      const ddStr = s.maxDrawdown !== null && s.maxDrawdown !== undefined 
+        ? UIHelper.formatPercent(s.maxDrawdown) 
+        : 'N/A';
+      
+      // Time from DD to ATH (recovery time)
+      const recoveryStr = s.timeFromDdToAth
+        ? s.timeFromDdToAth < 60 ? `${Math.round(s.timeFromDdToAth)}m` : `${(s.timeFromDdToAth / 60).toFixed(1)}h`
+        : 'N/A';
 
-      message += `   Entry MC: ${entryMcStr} | ATH MC: ${athMcStr} | Now MC: ${currentMcStr}\n`;
-      message += `   Time to ATH: ${timeToAthStr} | Drawdown: ${ddStr}\n`;
+      message += `   Entry: ${entryMcStr} | ATH: ${athMcStr} | Now: ${currentMcStr}\n`;
+      message += `   ⏱️ To ATH: ${timeToAthStr} | 📉 DD: ${ddStr} | 📈 Recovery: ${recoveryStr}\n`;
       message += `   \`${s.mint}\`\n\n`;
 
       if (i < 5) {
