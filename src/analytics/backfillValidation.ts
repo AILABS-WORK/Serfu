@@ -32,6 +32,10 @@ export interface ValidationReport {
     invalidTimeCount: number;
     staleMetricsCount: number;
     healthScore: number; // 0-100
+    // NEW: Analytics readiness
+    readyForAnalytics: number;
+    hasValidAth: number;
+    unfixableCount: number; // Tokens with no OHLCV data available
   };
   generatedAt: Date;
 }
@@ -253,15 +257,40 @@ export const runValidationCheck = async (options?: {
   ).length;
   const staleMetricsCount = allIssues.filter(i => i.type === 'STALE_METRICS').length;
   
-  // Calculate health score (0-100)
-  // Deduct points for errors (5 each), warnings (2 each), max 100 deductions
+  // NEW: Calculate analytics readiness
+  // A signal is "ready for analytics" if it has:
+  // 1. Valid metrics record
+  // 2. ATH >= entry price (or ATH = entry)
+  // 3. No negative timeToAth
+  // 4. athAt >= entryTime
   const signalsWithMetrics = signals.filter(s => s.metrics).length;
-  const metricsCompleteness = signalsWithMetrics / signals.length * 100;
-  const errorPenalty = Math.min(errorCount * 5, 50);
-  const warningPenalty = Math.min(warningCount * 2, 30);
-  const healthScore = Math.max(0, Math.min(100, 
-    metricsCompleteness - errorPenalty - warningPenalty
-  ));
+  
+  const signalIdsWithErrors = new Set(
+    allIssues
+      .filter(i => i.severity === 'error' || i.type === 'ATH_BELOW_ENTRY' || i.type === 'INVALID_TIME')
+      .map(i => i.signalId)
+  );
+  
+  // Signals with valid ATH (has metrics AND athMultiple >= 1)
+  const hasValidAth = signals.filter(s => 
+    s.metrics && s.metrics.athMultiple >= 1 && s.metrics.athPrice > 0
+  ).length;
+  
+  // Signals ready for analytics (has valid metrics, no critical errors)
+  const readyForAnalytics = signals.filter(s => 
+    s.metrics && 
+    s.metrics.athMultiple >= 1 && 
+    !signalIdsWithErrors.has(s.id) &&
+    (s.metrics.timeToAth === null || s.metrics.timeToAth >= 0)
+  ).length;
+  
+  // Unfixable = missing ATH (no OHLCV data available)
+  const unfixableCount = missingAthCount;
+  
+  // Calculate health score (0-100) based on analytics readiness
+  const readinessPercent = signals.length > 0 ? (readyForAnalytics / signals.length) * 100 : 0;
+  const errorPenalty = Math.min(errorCount * 2, 20); // Reduced penalty
+  const healthScore = Math.max(0, Math.min(100, readinessPercent - errorPenalty));
   
   const report: ValidationReport = {
     totalSignals: signals.length,
@@ -276,7 +305,11 @@ export const runValidationCheck = async (options?: {
       athBelowEntryCount,
       invalidTimeCount,
       staleMetricsCount,
-      healthScore: Math.round(healthScore)
+      healthScore: Math.round(healthScore),
+      // NEW analytics readiness metrics
+      readyForAnalytics,
+      hasValidAth,
+      unfixableCount
     },
     generatedAt: new Date()
   };
@@ -611,6 +644,100 @@ export const fixTimingIssues = async (options?: {
 };
 
 /**
+ * Handle unfixable signals (no OHLCV data available).
+ * Sets ATH = entry price so they can be included in analytics.
+ */
+export const fixUnfixableSignals = async (): Promise<{
+  fixed: number;
+  details: string[];
+}> => {
+  logger.info('[ValidationFix] Fixing unfixable signals (setting ATH = entry price)...');
+  
+  // Find signals with metrics = null or ATH = 0
+  const signals = await prisma.signal.findMany({
+    where: {
+      entryPrice: { not: null, gt: 0 },
+      OR: [
+        { metrics: null },
+        { metrics: { athPrice: { lte: 0 } } }
+      ]
+    },
+    select: {
+      id: true,
+      mint: true,
+      entryPrice: true,
+      entrySupply: true,
+      entryMarketCap: true,
+      entryPriceAt: true,
+      detectedAt: true,
+      metrics: true
+    },
+    take: 500
+  });
+  
+  logger.info(`[ValidationFix] Found ${signals.length} signals with no ATH data`);
+  
+  const details: string[] = [];
+  let fixed = 0;
+  const now = new Date();
+  
+  for (const signal of signals) {
+    if (!signal.entryPrice) continue;
+    
+    const entryTime = getEntryTime(signal) || signal.detectedAt;
+    const entryPrice = signal.entryPrice;
+    const entrySupply = signal.entrySupply || (signal.entryMarketCap && entryPrice > 0 ? signal.entryMarketCap / entryPrice : null);
+    const entryMarketCap = signal.entryMarketCap || (entrySupply ? entryPrice * entrySupply : null);
+    
+    try {
+      if (signal.metrics) {
+        // Update existing metrics
+        await prisma.signalMetric.update({
+          where: { signalId: signal.id },
+          data: {
+            athPrice: entryPrice,
+            athMultiple: 1.0,
+            athAt: entryTime,
+            timeToAth: 0,
+            maxDrawdown: 0,
+            currentPrice: entryPrice,
+            currentMultiple: 1.0,
+            currentMarketCap: entryMarketCap,
+            athMarketCap: entryMarketCap,
+            updatedAt: now
+          }
+        });
+      } else {
+        // Create new metrics
+        await prisma.signalMetric.create({
+          data: {
+            signalId: signal.id,
+            athPrice: entryPrice,
+            athMultiple: 1.0,
+            athAt: entryTime,
+            timeToAth: 0,
+            maxDrawdown: 0,
+            currentPrice: entryPrice,
+            currentMultiple: 1.0,
+            currentMarketCap: entryMarketCap,
+            athMarketCap: entryMarketCap,
+            updatedAt: now
+          }
+        });
+      }
+      
+      fixed++;
+      details.push(`Signal ${signal.id} (${signal.mint.slice(0, 8)}...): Set ATH = entry`);
+    } catch (err: any) {
+      details.push(`Signal ${signal.id}: Error - ${err.message}`);
+    }
+  }
+  
+  logger.info(`[ValidationFix] Fixed ${fixed} unfixable signals`);
+  return { fixed, details };
+};
+
+/**
  * Generates a human-readable validation summary.
  */
 export const formatValidationReport = (report: ValidationReport): string => {
@@ -622,30 +749,45 @@ export const formatValidationReport = (report: ValidationReport): string => {
     : '🔴';
   msg += `${healthEmoji} *Health Score:* ${report.summary.healthScore}%\n\n`;
   
-  // Stats
-  msg += `📊 *Statistics:*\n`;
-  msg += `• Total Signals: ${report.totalSignals}\n`;
-  msg += `• Validated: ${report.validatedSignals}\n`;
-  msg += `• Issues Found: ${report.issueCount}\n\n`;
+  // ANALYTICS READINESS - Most important section
+  const readyPct = report.totalSignals > 0 
+    ? ((report.summary.readyForAnalytics / report.totalSignals) * 100).toFixed(1)
+    : '0';
+  const readyEmoji = parseFloat(readyPct) >= 95 ? '✅' : parseFloat(readyPct) >= 80 ? '🟡' : '⚠️';
+  
+  msg += `📈 *Analytics Readiness:*\n`;
+  msg += `${readyEmoji} *${report.summary.readyForAnalytics}/${report.totalSignals}* signals ready (${readyPct}%)\n`;
+  msg += `• Has Valid ATH: ${report.summary.hasValidAth}\n`;
+  msg += `• Unfixable (no data): ${report.summary.unfixableCount}\n\n`;
   
   // Issue breakdown
   msg += `📋 *Issue Breakdown:*\n`;
-  msg += `• ❌ Errors: ${report.errorCount}\n`;
+  msg += `• ❌ Errors: ${report.errorCount}`;
+  if (report.errorCount > 0) msg += ` ← need "Fix Timing"`;
+  msg += `\n`;
   msg += `• ⚠️ Warnings: ${report.warningCount}\n`;
-  msg += `• ℹ️ Info: ${report.infoCount}\n\n`;
+  msg += `• ℹ️ Info: ${report.infoCount} (stale metrics - OK)\n\n`;
   
-  // Specific issues
+  // Specific issues with actionable info
   msg += `🔎 *Issue Types:*\n`;
-  msg += `• Missing ATH: ${report.summary.missingAthCount}\n`;
-  msg += `• ATH Below Entry: ${report.summary.athBelowEntryCount}\n`;
-  msg += `• Invalid Time: ${report.summary.invalidTimeCount}\n`;
-  msg += `• Stale Metrics: ${report.summary.staleMetricsCount}\n\n`;
+  if (report.summary.invalidTimeCount > 0) {
+    msg += `• 🎯 Invalid Time: ${report.summary.invalidTimeCount} ← Fix with minute candles\n`;
+  }
+  if (report.summary.missingAthCount > 0) {
+    msg += `• 📭 Missing ATH: ${report.summary.missingAthCount} ← No OHLCV data (dead tokens)\n`;
+  }
+  if (report.summary.athBelowEntryCount > 0) {
+    msg += `• ⬇️ ATH Below Entry: ${report.summary.athBelowEntryCount}\n`;
+  }
+  if (report.summary.staleMetricsCount > 0) {
+    msg += `• 📅 Stale Metrics: ${report.summary.staleMetricsCount} (>24h old, OK)\n`;
+  }
   
-  // Top issues (first 5)
-  if (report.issues.length > 0) {
-    msg += `🔴 *Sample Issues:*\n`;
-    const topIssues = report.issues.filter(i => i.severity === 'error').slice(0, 5);
-    for (const issue of topIssues) {
+  // Top errors (if any)
+  const topErrors = report.issues.filter(i => i.severity === 'error').slice(0, 3);
+  if (topErrors.length > 0) {
+    msg += `\n🔴 *Sample Errors:*\n`;
+    for (const issue of topErrors) {
       msg += `• \`${issue.mint.slice(0, 8)}...\`: ${issue.message}\n`;
     }
   }

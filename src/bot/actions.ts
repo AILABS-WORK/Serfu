@@ -1592,8 +1592,8 @@ ATH: ${ath.toFixed(2)}x
           const keyboard = {
               inline_keyboard: [
                   [{ text: '🔄 Re-validate', callback_data: 'analytics_validate' }],
-                  [{ text: '🛠️ Auto-Fix Issues', callback_data: 'analytics_validate_fix' }],
-                  [{ text: '🎯 Fix Timing (Minute Candles)', callback_data: 'analytics_fix_timing' }],
+                  [{ text: '🎯 Fix Timing', callback_data: 'analytics_fix_timing' }, { text: '📭 Fix Missing', callback_data: 'analytics_fix_missing' }],
+                  [{ text: '🛠️ Auto-Fix (DB only)', callback_data: 'analytics_validate_fix' }],
                   [{ text: '🔙 Back', callback_data: 'analytics' }, { text: '❌ Close', callback_data: 'delete_msg' }]
               ]
           };
@@ -1672,7 +1672,8 @@ ATH: ${ath.toFixed(2)}x
           const keyboard = {
               inline_keyboard: [
                   [{ text: '🔍 Re-validate', callback_data: 'analytics_validate' }],
-                  [{ text: '🎯 Fix More', callback_data: 'analytics_fix_timing' }],
+                  [{ text: '🎯 Fix More Timing', callback_data: 'analytics_fix_timing' }],
+                  [{ text: '📭 Fix Missing ATH', callback_data: 'analytics_fix_missing' }],
                   [{ text: '🔙 Back', callback_data: 'analytics' }]
               ]
           };
@@ -1682,6 +1683,44 @@ ATH: ${ath.toFixed(2)}x
       } catch (error) {
           logger.error('Timing fix action error:', error);
           ctx.reply('❌ Failed to run timing fix.');
+      }
+  });
+
+  // Fix signals with no OHLCV data by setting ATH = entry price
+  bot.action('analytics_fix_missing', async (ctx) => {
+      try {
+          await ctx.answerCbQuery('Fixing missing ATH...');
+          await ctx.reply('📭 *Fixing Missing ATH Signals*\n_Setting ATH = entry price for signals with no OHLCV data..._', { parse_mode: 'Markdown' });
+          
+          const { fixUnfixableSignals } = await import('../analytics/backfillValidation');
+          
+          const result = await fixUnfixableSignals();
+          
+          let msg = `📭 *Missing ATH Fix Complete*\n\n`;
+          msg += `✅ Fixed: ${result.fixed} signals\n`;
+          msg += `\n_These signals had no OHLCV data available._\n`;
+          msg += `_ATH set to entry price (1.0x) so they can be used in analytics._\n\n`;
+          
+          if (result.details.length > 0) {
+              msg += `📋 *Sample:*\n`;
+              for (const detail of result.details.slice(0, 5)) {
+                  msg += `• ${detail}\n`;
+              }
+          }
+          
+          const keyboard = {
+              inline_keyboard: [
+                  [{ text: '🔍 Re-validate', callback_data: 'analytics_validate' }],
+                  [{ text: '📭 Fix More Missing', callback_data: 'analytics_fix_missing' }],
+                  [{ text: '🔙 Back', callback_data: 'analytics' }]
+              ]
+          };
+          
+          await ctx.reply(msg, { parse_mode: 'Markdown', reply_markup: keyboard });
+          
+      } catch (error) {
+          logger.error('Missing ATH fix error:', error);
+          ctx.reply('❌ Failed to fix missing ATH.');
       }
   });
 
