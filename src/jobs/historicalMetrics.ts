@@ -119,7 +119,7 @@ export const updateHistoricalMetrics = async (targetSignalIds?: number[]) => {
       if (incomplete) {
         signalsToProcess.push(signal);
         continue;
-      }
+                }
 
       const currentPrice = priceMap[signal.mint];
       if (currentPrice && metrics.athPrice > 0 && currentPrice > metrics.athPrice * PRICE_ATH_BUFFER) {
@@ -221,11 +221,11 @@ export const updateHistoricalMetrics = async (targetSignalIds?: number[]) => {
                           sharedOhlcv = await geckoTerminal.getOHLCV(mint, sharedTimeframe, 1000);
                           ohlcvCache.set(fallbackKey, sharedOhlcv);
                         }
+                        }
                     }
-                }
-            } catch (e) {
+                } catch (e) {
                 logger.debug(`GeckoTerminal failed for ${mint}, trying Bitquery fallback:`, e);
-            }
+                }
 
             if (!sharedOhlcv || sharedOhlcv.length === 0) {
               mintSignals.forEach(s => markProcessed(s.id));
@@ -261,41 +261,41 @@ export const updateHistoricalMetrics = async (targetSignalIds?: number[]) => {
                       return;
                     }
 
-                    let athPrice = entryPrice;
+                let athPrice = entryPrice;
                     let athAt = signal.metrics?.athAt || entryTime;
                     let minPrice = signal.metrics?.minLowPrice ?? entryPrice;
                     let minAt = signal.metrics?.minLowAt ?? entryTime;
-                    let timeTo2x: number | null = null;
-                    let timeTo5x: number | null = null;
-                    let timeTo10x: number | null = null;
+                let timeTo2x: number | null = null;
+                let timeTo5x: number | null = null;
+                let timeTo10x: number | null = null;
 
-                    for (const candle of validCandles) {
-                        if (candle.high > athPrice) {
-                            athPrice = candle.high;
-                            athAt = new Date(candle.timestamp);
-                        }
-                        if (candle.low < minPrice) {
-                            minPrice = candle.low;
-                            minAt = new Date(candle.timestamp);
-                        }
-                        if (!timeTo2x && candle.high >= entryPrice * 2) {
-                            timeTo2x = candle.timestamp - fetchStart;
-                        }
-                        if (!timeTo5x && candle.high >= entryPrice * 5) {
-                            timeTo5x = candle.timestamp - fetchStart;
-                        }
-                        if (!timeTo10x && candle.high >= entryPrice * 10) {
-                            timeTo10x = candle.timestamp - fetchStart;
-                        }
+                for (const candle of validCandles) {
+                    if (candle.high > athPrice) {
+                        athPrice = candle.high;
+                        athAt = new Date(candle.timestamp);
                     }
+                    if (candle.low < minPrice) {
+                        minPrice = candle.low;
+                            minAt = new Date(candle.timestamp);
+                    }
+                    if (!timeTo2x && candle.high >= entryPrice * 2) {
+                            timeTo2x = candle.timestamp - fetchStart;
+                    }
+                    if (!timeTo5x && candle.high >= entryPrice * 5) {
+                            timeTo5x = candle.timestamp - fetchStart;
+                    }
+                    if (!timeTo10x && candle.high >= entryPrice * 10) {
+                            timeTo10x = candle.timestamp - fetchStart;
+                    }
+                }
 
-                    // Force ATH >= Entry
-                    if (athPrice < entryPrice) athPrice = entryPrice;
+                // Force ATH >= Entry
+                if (athPrice < entryPrice) athPrice = entryPrice;
 
-                    const athMultiple = athPrice / entryPrice;
+                const athMultiple = athPrice / entryPrice;
                     const maxDrawdown = ((minPrice - entryPrice) / entryPrice) * 100;
-                    const currentPrice = validCandles[validCandles.length - 1].close;
-                    const currentMultiple = currentPrice / entryPrice;
+                const currentPrice = validCandles[validCandles.length - 1].close;
+                const currentMultiple = currentPrice / entryPrice;
                     const timeToAth = athAt.getTime() - entryTime.getTime();
                     const timeToDrawdown = minAt.getTime() - entryTime.getTime();
                     const timeFromDrawdownToAth = minAt.getTime() < athAt.getTime() ? athAt.getTime() - minAt.getTime() : null;
@@ -304,56 +304,56 @@ export const updateHistoricalMetrics = async (targetSignalIds?: number[]) => {
                     const maxDrawdownMarketCap = entrySupply ? minPrice * entrySupply : (signal.entryMarketCap ? signal.entryMarketCap * (minPrice / entryPrice) : null);
                     const currentMarketCap = entrySupply ? currentPrice * entrySupply : null;
 
-                    await prisma.signalMetric.upsert({
-                        where: { signalId: signal.id },
-                        create: {
-                            signalId: signal.id,
-                            currentPrice,
-                            currentMultiple,
+                await prisma.signalMetric.upsert({
+                    where: { signalId: signal.id },
+                    create: {
+                        signalId: signal.id,
+                        currentPrice,
+                        currentMultiple,
                             currentMarketCap: currentMarketCap || undefined,
-                            athPrice,
-                            athMultiple,
+                        athPrice,
+                        athMultiple,
                             athMarketCap: athMarketCap || undefined,
-                            athAt,
+                        athAt,
                             timeToAth,
-                            maxDrawdown,
+                        maxDrawdown,
                             maxDrawdownMarketCap: maxDrawdownMarketCap || undefined,
                             timeFromDrawdownToAth,
-                            timeTo2x,
-                            timeTo5x,
-                            timeTo10x,
+                        timeTo2x,
+                        timeTo5x,
+                        timeTo10x,
                             ohlcvLastAt: validCandles.length > 0 ? new Date(validCandles[validCandles.length - 1].timestamp) : undefined,
                             minLowPrice: minPrice,
                             minLowAt: minAt,
-                            updatedAt: new Date()
-                        },
-                        update: {
-                            currentPrice,
-                            currentMultiple,
+                        updatedAt: new Date()
+                    },
+                    update: {
+                        currentPrice,
+                        currentMultiple,
                             currentMarketCap: currentMarketCap || undefined,
-                            athPrice,
-                            athMultiple,
+                        athPrice,
+                        athMultiple,
                             athMarketCap: athMarketCap || undefined,
-                            athAt,
+                        athAt,
                             timeToAth,
-                            maxDrawdown, 
+                        maxDrawdown, 
                             maxDrawdownMarketCap: maxDrawdownMarketCap || undefined,
                             timeFromDrawdownToAth,
                             timeToDrawdown,
                             ohlcvLastAt: validCandles.length > 0 ? new Date(validCandles[validCandles.length - 1].timestamp) : undefined,
                             minLowPrice: minPrice,
                             minLowAt: minAt,
-                            timeTo2x: timeTo2x || undefined,
-                            timeTo5x: timeTo5x || undefined,
-                            timeTo10x: timeTo10x || undefined,
-                            updatedAt: new Date()
-                        }
-                    });
+                        timeTo2x: timeTo2x || undefined,
+                        timeTo5x: timeTo5x || undefined,
+                        timeTo10x: timeTo10x || undefined,
+                        updatedAt: new Date()
+                    }
+                });
                     markProcessed(signal.id);
-                } catch (err) {
-                    logger.error(`Error updating history for ${signal.mint}:`, err);
+            } catch (err) {
+                logger.error(`Error updating history for ${signal.mint}:`, err);
                     markProcessed(signal.id);
-                }
+            }
             }));
         }));
 

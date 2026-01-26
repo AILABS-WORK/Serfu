@@ -2,6 +2,7 @@ import { Context } from 'telegraf';
 import { prisma } from '../../../db';
 import { logger } from '../../../utils/logger';
 import { UIHelper } from '../../../utils/ui';
+import { getBackfillProgress } from '../../../jobs/athBackfill';
 
 export const handleDistributions = async (ctx: Context, view: string = 'mcap') => {
   try {
@@ -72,6 +73,24 @@ export const handleDistributions = async (ctx: Context, view: string = 'mcap') =
 
     if (view === 'mcap') {
       message = UIHelper.header(`DISTRIBUTIONS (${timeframe})`, '📈');
+      
+      // Check backfill status and show appropriate message
+      const backfillProgress = getBackfillProgress();
+      if (backfillProgress.status === 'running') {
+        const pct = backfillProgress.totalMints > 0 
+          ? Math.round((backfillProgress.processedMints / backfillProgress.totalMints) * 100) 
+          : 0;
+        message += `🔄 *Backfill in progress (${pct}%)* - data is being populated\n`;
+        message += `⏳ Showing ${stats.metricsSignals} signals already processed\n\n`;
+      } else if (backfillProgress.status === 'idle' && stats.metricsSignals < stats.rawSignals) {
+        // Backfill hasn't been run yet
+        const coverage = Math.round((stats.metricsSignals / stats.rawSignals) * 100);
+        message += `⚠️ *Backfill not started* - only ${coverage}% of signals have ATH data\n`;
+        message += `💡 Run "Full ATH Backfill" from Analytics for complete data\n\n`;
+      } else if (backfillProgress.status === 'complete') {
+        message += `✅ *Backfill complete* - full historical ATH data available\n\n`;
+      }
+      
       message += `Target: *${targetLabel}*\n`;
       const coverage = stats.rawSignals > 0 ? `${stats.metricsSignals}/${stats.rawSignals}` : `${stats.metricsSignals}`;
       message += `Based on *${stats.metricsSignals}* calls (coverage ${coverage})\n`;

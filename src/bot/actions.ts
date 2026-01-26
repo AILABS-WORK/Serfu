@@ -12,68 +12,140 @@ import { handleDistributions } from './commands/analytics/distributions';
 import { handleRecentCalls } from './commands/analytics/recentCalls';
 import { handleGroupLeaderboardCommand, handleUserLeaderboardCommand, handleSignalLeaderboardCommand } from './commands/analytics/leaderboards';
 import { getHistoricalMetricsBackfillProgress, updateHistoricalMetrics } from '../jobs/historicalMetrics';
+import { getBackfillProgress, startAthBackfill, stopAthBackfill, resetBackfillState, BackfillProgress } from '../jobs/athBackfill';
 import { getDeepHolderAnalysis } from '../analytics/holders';
 import { UIHelper } from '../utils/ui';
 
 const buildBackfillStatusView = () => {
-  const progress = getHistoricalMetricsBackfillProgress();
+  // Use the new ATH backfill progress (more detailed)
+  const athProgress = getBackfillProgress();
+  const legacyProgress = getHistoricalMetricsBackfillProgress();
+  
+  // Prefer ATH backfill progress if running, otherwise use legacy
+  const progress = athProgress.status === 'running' || athProgress.status === 'complete' 
+    ? athProgress 
+    : legacyProgress;
+  
+  const isAthBackfill = athProgress.status === 'running' || athProgress.status === 'complete';
   const now = Date.now();
-  const total = progress.totalSignals || 0;
-  const processed = progress.processedSignals || 0;
-  const totalMints = progress.totalMints || 0;
-  const pct = total > 0 ? (processed / total) * 100 : 0;
-  const elapsedMs = progress.startedAt ? now - progress.startedAt.getTime() : 0;
-  const elapsedMinutes = elapsedMs > 0 ? elapsedMs / 60000 : null;
-  let etaMinutes: number | null = null;
-  if (progress.status === 'running' && progress.startedAt && processed > 0 && total > 0) {
-    const ratePerMs = processed / Math.max(1, elapsedMs);
-    etaMinutes = ratePerMs > 0 ? ((total - processed) / ratePerMs) / 60000 : null;
-  }
-
-  let message = UIHelper.header('Metrics Backfill', '🧠');
-  const statusLabel = progress.status === 'running'
-    ? 'Running'
-    : progress.status === 'complete'
-      ? 'Complete'
-      : progress.status === 'error'
-        ? 'Error'
-        : 'Idle';
-  message += `Status: *${statusLabel}*\n`;
-
-  if (total > 0) {
-    message += `Progress: ${processed}/${total} (${pct.toFixed(1)}%) ${UIHelper.progressBar(pct, 100, 10)}\n`;
-  } else {
-    message += 'Progress: N/A\n';
-  }
-  if (totalMints > 0) {
-    message += `Unique Mints: ${totalMints}\n`;
-  }
-
-  if (progress.startedAt) {
-    message += `Elapsed: ${elapsedMinutes ? UIHelper.formatDurationMinutes(elapsedMinutes) : 'N/A'}`;
-    if (etaMinutes) {
-      message += ` | ETA: ${UIHelper.formatDurationMinutes(etaMinutes)}`;
+  
+  let message = UIHelper.header('ATH Backfill', '🧠');
+  
+  // Status with emoji
+  const statusEmoji = progress.status === 'running' ? '🔄' 
+    : progress.status === 'complete' ? '✅' 
+    : progress.status === 'error' ? '❌'
+    : progress.status === 'paused' ? '⏸️'
+    : '⏹️';
+  const statusLabel = progress.status.charAt(0).toUpperCase() + progress.status.slice(1);
+  message += `${statusEmoji} Status: *${statusLabel}*\n`;
+  
+  if (isAthBackfill) {
+    const p = athProgress;
+    
+    // Phase indicator
+    if (p.phase && p.status === 'running') {
+      const phaseLabel = p.phase === 'ohlcv_fetch' ? '📊 Fetching OHLCV' 
+        : p.phase === 'processing' ? '⚙️ Processing' 
+        : p.phase === 'init' ? '🔧 Initializing'
+        : '✅ Complete';
+      message += `Phase: ${phaseLabel}\n`;
     }
-    message += '\n';
+    
+    // Mint progress
+    if (p.totalMints > 0) {
+      const mintPct = (p.processedMints / p.totalMints) * 100;
+      message += `\n📊 *Mint Progress:*\n`;
+      message += `   ${p.processedMints}/${p.totalMints} (${mintPct.toFixed(1)}%)\n`;
+      message += `   ${UIHelper.progressBar(mintPct, 100, 12)}\n`;
+    }
+    
+    // Signal progress
+    if (p.totalSignals > 0) {
+      const sigPct = (p.processedSignals / p.totalSignals) * 100;
+      message += `\n📈 *Signal Progress:*\n`;
+      message += `   ${p.processedSignals}/${p.totalSignals} (${sigPct.toFixed(1)}%)\n`;
+    }
+    
+    // Current mint being processed
+    if (p.currentMint && p.status === 'running') {
+      message += `\n🎯 Current: \`${p.currentMint.slice(0, 8)}...\`\n`;
+    }
+    
+    // Stats
+    if (p.athUpdatedCount > 0 || p.errorCount > 0 || p.skippedCount > 0) {
+      message += `\n📋 *Stats:*\n`;
+      message += `   ✅ ATH Updated: ${p.athUpdatedCount}\n`;
+      message += `   ⏭️ Skipped: ${p.skippedCount}\n`;
+      message += `   ❌ Errors: ${p.errorCount}\n`;
+    }
+    
+    // Timing
+    if (p.startedAt) {
+      const elapsedMs = (p.endedAt?.getTime() || now) - p.startedAt.getTime();
+      const elapsedMin = elapsedMs / 60000;
+      message += `\n⏱️ *Time:*\n`;
+      message += `   Elapsed: ${UIHelper.formatDurationMinutes(elapsedMin)}\n`;
+      
+      if (p.estimatedTimeRemaining && p.status === 'running') {
+        const etaMin = p.estimatedTimeRemaining / 60000;
+        message += `   ETA: ${UIHelper.formatDurationMinutes(etaMin)}\n`;
+      }
+    }
+    
+    // Error message
+    if (p.lastError) {
+      message += `\n⚠️ *Last Error:*\n   \`${p.lastError.slice(0, 100)}\`\n`;
+    }
+  } else {
+    // Legacy backfill progress
+    const p = legacyProgress;
+    const total = p.totalSignals || 0;
+    const processed = p.processedSignals || 0;
+    const totalMints = p.totalMints || 0;
+    const pct = total > 0 ? (processed / total) * 100 : 0;
+    
+    if (total > 0) {
+      message += `\nProgress: ${processed}/${total} (${pct.toFixed(1)}%)\n`;
+      message += `${UIHelper.progressBar(pct, 100, 12)}\n`;
+    }
+    if (totalMints > 0) {
+      message += `Unique Mints: ${totalMints}\n`;
+    }
+    
+    if (p.startedAt) {
+      const elapsedMs = now - p.startedAt.getTime();
+      const elapsedMin = elapsedMs / 60000;
+      message += `Elapsed: ${UIHelper.formatDurationMinutes(elapsedMin)}\n`;
+    }
+    
+    if (p.errorMessage) {
+      message += `Error: \`${p.errorMessage}\`\n`;
+    }
   }
-
-  if (progress.lastBatchCount > 0) {
-    message += `Last Batch: ${progress.lastBatchCount} signals`;
-    if (progress.lastSignalId) message += ` (last id ${progress.lastSignalId})`;
-    message += '\n';
-  }
-
-  if (progress.status === 'error' && progress.errorMessage) {
-    message += `Error: \`${progress.errorMessage}\`\n`;
-  }
-
-  const keyboard = {
+  
+  // Build keyboard based on status
+  const keyboard: any = {
     inline_keyboard: [
-      [{ text: '🔄 Refresh Status', callback_data: 'analytics_backfill_status' }],
-      [{ text: '🧠 Start Backfill', callback_data: 'analytics_backfill' }, { text: '🔙 Back', callback_data: 'analytics' }],
-      [{ text: '❌ Close', callback_data: 'delete_msg' }]
+      [{ text: '🔄 Refresh Status', callback_data: 'analytics_backfill_status' }]
     ]
   };
+  
+  if (progress.status === 'running') {
+    keyboard.inline_keyboard.push([
+      { text: '⏹️ Stop Backfill', callback_data: 'analytics_backfill_stop' }
+    ]);
+  } else {
+    keyboard.inline_keyboard.push([
+      { text: '🧠 Start Full Backfill', callback_data: 'analytics_backfill' },
+      { text: '🔄 Quick Refresh', callback_data: 'analytics_refresh' }
+    ]);
+  }
+  
+  keyboard.inline_keyboard.push([
+    { text: '🔙 Back', callback_data: 'analytics' },
+    { text: '❌ Close', callback_data: 'delete_msg' }
+  ]);
 
   return { message, keyboard };
 };
@@ -1387,8 +1459,11 @@ ATH: ${ath.toFixed(2)}x
 
   bot.action('analytics_backfill', async (ctx) => {
       try {
-          const progress = getHistoricalMetricsBackfillProgress();
-          if (progress.status === 'running') {
+          const athProgress = getBackfillProgress();
+          const legacyProgress = getHistoricalMetricsBackfillProgress();
+          
+          // Check if either backfill is running
+          if (athProgress.status === 'running' || legacyProgress.status === 'running') {
               await ctx.answerCbQuery('Backfill already running.');
               const view = buildBackfillStatusView();
               if (ctx.callbackQuery && ctx.callbackQuery.message) {
@@ -1398,17 +1473,56 @@ ATH: ${ath.toFixed(2)}x
               }
               return;
           }
-          await ctx.answerCbQuery('Starting full backfill...');
-          await ctx.reply('⏳ Full ATH/DD backfill started in background. This may take a while.');
-          const { runHistoricalMetricsBackfill } = await import('../jobs/historicalMetrics');
-          const { runAthEnrichmentCycle } = await import('../jobs/athEnrichment');
-          runHistoricalMetricsBackfill().catch(err => logger.error('Full backfill failed', err));
-          runAthEnrichmentCycle().catch(err => logger.error('ATH enrichment failed', err));
+          
+          await ctx.answerCbQuery('Starting full ATH backfill...');
+          
+          // Show initial status
+          let startMsg = UIHelper.header('Starting ATH Backfill', '🚀');
+          startMsg += `\n⏳ *Initializing...*\n\n`;
+          startMsg += `This will:\n`;
+          startMsg += `• 📊 Deduplicate all signals by mint\n`;
+          startMsg += `• 🕐 Fetch OHLCV (min → hr → day)\n`;
+          startMsg += `• 📈 Calculate ATH for every signal\n`;
+          startMsg += `• 💾 Store results for analytics\n\n`;
+          startMsg += `_This may take 10-30 minutes depending on signal count._`;
+          
+          await ctx.reply(startMsg, { parse_mode: 'Markdown' });
+          
+          // Start the new ATH backfill in background
+          startAthBackfill({
+            batchSize: 50,
+            forceRefresh: true
+          }).catch(err => {
+            logger.error('Full ATH backfill failed:', err);
+          });
+          
+          // Show progress view after short delay
+          await new Promise(r => setTimeout(r, 2000));
           const view = buildBackfillStatusView();
           await ctx.reply(view.message, { parse_mode: 'Markdown', reply_markup: view.keyboard });
+          
       } catch (error) {
           logger.error('Backfill action error:', error);
           ctx.reply('❌ Failed to start full backfill.');
+      }
+  });
+
+  bot.action('analytics_backfill_stop', async (ctx) => {
+      try {
+          stopAthBackfill();
+          await ctx.answerCbQuery('Stopping backfill...');
+          
+          await new Promise(r => setTimeout(r, 1000));
+          const view = buildBackfillStatusView();
+          
+          if (ctx.callbackQuery && ctx.callbackQuery.message) {
+              await ctx.editMessageText(view.message, { parse_mode: 'Markdown', reply_markup: view.keyboard });
+          } else {
+              await ctx.reply(view.message, { parse_mode: 'Markdown', reply_markup: view.keyboard });
+          }
+      } catch (error) {
+          logger.error('Backfill stop error:', error);
+          ctx.answerCbQuery('Error stopping backfill');
       }
   });
 
@@ -1420,6 +1534,75 @@ ATH: ${ath.toFixed(2)}x
           await ctx.reply(view.message, { parse_mode: 'Markdown', reply_markup: view.keyboard });
       }
       await ctx.answerCbQuery();
+  });
+
+  bot.action('analytics_validate', async (ctx) => {
+      try {
+          await ctx.answerCbQuery('Running validation...');
+          await ctx.reply('🔍 *Running data validation...*\n_This may take a moment._', { parse_mode: 'Markdown' });
+          
+          const { runValidationCheck, formatValidationReport, autoFixIssues } = await import('../analytics/backfillValidation');
+          
+          const report = await runValidationCheck({
+              limit: 5000,
+              onlyActive: false
+          });
+          
+          const reportMsg = formatValidationReport(report);
+          
+          const keyboard = {
+              inline_keyboard: [
+                  [{ text: '🔄 Re-validate', callback_data: 'analytics_validate' }],
+                  [{ text: '🛠️ Auto-Fix Issues', callback_data: 'analytics_validate_fix' }],
+                  [{ text: '🔙 Back', callback_data: 'analytics' }, { text: '❌ Close', callback_data: 'delete_msg' }]
+              ]
+          };
+          
+          await ctx.reply(reportMsg, { parse_mode: 'Markdown', reply_markup: keyboard });
+          
+      } catch (error) {
+          logger.error('Validation action error:', error);
+          ctx.reply('❌ Failed to run validation.');
+      }
+  });
+
+  bot.action('analytics_validate_fix', async (ctx) => {
+      try {
+          await ctx.answerCbQuery('Running auto-fix...');
+          await ctx.reply('🛠️ *Running auto-fix...*', { parse_mode: 'Markdown' });
+          
+          const { runValidationCheck, autoFixIssues } = await import('../analytics/backfillValidation');
+          
+          // First get current issues
+          const report = await runValidationCheck({ limit: 5000 });
+          
+          // Auto-fix fixable issues
+          const fixResult = await autoFixIssues(report);
+          
+          let msg = `🛠️ *Auto-Fix Complete*\n\n`;
+          msg += `✅ Fixed: ${fixResult.fixedCount}\n`;
+          msg += `❌ Failed: ${fixResult.failedCount}\n\n`;
+          
+          if (fixResult.details.length > 0) {
+              msg += `📋 *Details:*\n`;
+              for (const detail of fixResult.details.slice(0, 10)) {
+                  msg += `• ${detail}\n`;
+              }
+          }
+          
+          const keyboard = {
+              inline_keyboard: [
+                  [{ text: '🔍 Re-validate', callback_data: 'analytics_validate' }],
+                  [{ text: '🔙 Back', callback_data: 'analytics' }]
+              ]
+          };
+          
+          await ctx.reply(msg, { parse_mode: 'Markdown', reply_markup: keyboard });
+          
+      } catch (error) {
+          logger.error('Auto-fix action error:', error);
+          ctx.reply('❌ Failed to run auto-fix.');
+      }
   });
 
   bot.action('leaderboards_menu', async (ctx) => {

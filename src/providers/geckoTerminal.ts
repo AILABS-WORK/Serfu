@@ -23,6 +23,7 @@ export class GeckoTerminalProvider {
    */
   async getOHLCV(mint: string, timeframe: 'day' | 'hour' | 'minute' = 'hour', limit = 100, retries = 3): Promise<OHLCV[]> {
     let lastError: any = null;
+    const overallStart = Date.now();
     
     for (let attempt = 0; attempt < retries; attempt++) {
       try {
@@ -30,22 +31,29 @@ export class GeckoTerminalProvider {
         if (attempt > 0) {
           // Longer delays for rate limits: 10s, 20s, 30s (increased from 5s, 10s, 15s)
           const delay = Math.min(10000 + (attempt - 1) * 10000, 30000);
-          logger.warn(`GeckoTerminal rate limited for ${mint.slice(0, 8)}... (attempt ${attempt + 1}/${retries}), waiting ${delay/1000}s`);
+          logger.warn(`[GeckoTerminal] Rate limited for ${mint.slice(0, 8)}... (attempt ${attempt + 1}/${retries}), waiting ${delay/1000}s`);
           await new Promise(resolve => setTimeout(resolve, delay));
         }
         
+        const poolStart = Date.now();
         let poolAddress = await this.getTopPool(mint);
+        const poolDuration = Date.now() - poolStart;
         
         // Fallback to DexScreener if Gecko lookup fails
+        let dexScreenerDuration = 0;
         if (!poolAddress) {
+          const dexStart = Date.now();
           poolAddress = await this.getPoolFromDexScreener(mint);
+          dexScreenerDuration = Date.now() - dexStart;
         }
 
         if (!poolAddress) {
-          logger.debug(`GeckoTerminal: No pool address found for ${mint}`);
+          const totalDuration = Date.now() - overallStart;
+          logger.debug(`[GeckoTerminal] No pool for ${mint.slice(0, 8)}... (pool: ${poolDuration}ms, dex: ${dexScreenerDuration}ms, total: ${totalDuration}ms)`);
           return [];
         }
 
+        const ohlcvStart = Date.now();
         const url = `${GECKO_BASE_URL}/networks/solana/pools/${poolAddress}/ohlcv/${timeframe}`;
         const response = await axios.get(url, {
           params: { limit },
@@ -55,12 +63,13 @@ export class GeckoTerminalProvider {
             'User-Agent': 'Serfu/1.0'
           }
         });
+        const ohlcvDuration = Date.now() - ohlcvStart;
 
         // Check for rate limit response
         if (response.status === 429) {
           const retryAfter = parseInt(response.headers['retry-after'] || '10', 10);
           const waitTime = Math.max(retryAfter, 10); // Minimum 10 seconds
-          logger.warn(`GeckoTerminal rate limited for ${mint.slice(0, 8)}..., waiting ${waitTime}s`);
+          logger.warn(`[GeckoTerminal] Rate limited for ${mint.slice(0, 8)}..., waiting ${waitTime}s`);
           if (attempt < retries - 1) {
             await new Promise(resolve => setTimeout(resolve, waitTime * 1000));
             continue; // Retry after rate limit delay
@@ -73,7 +82,8 @@ export class GeckoTerminalProvider {
         const list = response.data?.data?.attributes?.ohlcv_list;
         
         if (!Array.isArray(list)) {
-          logger.debug(`GeckoTerminal: Invalid response format for ${mint}`);
+          const totalDuration = Date.now() - overallStart;
+          logger.debug(`[GeckoTerminal] Invalid response for ${mint.slice(0, 8)}... (pool: ${poolDuration}ms, ohlcv: ${ohlcvDuration}ms, total: ${totalDuration}ms)`);
           return [];
         }
 
@@ -86,8 +96,11 @@ export class GeckoTerminalProvider {
           volume: item[5]
         })).reverse(); // Gecko returns newest first, reverse to chronological
         
+        const totalDuration = Date.now() - overallStart;
         if (candles.length > 0) {
-          logger.debug(`GeckoTerminal: Successfully fetched ${candles.length} ${timeframe} candles for ${mint}`);
+          logger.debug(`[GeckoTerminal] ✓ ${mint.slice(0, 8)}...: ${candles.length} ${timeframe} candles (pool: ${poolDuration}ms, ohlcv: ${ohlcvDuration}ms, total: ${totalDuration}ms)`);
+        } else {
+          logger.debug(`[GeckoTerminal] ⚠️ ${mint.slice(0, 8)}...: 0 candles (pool: ${poolDuration}ms, ohlcv: ${ohlcvDuration}ms, total: ${totalDuration}ms)`);
         }
         
         return candles;
@@ -100,30 +113,33 @@ export class GeckoTerminalProvider {
         if (isRateLimit && attempt < retries - 1) {
           const retryAfter = parseInt(error.response?.headers?.['retry-after'] || '15', 10); // Default to 15s if not specified
           const backoffMs = Math.max(retryAfter * 1000, 15000); // Minimum 15s, use retry-after if longer
-          logger.warn(`GeckoTerminal rate limited for ${mint.slice(0, 8)}... (attempt ${attempt + 1}/${retries}), waiting ${backoffMs/1000}s`);
+          logger.warn(`[GeckoTerminal] Rate limited for ${mint.slice(0, 8)}... (attempt ${attempt + 1}/${retries}), waiting ${backoffMs/1000}s`);
           await new Promise(resolve => setTimeout(resolve, backoffMs));
           continue; // Retry
         }
         
         if (isTimeout && attempt < retries - 1) {
-          logger.debug(`GeckoTerminal timeout for ${mint} (attempt ${attempt + 1}/${retries}), retrying...`);
+          logger.debug(`[GeckoTerminal] Timeout for ${mint.slice(0, 8)}... (attempt ${attempt + 1}/${retries}), retrying...`);
           continue; // Retry
         }
         
         // Log error on final attempt
         if (attempt === retries - 1) {
-          logger.error(`GeckoTerminal OHLCV error for ${mint} after ${retries} attempts:`, error.response?.status || error.message || error);
+          const totalDuration = Date.now() - overallStart;
+          logger.error(`[GeckoTerminal] OHLCV error for ${mint.slice(0, 8)}... after ${retries} attempts in ${totalDuration}ms:`, error.response?.status || error.message || error);
         }
       }
     }
     
     // All retries failed
-    logger.error(`GeckoTerminal OHLCV failed for ${mint} after ${retries} attempts:`, lastError);
+    const totalDuration = Date.now() - overallStart;
+    logger.error(`[GeckoTerminal] OHLCV failed for ${mint.slice(0, 8)}... after ${retries} attempts in ${totalDuration}ms:`, lastError?.message || lastError);
     return [];
   }
 
   private async getTopPool(mint: string, retries = 2): Promise<string | null> {
     let lastError: any = null;
+    const start = Date.now();
     
     for (let attempt = 0; attempt < retries; attempt++) {
       try {
@@ -146,25 +162,31 @@ export class GeckoTerminalProvider {
         if (response.status === 429) {
           const retryAfter = parseInt(response.headers['retry-after'] || '2', 10);
           if (attempt < retries - 1) {
+            logger.debug(`[GeckoTerminal] Pool lookup rate limited for ${mint.slice(0, 8)}..., waiting ${retryAfter}s`);
             await new Promise(resolve => setTimeout(resolve, retryAfter * 1000));
             continue;
           }
         }
 
         const pools = response.data?.data;
+        const duration = Date.now() - start;
         if (pools && pools.length > 0) {
+          logger.debug(`[GeckoTerminal] Pool found for ${mint.slice(0, 8)}...: ${pools[0].attributes.address.slice(0, 8)}... in ${duration}ms`);
           return pools[0].attributes.address;
         }
+        logger.debug(`[GeckoTerminal] No pools found for ${mint.slice(0, 8)}... in ${duration}ms`);
         return null;
       } catch (error: any) {
         lastError = error;
         if (error.response?.status === 429 && attempt < retries - 1) {
           const retryAfter = parseInt(error.response?.headers?.['retry-after'] || '2', 10);
+          logger.debug(`[GeckoTerminal] Pool lookup rate limited for ${mint.slice(0, 8)}..., waiting ${retryAfter}s`);
           await new Promise(resolve => setTimeout(resolve, retryAfter * 1000));
           continue;
         }
         if (attempt === retries - 1) {
-          logger.debug(`GeckoTerminal getTopPool failed for ${mint}:`, error.response?.status || error.message);
+          const duration = Date.now() - start;
+          logger.debug(`[GeckoTerminal] Pool lookup failed for ${mint.slice(0, 8)}... in ${duration}ms:`, error.response?.status || error.message);
         }
       }
     }
@@ -172,6 +194,7 @@ export class GeckoTerminalProvider {
   }
 
   private async getPoolFromDexScreener(mint: string): Promise<string | null> {
+    const start = Date.now();
     try {
       const url = `${DEXSCREENER_BASE_URL}/${mint}`;
       const response = await axios.get(url, {
@@ -182,21 +205,23 @@ export class GeckoTerminalProvider {
         }
       });
       const pairs = response.data?.pairs;
+      const duration = Date.now() - start;
       
       if (pairs && pairs.length > 0) {
         // Return the address of the most liquid pair (sort by liquidity if available)
         const sortedPairs = pairs.sort((a: any, b: any) => (b.liquidity?.usd || 0) - (a.liquidity?.usd || 0));
         const poolAddress = sortedPairs[0].pairAddress || sortedPairs[0].address;
         if (poolAddress) {
-          logger.debug(`Found DexScreener pool for ${mint}: ${poolAddress}`);
+          logger.debug(`[DexScreener] Pool found for ${mint.slice(0, 8)}...: ${poolAddress.slice(0, 8)}... in ${duration}ms`);
           return poolAddress;
         }
         return sortedPairs[0].pairAddress || null;
       }
-      logger.debug(`No DexScreener pairs found for ${mint}`);
+      logger.debug(`[DexScreener] No pools found for ${mint.slice(0, 8)}... in ${duration}ms`);
       return null;
     } catch (error: any) {
-      logger.debug(`DexScreener lookup failed for ${mint}:`, error.message || error);
+      const duration = Date.now() - start;
+      logger.debug(`[DexScreener] Lookup failed for ${mint.slice(0, 8)}... in ${duration}ms:`, error.message || error);
       return null;
     }
   }

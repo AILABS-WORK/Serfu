@@ -1,0 +1,321 @@
+How is it different from regular Balance APIs?
+Real-time streaming of all balance changes
+Pre/post balance values for every change
+Balance change reason codes explain why balance changed
+Track all addresses in transactions automatically
+Historical data with complete change history
+Support for native currency, tokens, and NFTs
+Real-time Data & Streaming
+Get live BSC balance updates through our streaming solutions:
+
+GraphQL Subscriptions: Convert any query to a live stream by changing query to subscription
+Kafka Streaming: High-throughput streaming for enterprise applications
+See examples and code snippets here for GraphQL subscription implementation, and learn about Kafka streaming for high-volume use cases.
+
+BSC Transaction Balance Tracker APIs
+BSC Transaction Balance Tracker
+The core Transaction Balance Tracker API provides real-time balance updates for all addresses involved in transactions on the BSC network, including detailed information about the reason for each balance change. Track native ETH, ERC-20 tokens, and NFTs with pre/post balances, USD values, and balance change reason codes.
+
+Key Features:
+
+Subscribe to all transaction balances in real-time
+Filter by specific addresses or tokens
+Get balance change reason codes for native currency
+Track ERC-20, ERC-721, and ERC-1155 tokens
+Access pre and post balance values
+BSC Validator Balance Tracker
+Track BSC validator balances, staking rewards, and withdrawals from the beacon chain. Monitor validator activity including block rewards, withdrawal events, and transaction fee rewards.
+
+Key Features:
+
+Track validator staking rewards (Code 2)
+Monitor beacon chain withdrawals (Code 3)
+Track transaction fee rewards (Code 5)
+Filter by specific validator addresses
+Real-time validator balance updates
+BSC Miner Balance Tracker
+Monitor BSC miner balances, mining rewards, uncle block rewards, and transaction fee rewards. Track historical and real-time mining activity across the BSC network.
+
+Key Features:
+
+Track block mining rewards (Code 2)
+Monitor uncle block rewards (Code 1)
+Track transaction fee rewards (Code 5)
+Filter by specific miner addresses
+Historical mining reward data
+BSC MEV Balance Tracker
+Track MEV (Maximal Extractable Value) related balance changes including transaction fee rewards, block builder rewards, and other MEV extraction activities. Monitor MEV bots and block builders in real-time.
+
+Key Features:
+
+Track transaction fee rewards (Code 5)
+Monitor block builder rewards
+Filter by MEV bot or builder addresses
+Track large MEV transactions
+Aggregate MEV reward statistics
+BSC Self-Destruct Balance Tracker
+Monitor contract self-destruct events, ephemeral contracts (like MEV bots), and security incidents. Track contracts that self-destruct and addresses that receive funds from self-destructed contracts.
+
+Key Features:
+
+Track contract self-destruct events (Codes 12, 13, 14)
+Monitor ephemeral MEV contracts
+Track MEV builder payments
+Security incident monitoring
+Aggregate self-destruct statistics
+Balance Change Reason Codes
+The Transaction Balance Tracker API uses numeric codes to indicate why a balance changed. These codes are only available for native currency (ETH) transactions, not for fungible tokens or NFTs.
+
+Code	Reason	Description
+0	BalanceChangeUnspecified	Unspecified balance change reason
+1	BalanceIncreaseRewardMineUncle	Reward for mining an uncle block
+2	BalanceIncreaseRewardMineBlock	Reward for mining a block
+3	BalanceIncreaseWithdrawal	ETH withdrawn from the beacon chain
+4	BalanceIncreaseGenesisBalance	ETH allocated at the genesis block
+5	BalanceIncreaseRewardTransactionFee	Transaction tip increasing block builder's balance
+6	BalanceDecreaseGasBuy	ETH spent to purchase gas for transaction execution
+7	BalanceIncreaseGasReturn	ETH returned for unused gas at the end of execution
+8	BalanceIncreaseDaoContract	ETH sent to the DAO refund contract
+9	BalanceDecreaseDaoAccount	ETH taken from a DAO account to be moved to the refund contract
+10	BalanceChangeTransfer	ETH transferred via a call
+11	BalanceChangeTouchAccount	Transfer of zero value to touch-create an account
+12	BalanceIncreaseSelfdestruct	Balance added to the recipient as indicated by a self-destructing account
+13	BalanceDecreaseSelfdestruct	Balance deducted from a contract due to self-destruct
+14	BalanceDecreaseSelfdestructBurn	ETH sent to an already self-destructed account within the same transaction
+15	BalanceChangeRevert	Balance reverted back to a previous value due to call failure
+Field Availability by Currency Type
+The availability of fields in the TokenBalance object depends on the type of currency being tracked:
+
+Native Currency (ETH)
+Available: BalanceChangeReasonCode, PreBalance, PostBalance, PostBalanceInUSD
+Not Provided: TotalSupply, TokenOwnership
+Fungible Tokens (ERC-20)
+Available: PostBalance, PostBalanceInUSD, TotalSupply, TotalSupplyInUSD
+Not Provided: PreBalance, BalanceChangeReasonCode, TokenOwnership
+NFTs (ERC-721 / ERC-1155)
+Available: PostBalance, TokenOwnership
+Not Provided: PreBalance, BalanceChangeReasonCode, TotalSupply, TotalSupplyInUSD, PostBalanceInUSD
+Edit this page
+
+BSC Transaction Balance Tracker
+The BSC Transaction Balance Tracker API provides real-time balance updates for all addresses involved in transactions on the BSC blockchain, including detailed information about the reason for each balance change.
+
+Subscribe to All Transaction Balances
+This subscription provides real-time balance updates for all addresses involved in transactions on the BSC network. Try the API here.
+
+subscription {
+  EVM(network: bsc) {
+    TransactionBalances {
+      Block {
+        Time
+      }
+      TokenBalance {
+        Currency {
+          Symbol
+          HasURI
+          SmartContract
+        }
+        PreBalance
+        PostBalance
+        Address
+        BalanceChangeReasonCode
+        TotalSupplyInUSD
+        TotalSupply
+        TokenOwnership {
+          Owns
+          Id
+        }
+        PostBalanceInUSD
+      }
+      Transaction {
+        Hash
+      }
+    }
+  }
+}
+
+Subscribe to Transaction Balances for a Specific Address
+This subscription filters transaction balances for a specific address. Try the API here.
+
+subscription {
+  EVM(network: bsc) {
+    TransactionBalances(
+      where: { TokenBalance: { Address: { is: "0xYourAddressHere" } } }
+    ) {
+      Block {
+        Time
+      }
+      TokenBalance {
+        Currency {
+          Symbol
+          HasURI
+          SmartContract
+        }
+        PreBalance
+        PostBalance
+        Address
+        BalanceChangeReasonCode
+        TotalSupplyInUSD
+        TotalSupply
+        TokenOwnership {
+          Owns
+          Id
+        }
+        PostBalanceInUSD
+      }
+      Transaction {
+        Hash
+      }
+    }
+  }
+}
+
+Latest native balance of an address
+This API gives you latest balance of a specific address (here in example 0x238a358808379702088667322f80ac48bad5e6c4) for the native currency. Try it out here.
+
+{
+  EVM(network: bsc) {
+    TransactionBalances(
+      limit: { count: 1 }
+      orderBy: { descending: Block_Time }
+      where: {
+        TokenBalance: {
+          Address: { is: "0x238a358808379702088667322f80ac48bad5e6c4" }
+          Currency: { Native: true }
+        }
+      }
+    ) {
+      Block {
+        Time
+      }
+      TokenBalance {
+        Currency {
+          Symbol
+          HasURI
+          SmartContract
+        }
+        PreBalance
+        PostBalance
+        Address
+        BalanceChangeReasonCode
+        TotalSupplyInUSD
+        TotalSupply
+        TokenOwnership {
+          Owns
+          Id
+        }
+        PostBalanceInUSD
+      }
+      Transaction {
+        Hash
+      }
+    }
+  }
+}
+
+Latest balance of an address for a specific token
+This API gives you latest balance of a specific address (here in example 0x238a358808379702088667322f80ac48bad5e6c4) for a specific token (here we have taken example of USDC 0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48). Try it out here.
+
+{
+  EVM(network: bsc) {
+    TransactionBalances(
+      limit: { count: 1 }
+      orderBy: { descending: Block_Time }
+      where: {
+        TokenBalance: {
+          Address: { is: "0x238a358808379702088667322f80ac48bad5e6c4" }
+          Currency: {
+            SmartContract: { is: "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48" }
+          }
+        }
+      }
+    ) {
+      Block {
+        Time
+      }
+      TokenBalance {
+        Currency {
+          Symbol
+          HasURI
+          SmartContract
+        }
+        PreBalance
+        PostBalance
+        Address
+        BalanceChangeReasonCode
+        TotalSupplyInUSD
+        TotalSupply
+        TokenOwnership {
+          Owns
+          Id
+        }
+        PostBalanceInUSD
+      }
+      Transaction {
+        Hash
+      }
+    }
+  }
+}
+
+Latest liquidity of EVM Pool
+This API gives you latest liquidity of a BSC Pool. Try it out here.
+
+{
+  EVM(network: bsc) {
+    TransactionBalances(
+      limit: { count: 2 }
+      limitBy: { by: TokenBalance_Currency_SmartContract, count: 1 }
+      orderBy: { descendingByField: "TokenBalance_PostBalanceInUSD" }
+      where: {
+        TokenBalance: {
+          Address: { is: "YourPoolAddress" }
+        }
+      }
+    ) {
+      TokenBalance {
+        Currency {
+          Symbol
+          HasURI
+          SmartContract
+        }
+        PostBalance(maximum: Block_Time)
+        PostBalanceInUSD(maximum: Block_Time)
+        Address
+      }
+    }
+  }
+}
+
+Latest Supply and Marketcap of a specific token on EVM
+This API gives you latest Supply and Marketcap of a token on BSC. Try it out here.
+
+{
+  EVM(network: bsc) {
+    TransactionBalances(
+      limit: { count: 1 }
+      orderBy: { descending: Block_Time }
+      where: {
+        TokenBalance: {
+          Currency: {
+            SmartContract: { is: "YourTokenAddress" }
+          }
+        }
+      }
+    ) {
+      Block {
+        Time
+        Number
+      }
+      TokenBalance {
+        Currency {
+          Symbol
+          HasURI
+          SmartContract
+        }
+        TotalSupplyInUSD
+        TotalSupply
+      }
+    }
+  }
+}

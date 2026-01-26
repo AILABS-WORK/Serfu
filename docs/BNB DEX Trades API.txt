@@ -1,0 +1,267 @@
+BNB DEX Trades API
+Bitquery provides BSC DEX trade data through APIs, Streams, and Data Dumps.
+The examples below show how to access real-time and historical trade data across BSC-based DEXs using GraphQL APIs and subscriptions.
+
+If you're looking for other data points or have integration questions, reach out to support.
+
+Need zero-latency BSC trade data?
+Explore our Kafka Streams and request a trial ➤
+
+You may also be interested in:
+
+FourMeme APIs ➤
+BNB Uniswap API ➤
+BNB DEX Trades API ➤
+note
+To query or stream data via GraphQL outside the Bitquery IDE, you must generate an API access token.
+
+Follow these steps: How to generate Bitquery API token ➤
+
+Subscribe to Latest BSC Trades
+This subscription will return information about the most recent trades executed on BSC's DEX platforms. You can find the query here
+
+subscription {
+  EVM(network: bsc) {
+    DEXTrades {
+      Block {
+        Time
+      }
+      Trade {
+        Dex {
+          ProtocolName
+          ProtocolFamily
+          SmartContract
+        }
+        Buy {
+          Amount
+          Buyer
+          Seller
+          Currency {
+            Decimals
+            Fungible
+            HasURI
+            Name
+            ProtocolName
+            SmartContract
+            Symbol
+          }
+          OrderId
+        }
+        Sell {
+          Buyer
+          Seller
+          Currency {
+            Decimals
+            Fungible
+            HasURI
+            Name
+            ProtocolName
+            SmartContract
+            Symbol
+          }
+        }
+      }
+    }
+  }
+}
+
+
+
+Latest Trades of a Token
+This query will fetch you latest trades for a token for the BSC network. You can test the query here.
+
+query LatestTrades($network: evm_network, $token: String) {
+  EVM(network: $network) {
+    DEXTradeByTokens(
+      orderBy: {descending: Block_Time}
+      limit: {count: 50}
+      where: {Trade: {Currency: {SmartContract: {is: $token}}, Price: {gt: 0}}}
+    ) {
+      Block {
+        allTime: Time
+      }
+      Trade {
+        Dex {
+          OwnerAddress
+          ProtocolFamily
+          ProtocolName
+        }
+        AmountInUSD
+        Buyer
+        Seller
+        Side {
+          Type
+          Buyer
+          Seller
+        }
+        Price
+        Amount
+        Side {
+          Currency {
+            Symbol
+            SmartContract
+            Name
+          }
+          AmountInUSD
+          Amount
+        }
+      }
+    }
+  }
+}
+{
+  "network": "bsc",
+  "token": "0x7130d2a12b9bcbfae4f2634d864a1ee1ce3ead9c"
+}
+
+image
+
+You can check the data here on DEXrabbit.
+
+Total Bought, Total Sold, Avg Sell price, Last Active Trade of a specific token by an Address
+Get total bought, total sold, average sell price, and last active trade time for a specific token by a trader. Test the query here
+
+query MyQuery($trader: String, $token: String) {
+  EVM(dataset: realtime, network: bsc) {
+    DEXTradeByTokens(
+      where: {
+        Trade: {
+          Currency: { SmartContract: { is: $token } }
+        }
+        any: [
+          { Trade: { Buyer: { is: $trader } } }
+          { Trade: { Seller: { is: $trader } } }
+        ]
+      }
+    ) {
+      Block {
+        last_active_time: Time(maximum: Block_Time)
+      }
+      total_buy: sum(
+        of: Trade_Amount
+        if: { Trade: { Side: { Type: { is: buy } } } }
+      )
+      total_sell: sum(
+        of: Trade_Amount
+        if: { Trade: { Side: { Type: { is: sell } } } }
+      )
+      avg_sell_price_usd: average(
+        of: Trade_PriceInUSD
+        if: { Trade: { Side: { Type: { is: sell } } } }
+      )
+    }
+  }
+}
+
+
+{
+  "trader": "0xc5C2653d38E241D62F96A4fB8f8497b6126F21dC",
+  "token": "0x49d870B1d21D00c775DD03110Ef4c8FeF4Fd4444"
+}
+
+Top Traders of a token
+This query will fetch you top traders of a token for the BSC network. You can test the query here.
+
+query topTraders($network: evm_network, $token: String) {
+  EVM(network: $network) {
+    DEXTradeByTokens(
+      orderBy: {descendingByField: "volumeUsd"}
+      limit: {count: 100}
+      where: {Trade: {Currency: {SmartContract: {is: $token}}}}
+    ) {
+      Trade {
+        Buyer
+        Dex {
+          OwnerAddress
+          ProtocolFamily
+          ProtocolName
+        }
+      }
+      bought: sum(of: Trade_Amount, if: {Trade: {Side: {Type: {is: buy}}}})
+      sold: sum(of: Trade_Amount, if: {Trade: {Side: {Type: {is: sell}}}})
+      volume: sum(of: Trade_Amount)
+      volumeUsd: sum(of: Trade_Side_AmountInUSD)
+    }
+  }
+}
+{
+  "network": "bsc",
+  "token": "0x7130d2a12b9bcbfae4f2634d864a1ee1ce3ead9c"
+}
+
+image
+
+You can check the data here on DEXrabbit.
+
+Top Traders by profit in last 7 days
+This query will fetch you top traders by profit in the last 7 days for the BSC network. You can test the query here.
+
+query TopTraders($network: evm_network) {
+  EVM(network: $network) {
+    DEXTradeByTokens(
+      orderBy: {descendingByField: "profit"}
+      limit: {count: 100}
+      where: {Trade: {Side: {Amount: {gt: "0"}}} Block:{Time:{since_relative:{days_ago:7}}}}
+    ) {
+      Trade {
+        Buyer
+      }
+      profit: calculate(expression:"$sold-$bought")
+      bought: sum(of: Trade_AmountInUSD, if: {Trade: {Side: {Type: {is: buy}}}})
+      sold: sum(of: Trade_AmountInUSD, if: {Trade: {Side: {Type: {is: sell}}}})
+      volumeUsd: sum(of: Trade_Side_AmountInUSD)
+    }
+  }
+}
+{
+  "network": "bsc"
+}
+
+Get all Trading Pairs data of a specific token
+This query will fetch you all the trading pairs of a token for the BSC network. You can test the query here.
+
+query tokenTrades($network: evm_network, $token: String, $time_10min_ago: DateTime, $time_1h_ago: DateTime, $time_3h_ago: DateTime) {
+  EVM(network: $network) {
+    DEXTradeByTokens(
+      orderBy: {descendingByField: "usd"}
+      where: {Trade: {Currency: {SmartContract: {is: $token}}}, Block: {Time: {after: $time_3h_ago}}}
+      limit: {count: 200}
+    ) {
+      Trade {
+        Currency {
+          Symbol
+          Name
+          SmartContract
+          Fungible
+        }
+        Side {
+          Currency {
+            Symbol
+            Name
+            SmartContract
+          }
+        }
+        price_usd: PriceInUSD(maximum: Block_Number)
+        price_last: Price(maximum: Block_Number)
+        price_10min_ago: Price(
+          maximum: Block_Number
+          if: {Block: {Time: {before: $time_10min_ago}}}
+        )
+        price_1h_ago: Price(
+          maximum: Block_Number
+          if: {Block: {Time: {before: $time_1h_ago}}}
+        )
+        price_3h_ago: PriceInUSD(minimum: Block_Number)
+      }
+      usd: sum(of: Trade_AmountInUSD)
+      count
+    }
+  }
+}
+{
+  "network": "bsc",
+  "token": "0x7130d2a12b9bcbfae4f2634d864a1ee1ce3ead9c",
+  "time_10min_ago": "2024-09-22T14:36:55Z",
+  "time_1h_ago": "2024-09-22T13:46:55Z",
+  "time_3h_ago": "2024-09-22T11:46:55Z"
+}

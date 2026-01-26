@@ -133,6 +133,24 @@ Aggregation Job:
 - Recompute group/user/category metrics per window (7D/30D/ALL).
 - Uses normalized metrics only (no provider calls).
 
+**NEW: Full ATH Backfill System** (`athBackfill.ts`):
+- Triggered from Analytics → "Full ATH Backfill"
+- Deduplicates signals by mint (one OHLCV fetch per unique mint)
+- Smart OHLCV resolution: minutes → hours → days based on time range
+- Progress tracking with ETA, phase indicators, and error counts
+- Can be stopped/paused from UI
+
+**NEW: Live ATH Refresh Job** (every 15 seconds):
+- Uses Jupiter batch price API for current prices
+- Updates ATH if current price exceeds stored ATH
+- Only runs when backfill is not active
+- Keeps ATH values current without OHLCV calls
+
+**NEW: Backfill Validation** (`backfillValidation.ts`):
+- Validates ATH data quality (ATH >= entry, valid times, etc.)
+- Health score calculation (0-100%)
+- Auto-fix for common issues (ATH below entry)
+
 ---
 
 ## 8) Implementation Checklist

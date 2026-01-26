@@ -106,6 +106,7 @@ export const enrichSignalMetrics = async (
 ): Promise<void> => {
     const STALE_METRICS_MS = 5 * 60 * 1000; // 5 minutes
     const now = Date.now();
+    const functionStart = Date.now();
 
     // Check if we need to calculate
     const metricsUncomputed = !!sig.metrics
@@ -115,8 +116,13 @@ export const enrichSignalMetrics = async (
         && (sig.metrics.athPrice ?? 0) <= 0;
     if (!force && sig.metrics?.updatedAt && !metricsUncomputed) {
         const age = now - sig.metrics.updatedAt.getTime();
-        if (age < STALE_METRICS_MS) return; // Metrics are fresh enough
+        if (age < STALE_METRICS_MS) {
+            logger.debug(`[Metrics] Skip ${sig.mint.slice(0, 8)}...: fresh (age ${Math.round(age/1000)}s)`);
+            return; // Metrics are fresh enough
+        }
     }
+
+    logger.debug(`[Metrics] ▶️ Start ${sig.mint.slice(0, 8)}... (force=${force}, uncomputed=${metricsUncomputed})`);
 
     try {
         // OPTIMIZATION: Skip OHLCV if we have no activity since last update (volume check)
@@ -190,6 +196,7 @@ export const enrichSignalMetrics = async (
         const hasBaseline = (sig.metrics?.athPrice ?? 0) > 0 && !!sig.metrics?.athAt;
         const useIncremental = !!lastOhlcvAt && hasBaseline;
 
+        const ohlcvFetchStart = Date.now();
         logger.debug(`[Metrics] Starting GeckoTerminal OHLCV fetch for ${sig.mint.slice(0, 8)}... (entry: ${entryPriceValue}, current: ${currentPrice}, incremental=${useIncremental})`);
 
         const fetchStart = useIncremental ? lastOhlcvAt! : entryTimestamp;
@@ -219,6 +226,9 @@ export const enrichSignalMetrics = async (
             }
         }
 
+        const ohlcvFetchDuration = Date.now() - ohlcvFetchStart;
+        logger.debug(`[Metrics] 📊 OHLCV fetched for ${sig.mint.slice(0, 8)}...: ${ohlcv.length} candles in ${ohlcvFetchDuration}ms (timeframe: ${timeframe})`);
+        
         const lastCandleAt = ohlcv.length > 0 ? ohlcv[ohlcv.length - 1].timestamp : null;
         const incrementalCandles = useIncremental && lastOhlcvAt
             ? ohlcv.filter(c => c.timestamp > lastOhlcvAt)
@@ -431,9 +441,13 @@ export const enrichSignalMetrics = async (
                 (sig.metrics as any).maxDrawdownPrice = maxDrawdownPrice;
                 (sig.metrics as any).maxDrawdownAt = new Date(maxDrawdownAt);
             }
+            
+            const totalDuration = Date.now() - functionStart;
+            logger.debug(`[Metrics] ✅ Enriched ${sig.mint.slice(0, 8)}...: ATH=${athMultiple.toFixed(2)}x, DD=${maxDrawdown.toFixed(1)}% in ${totalDuration}ms (ohlcv: ${ohlcvFetchDuration}ms)`);
         }
     } catch (err) {
-        logger.debug(`Error enriching signal ${sig.id}: ${err}`);
+        const totalDuration = Date.now() - functionStart;
+        logger.debug(`[Metrics] ❌ Error enriching ${sig.mint.slice(0, 8)}... after ${totalDuration}ms: ${err}`);
     }
 };
 

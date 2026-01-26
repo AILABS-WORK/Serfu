@@ -1,0 +1,659 @@
+Four Meme Mempool API - Real-Time Pre-Confirmation Monitoring
+Monitor Four Meme memecoin activity in the BSC mempool before transactions are confirmed on-chain. Track pending trades, new token launches, bonding curve progress, and detect MEV opportunities with Bitquery's ultra-low latency Mempool APIs and Kafka Streams.
+
+Get ahead of the market by monitoring mempool activity for Four Meme tokens before they hit the blockchain. Perfect for MEV bots, sniper bots, and advanced trading strategies.
+
+note
+To query or stream data via GraphQL outside the Bitquery IDE, you need to generate an API access token.
+
+Follow the steps here to create one: How to generate Bitquery API token ➤
+
+Table of Contents
+1. How Mempool Monitoring Works
+2. Mempool Trading & Market Data
+Stream Four Meme Trades in Mempool ➤
+Monitor Specific Token Trades in Mempool ➤
+Track Large Buys in Mempool ➤
+Track Large Sells in Mempool ➤
+3. Token Creation & Launches
+Stream Four Meme Token Creation in Mempool ➤
+Monitor Token Launches with Metadata ➤
+4. Liquidity & Migrations
+Track Liquidity Add Events in Mempool ➤
+Monitor Token Migrations to PancakeSwap ➤
+Track Bonding Curve Completion in Mempool ➤
+5. Advanced Mempool Strategies
+Monitor Wallet Activity in Mempool ➤
+Track Smart Money Trades in Mempool ➤
+Detect Potential Rug Pulls in Mempool ➤
+6. Kafka Streams for Ultra-Low Latency
+7. Use Cases & Trading Strategies
+How Mempool Monitoring Works
+When a transaction is broadcasted to the BSC network but not yet included in a block, Bitquery captures and processes it through mempool monitoring:
+
+Transaction Simulation: The transaction is executed in the EVM using the current pending block context
+Data Extraction: The system captures the simulated receipt, trace, and event logs
+Real-time Streaming: Data is made available instantly through GraphQL subscriptions and Kafka streams
+Block Context: Each batch of simulated transactions includes the block header used as execution context
+Why Monitor Mempool?
+
+First-mover Advantage: Detect opportunities before they're confirmed on-chain
+MEV Opportunities: Identify profitable front-running and back-running opportunities
+Sniper Bots: Be first to trade newly launched tokens
+Risk Management: Detect large sells or potential rug pulls before execution
+Market Intelligence: Monitor smart money and whale activity in real-time
+tip
+We provide both GraphQL streams (easy to use) and Kafka streams (ultra-low latency) for mempool monitoring. For production MEV and sniper bots, we recommend Kafka streams.
+
+Read more: Kafka Protobuf Streams for EVM ➤
+
+Mempool Trading & Market Data
+Stream Four Meme Trades in Mempool - Detect Early
+Monitor all Four Meme DEX trades in real-time as they appear in the mempool, before they are confirmed on-chain. This allows you to detect trading opportunities early and execute front-run or back-run strategies.
+
+Run Stream ➤
+
+Click to expand GraphQL query
+subscription {
+  EVM(network: bsc, mempool: true) {
+    DEXTrades(
+      where: { Trade: { Dex: { ProtocolName: { is: "fourmeme_v1" } } } }
+    ) {
+      Trade {
+        Buy {
+          Buyer
+          Currency {
+            Name
+            Symbol
+            SmartContract
+          }
+          Amount
+          Price
+          PriceInUSD
+        }
+        Sell {
+          Seller
+          Currency {
+            Name
+            Symbol
+            SmartContract
+          }
+          Amount
+          Price
+          PriceInUSD
+        }
+        Dex {
+          ProtocolName
+          ProtocolFamily
+        }
+      }
+      Transaction {
+        Hash
+        From
+        To
+        Gas
+        GasPrice
+      }
+      Block {
+        Time
+      }
+    }
+  }
+}
+
+Monitor Specific Token Trades in Mempool
+Track pending trades for a specific Four Meme token. Perfect for monitoring price impact before large trades execute.
+
+Run Stream ➤
+
+Click to expand GraphQL query
+subscription($token: String) {
+  EVM(network: bsc mempool:true) {
+    DEXTrades(
+      where: {Trade:{Dex:{ProtocolFamily:{is:"FourMeme"}}} any:[{Trade:{Buy:{Currency:{SmartContract:{is:$token}}}}},{Trade:{Sell:{Currency:{SmartContract:{is:$token}}}}}]}
+    ) {
+      Block{
+        Time
+      }
+      Trade {
+        Buy {
+          Buyer
+          Currency {
+            Name
+            Symbol
+            SmartContract
+          }
+          Amount
+          Price
+          PriceInUSD
+        }
+        Dex{
+          ProtocolFamily
+        }
+        Sell {
+          Seller
+          Currency {
+            Name
+            Symbol
+            SmartContract
+          }
+          Amount
+          PriceInUSD
+        }
+      }
+      Transaction {
+        Hash
+        From
+        Gas
+        GasPrice
+      }
+    }
+  }
+}
+{
+  "token": "0x444416a582466fdae0f2fcdf0a859675f8ff6e9f"
+}
+
+
+Track Large Buys in Mempool
+Monitor large buy orders in the mempool to detect whale activity and potential price pumps.
+
+Run Stream ➤
+
+Click to expand GraphQL query
+subscription {
+  EVM(network: bsc, mempool: true) {
+    DEXTrades(
+      where: {
+        Trade: {
+          Dex: { ProtocolName: { is: "fourmeme_v1" } }
+          Buy: { AmountInUSD: { gt: "1000" } }
+        }
+      }
+    ) {
+      Trade {
+        Buy {
+          Buyer
+          Currency {
+            Name
+            Symbol
+            SmartContract
+          }
+          Amount
+          AmountInUSD
+          Price
+          PriceInUSD
+        }
+        Sell {
+          Currency {
+            Name
+            Symbol
+          }
+          Amount
+        }
+      }
+      Transaction {
+        Hash
+        From
+        Gas
+        GasPrice
+      }
+      Block {
+        Time
+      }
+    }
+  }
+}
+
+Track Large Sells in Mempool
+Detect large sell orders before they execute to protect against price dumps.
+
+Run Stream ➤
+
+Click to expand GraphQL query
+subscription {
+  EVM(network: bsc, mempool: true) {
+    DEXTrades(
+      where: {
+        Trade: {
+          Dex: { ProtocolName: { is: "fourmeme_v1" } }
+          Sell: { AmountInUSD: { gt: "1000" } }
+        }
+      }
+    ) {
+      Trade {
+        Buy {
+          Currency {
+            Name
+            Symbol
+          }
+          Amount
+        }
+        Sell {
+          Seller
+          Currency {
+            Name
+            Symbol
+            SmartContract
+          }
+          Amount
+          AmountInUSD
+          Price
+          PriceInUSD
+        }
+      }
+      Transaction {
+        Hash
+        From
+        Gas
+        GasPrice
+      }
+    }
+  }
+}
+
+Token Creation & Launches
+Stream Four Meme Token Creation in Mempool - Be First
+Track new Four Meme token creations in the mempool instantly. Be the absolute first to know when a new token is being created, before it's confirmed on-chain. Critical for sniper bots.
+
+Run Stream ➤
+
+Click to expand GraphQL query
+subscription {
+  EVM(network: bsc, mempool: true) {
+    Events(
+      where: {
+        Transaction: {
+          To: { is: "0x5c952063c7fc8610ffdb798152d69f0b9550762b" }
+        }
+        Log: { Signature: { Name: { is: "TokenCreate" } } }
+      }
+    ) {
+      Log {
+        Signature {
+          Name
+          Signature
+        }
+      }
+      Arguments {
+        Value {
+          ... on EVM_ABI_Integer_Value_Arg {
+            integer
+          }
+          ... on EVM_ABI_Boolean_Value_Arg {
+            bool
+          }
+          ... on EVM_ABI_Bytes_Value_Arg {
+            hex
+          }
+          ... on EVM_ABI_BigInt_Value_Arg {
+            bigInteger
+          }
+          ... on EVM_ABI_Address_Value_Arg {
+            address
+          }
+          ... on EVM_ABI_String_Value_Arg {
+            string
+          }
+        }
+        Name
+        Type
+      }
+      Transaction {
+        Hash
+        To
+        From
+        Gas
+        GasPrice
+      }
+      Block {
+        Time
+      }
+    }
+  }
+}
+
+Monitor Token Launches with Metadata
+Get complete token information including name, symbol, and creator details from mempool.
+
+Run Stream ➤
+
+Click to expand GraphQL query
+subscription {
+  EVM(network: bsc, mempool: true) {
+    Events(
+      where: {
+        Transaction: {
+          To: { is: "0x5c952063c7fc8610ffdb798152d69f0b9550762b" }
+        }
+        Log: { Signature: { Name: { is: "TokenCreate" } } }
+      }
+    ) {
+      Arguments {
+        Name
+        Value {
+          ... on EVM_ABI_Address_Value_Arg {
+            address
+          }
+          ... on EVM_ABI_String_Value_Arg {
+            string
+          }
+          ... on EVM_ABI_BigInt_Value_Arg {
+            bigInteger
+          }
+        }
+      }
+      Transaction {
+        Hash
+        From
+      }
+      Block {
+        Time
+      }
+    }
+  }
+}
+
+Liquidity & Migrations
+Track Liquidity Add Events in Mempool
+Monitor when liquidity is being added to Four Meme tokens before confirmation. Important for detecting graduation events.
+
+Run Stream ➤
+
+Click to expand GraphQL query
+subscription {
+  EVM(network: bsc, mempool: true) {
+    Events(
+      where: {
+        LogHeader: {
+          Address: { is: "0x5c952063c7fc8610ffdb798152d69f0b9550762b" }
+        }
+        Log: { Signature: { Name: { is: "LiquidityAdded" } } }
+      }
+    ) {
+      Log {
+        Signature {
+          Name
+          Signature
+        }
+      }
+      Arguments {
+        Name
+        Value {
+          ... on EVM_ABI_Address_Value_Arg {
+            address
+          }
+          ... on EVM_ABI_BigInt_Value_Arg {
+            bigInteger
+          }
+          ... on EVM_ABI_Integer_Value_Arg {
+            integer
+          }
+        }
+      }
+      Transaction {
+        Hash
+        From
+      }
+      Block {
+        Time
+      }
+    }
+  }
+}
+
+Monitor Token Migrations to PancakeSwap in Mempool
+Track when Four Meme tokens are graduating to PancakeSwap before the migration completes. Critical for trading strategies.
+
+Run Stream ➤
+
+Click to expand GraphQL query
+subscription {
+  EVM(network: bsc, mempool: true) {
+    Events(
+      where: {
+        Log: { Signature: { Name: { in: ["PairCreated", "PoolCreated"] } } }
+        Transaction: {
+          To: { is: "0x5c952063c7fc8610ffdb798152d69f0b9550762b" }
+        }
+      }
+    ) {
+      Log {
+        Signature {
+          Name
+          Signature
+        }
+      }
+      Arguments {
+        Name
+        Value {
+          ... on EVM_ABI_Address_Value_Arg {
+            address
+          }
+          ... on EVM_ABI_BigInt_Value_Arg {
+            bigInteger
+          }
+        }
+      }
+      Transaction {
+        Hash
+        From
+        To
+        Gas
+        GasPrice
+      }
+    }
+  }
+}
+
+Track Bonding Curve Completion in Mempool
+Monitor tokens that are about to complete their bonding curve (near graduation) in the mempool.
+
+Run Stream ➤
+
+Click to expand GraphQL query
+Advanced Mempool Strategies
+Monitor Wallet Activity in Mempool
+Track specific wallet addresses (smart money, whales, or known traders) and their pending Four Meme trades.
+
+Run Stream ➤
+
+Click to expand GraphQL query
+subscription {
+  EVM(network: bsc, mempool: true) {
+    DEXTrades(
+      where: {
+        Trade: { Dex: { ProtocolName: { is: "fourmeme_v1" } } }
+        Transaction: {
+          From: { is: "0x7db00d1f5b8855d40827f34bb17f95d31990306e" }
+        }
+      }
+    ) {
+      Trade {
+        Buy {
+          Buyer
+          Currency {
+            Name
+            Symbol
+            SmartContract
+          }
+          Amount
+          AmountInUSD
+        }
+        Sell {
+          Seller
+          Currency {
+            Name
+            Symbol
+            SmartContract
+          }
+          Amount
+          AmountInUSD
+        }
+      }
+      Transaction {
+        Hash
+        From
+        Gas
+        GasPrice
+      }
+    }
+  }
+}
+
+Track Smart Money Trades in Mempool
+Monitor multiple smart money wallets simultaneously for their Four Meme trading activity in mempool.
+
+Run Stream ➤
+
+Click to expand GraphQL query
+subscription {
+  EVM(network: bsc, mempool: true) {
+    DEXTrades(
+      where: {
+        Trade: { Dex: { ProtocolName: { is: "fourmeme_v1" } } }
+        Transaction: {
+          From: {
+            in: [
+              "0x7db00d1f5b8855d40827f34bb17f95d31990306e"
+              "0x1234567890123456789012345678901234567890"
+              "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd"
+            ]
+          }
+        }
+      }
+    ) {
+      Trade {
+        Buy {
+          Buyer
+          Currency {
+            Name
+            Symbol
+            SmartContract
+          }
+          Amount
+          AmountInUSD
+        }
+        Sell {
+          Currency {
+            Name
+            Symbol
+          }
+          Amount
+        }
+      }
+      Transaction {
+        Hash
+        From
+      }
+    }
+  }
+}
+
+Detect Potential Rug Pulls in Mempool
+Monitor for suspicious activity like developers selling large amounts in mempool.
+
+Run Stream ➤
+
+Click to expand GraphQL query
+subscription {
+  EVM(network: bsc, mempool: true) {
+    DEXTrades(
+      where: {
+        Trade: {
+          Dex: { ProtocolName: { is: "fourmeme_v1" } }
+          Sell: { AmountInUSD: { gt: "5000" } }
+        }
+      }
+    ) {
+      Trade {
+        Sell {
+          Seller
+          Currency {
+            Name
+            Symbol
+            SmartContract
+          }
+          Amount
+          AmountInUSD
+        }
+        Buy {
+          Currency {
+            Name
+            Symbol
+          }
+        }
+      }
+      Transaction {
+        Hash
+        From
+        Gas
+        GasPrice
+      }
+      Block {
+        Time
+      }
+    }
+  }
+}
+
+Kafka Streams for Ultra-Low Latency
+For production-grade applications like MEV bots and sniper bots, we recommend using Kafka streams instead of GraphQL subscriptions. Kafka streams provide:
+
+Sub-second Latency: Faster than GraphQL streams
+Higher Throughput: Handle thousands of transactions per second
+Better Reliability: Built-in retry and error handling
+Scalability: Horizontal scaling for high-volume applications
+Protobuf Message Format:
+
+message BroadcastedTransactionsMessage {
+  Chain Chain = 1;
+  BlockHeader Header = 2;
+  repeated Transaction Transactions = 3;
+}
+
+Benefits for Trading Bots:
+MEV Bots: Execute front-running and back-running strategies with minimal latency
+Sniper Bots: Be first to trade newly launched tokens
+Arbitrage Bots: Detect and execute arbitrage opportunities instantly
+Monitoring Bots: Track market activity with enterprise-grade reliability
+Learn More:
+
+Kafka Protobuf Streams Documentation ➤
+Building a Sniper Bot with Kafka ➤
+Contact Us for Kafka Stream Access ➤
+Use Cases & Trading Strategies
+Sniper Bot Strategy
+Monitor token creation events in mempool
+Analyze token metadata and creator
+Execute buy immediately after confirmation
+Set take-profit and stop-loss levels
+Front-Running Strategy
+Detect large buy orders in mempool
+Calculate potential price impact
+Execute buy with higher gas price
+Sell after original transaction confirms
+Rug Pull Protection
+Monitor developer wallet activity
+Detect large sells in mempool
+Execute sell before rug pull completes
+Protect your investment
+Smart Money Following
+Track known profitable wallets
+Copy their trades in mempool
+Execute simultaneously or front-run
+Profit from their market insights
+Graduation Trading
+Monitor bonding curve progress
+Detect imminent graduations in mempool
+Position before PancakeSwap migration
+Capture migration price pump
+Related Resources
+You may also be interested in:
+
+Four Meme API Documentation ➤
+BSC Mempool Stream ➤
+BSC DEX Trades API ➤
+Kafka Protobuf Streams ➤
+WebSocket Subscriptions ➤
+Building a Sniper Bot Tutorial ➤

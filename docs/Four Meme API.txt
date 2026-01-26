@@ -1,0 +1,590 @@
+Four Meme API
+Get ultra low latency Four Meme memecoin data on BNB Chain: live trades, bonding curve progress, newly created tokens, prices, OHLC, liquidity, migrations, top traders and more.
+
+The below GraphQL APIs and Streams are examples of data points you can get with Bitquery. If you have questions on other data points, reach out to support.
+
+Need zero-latency BSC data? Read about our Streams and contact us for a trial: https://docs.bitquery.io/docs/streams/
+
+You may also be interested in:
+
+Crypto Price API ➤
+BSC Pancake Swap APIs ➤
+BSC DEX Trades ➤
+PumpFun API ➤
+note
+To query or stream data via GraphQL outside the Bitquery IDE, you need to generate an API access token.
+
+Follow the steps here to create one: https://docs.bitquery.io/docs/authorisation/how-to-generate/
+
+Table of Contents
+1. Four Meme Trading & Market Data (BSC)
+Subscribe the Latest Trades on Four Meme ➤
+Get Latest Buys and Sells for a Four Meme Token ➤
+Get Trade Metrics of a Four Meme Token ➤
+Get Metadata for a Newly Created Four Meme Token ➤
+Get latest price of a Four.meme token ➤
+Get ATH price of a Four Meme Token ➤
+Get Price Change Percentage for a Four Meme Token ➤
+Get OHLCV data of a Four Meme Token ➤
+Get Trade Volume and Number of Trades for a Four Meme Token ➤
+2. Token Lifecycle, Liquidity & Migrations
+Get Newly Created Tokens on Four Meme ➤
+Get Four.Meme Tokens created by a specific Dev ➤
+Get Dev Address of a Four.meme token ➤
+Get Dev Token Holding percentage ➤
+Get Top 10 Holders percentages ➤
+Track All Four Meme Tokens That Have Migrated to Pancakeswap ➤
+Bonding Curve Progress API for FourMeme token ➤
+Get Four Meme Tokens which are above 95% Bonding Curve Progress ➤
+Get liquidity of a Four Meme token ➤
+Track Liquidity Add Events for All Tokens on Four Meme ➤
+Track Liquidity Add Events for a Token on Four Meme ➤
+Check if a Four.meme Token is Phishy ➤
+3. Trader Insights
+Monitor trades of traders on Four meme ➤
+Track Latest and Historical Trades of a Four Meme User ➤
+Top Buyers for a Token on Four Meme ➤
+Top Traders of a token ➤
+4. Top Tokens & Getting Started
+Get Realtime Market Cap and Price of a Four Meme Token ➤
+Top Tokens by marketcap ➤
+Top Tokens by launch marketcap ➤
+Top Tokens by buys, sells, volume, price change, buyers, sellers ➤
+Top Tokens by liquidity ➤
+Bitquery DEX Data Access Options ➤
+Getting Started with Bitquery ➤
+5. Video Tutorials
+Video Tutorial | How to get Bonding Curve Progress of any Four Meme Token ➤
+Video Tutorial | How to track the Four Meme Tokens which are about to Graduate in Realtime ➤
+Video Tutorial | How to get Liquidity of a Four Meme Token ➤
+Video Tutorial | How to get Top Traders of a Four Meme Token on Solana Four Meme DEX ➤
+Video Tutorial | How to Get the OHLCV Data of a token on Four Meme DEX ➤
+6. Real World Projects
+Real World Projects with Four Meme API ➤
+Bitquery DEX Data Access Options
+GraphQL APIs: Query historical and real-time EVM data with flexible filtering and aggregation
+Real-time Streams: Subscribe to live EVM blockchain events via WebSocket subscriptions
+Cloud Solutions: Access EVM data through AWS, GCP, and Snowflake integrations
+Kafka Streams: High-throughput data streaming for enterprise applications
+Getting Started with Bitquery:
+Learning Track: Learning track to get started with Bitquery GraphQL APIs and streams.
+BSC DEX Trades: Real time DEX Trading data via examples.
+BSC Uniswap APIs: Uniswap Trades on BSC network with the help of examples.
+BSC Pancake Swap APIs: Pancake swap Trades on BSC network with the help of examples.
+Trade APIs: Multi-chain Trade API Examples.
+Track All Four Meme Tokens That Have Migrated to Pancakeswap
+This query tracks four meme token migrations to Pancakeswap in realtime by monitoring transactions sent to the Four Meme factory address (0x5c952063c7fc8610ffdb798152d69f0b9550762b) and filtering for PairCreated and PoolCreated events. These events are emitted when a token graduates from Four Meme and migrates to Pancakeswap. Test it here.
+
+Click to expand GraphQL query
+Check if a four meme token has migrated or not
+Below query will only show response if a the mentioned four meme tokens have migrated to Pancakeswap. Note: Please use a Block{Date} filter to minimize the data processing and hence the query processing time and get fast responses. Try the query here.
+
+Click to expand GraphQL query
+Bonding Curve Progress API for FourMeme token
+Below query will give you amount of left tokens put it in the below given simplied formulae and you will get Bonding Curve progress for the token.
+
+Bonding Curve Progress Formula
+Formula: BondingCurveProgress = 100 - ((leftTokens * 100) / initialRealTokenReserves)
+Where:
+
+leftTokens = realTokenReserves - reservedTokens
+
+initialRealTokenReserves = totalSupply - reservedTokens
+
+Definitions:
+
+initialRealTokenReserves = totalSupply - reservedTokens
+totalSupply: 1,000,000,000 (Four meme Token)
+reservedTokens: 200,000,000
+Therefore, initialRealTokenReserves: 800,000,000
+leftTokens = realTokenReserves - reservedTokens
+realTokenReserves: Token balance at the market address.
+note
+Simplified Formula: BondingCurveProgress = 100 - (((balance - 200000000) * 100) / 800000000)
+
+Additional Notes
+Balance Retrieval:
+The balance is the four meme token balance at this Four Meme: Proxy address (0x5c952063c7fc8610FFDB798152D69F0B9550762b).
+Use this query to fetch the balance: Query Link.
+Click to expand GraphQL query
+Click to expand Query Varibles (Paste this in variables section on IDE)
+Get Four Meme Tokens which are above 95% Bonding Curve Progress
+Using the above Bonding Curve formula, we can calculate the token balances for the Four Meme Proxy contract (0x5c952063c7fc8610FFDB798152D69F0B9550762b) corresponding to approximately 95% to 100% progress along the bonding curve, that comes out to be 200,000,000 to 240,000,000. The tokens in the response are arranged in the ascending order of Bonding Curve Percentage, i.e., 95% to 100%. You can run and test the saved query here.
+
+Click to expand GraphQL query
+Get Newly Created Tokens on Four Meme
+Run Query
+
+This query retrieves newly created tokens on Four Meme by listening to the TokenCreate event. The response provides:
+
+Token Information:
+
+creator: Wallet address of the token creator
+token: Contract address of the newly created token
+name: Token name
+symbol: Token symbol/ticker
+totalSupply: Total supply
+Launch Details:
+
+requestId: Unique identifier for the token creation
+launchTime: Unix timestamp of when the token launched
+launchFee: Fee paid
+Click to expand GraphQL query
+You can refer to this example to track latest trades of a token on other particular DEX's such as Pancake Swap.
+
+Get Four.Meme Tokens created by a specific Dev
+This API fetches Four.Meme tokens created by a specific dev on BSC by tracking token minting transfers signed by a particular dev. Dev Address here in example is 0x9c75588640605d46b42f2d64c5c2e993de251210. Use a date filter based on your needs — shorter time ranges mean faster execution and reduced query time.
+
+Run Query
+
+Click to expand GraphQL query
+Get Dev Address of a Four.meme token
+Fetches the developer address that created a specific Four.Meme token on BSC by tracing the minting transfer (from the zero address) of that token’s smart contract. Use a date filter based on your needs — shorter time ranges make the query execute faster and return results more efficiently. Token Address in this example is 0xd284aa8910fe1dcac70f3e28ddd8cc61dac94444.
+
+Run Query
+
+Click to expand GraphQL query
+Get Dev Token Holding percentage
+Calculates what percentage of total token supply is held by the developer address for a specified Four Meme token.
+
+Run Query
+
+Click to expand GraphQL query
+Get Top 10 Holders percentages
+Calculates the percentage of total supply held by the top 10 holders of a specific Four Meme token on BSC.
+
+Run Query
+
+Click to expand GraphQL query
+Subscribe the Latest Trades on Four Meme
+Using subscriptions you can subscribe to the latest trades on Four Meme as shown in this example. The subscription returns latest trade info such as buyers and sellers, buy and sell currency details and amount of currency.
+
+Click to expand GraphQL query
+Get Latest Buys and Sells for a Four Meme Token
+This query retrieves the most recent token buy and sell trades of a specific token on Four Meme Exchange.
+
+Click to expand GraphQL query
+You can also check if the token is listed on other DEX using this example.
+
+Get Trade Metrics of a Four Meme Token
+Use the below query to get trade metrics like volume and trades for a token in different time frames, such as 24 hours, 1 hour and 5 minutes. Test it here.
+
+Click to expand GraphQL query
+query MyQuery($currency: String) {
+  EVM(network: bsc) {
+    DEXTradeByTokens(
+      where: {
+        Trade: { Currency: { SmartContract: { is: $currency } }, Success: true }
+        Block: { Time: { since_relative: { hours_ago: 24 } } }
+      }
+    ) {
+      Trade {
+        Currency {
+          Name
+          Symbol
+          SmartContract
+        }
+      }
+      volume_24hr: sum(of: Trade_Side_AmountInUSD)
+      volume_1hr: sum(
+        of: Trade_Side_AmountInUSD
+        if: { Block: { Time: { since_relative: { hours_ago: 1 } } } }
+      )
+      volume_5min: sum(
+        of: Trade_Side_AmountInUSD
+        if: { Block: { Time: { since_relative: { minutes_ago: 5 } } } }
+      )
+      trades_24hr: count
+      trades_1hr: count(
+        if: { Block: { Time: { since_relative: { hours_ago: 1 } } } }
+      )
+      trades_5min: count(
+        if: { Block: { Time: { since_relative: { minutes_ago: 5 } } } }
+      )
+    }
+  }
+}
+
+{
+  "currency": "0x9b48a54bcce09e59b0479060e9328ab7dbdb0d40"
+}
+
+Get latest price of a Four.meme token
+We launched the Price Index in August 2025, allowing you to track price of any token trading onchain. Here's an example of tracking Four.meme token prices.
+
+Click to expand GraphQL query
+{
+  Trading {
+    Pairs(
+      where: {Price: {IsQuotedInUsd: false}, Market: {Network: {is: "Binance Smart Chain"}, Program: {is: "0x5c952063c7fc8610ffdb798152d69f0b9550762b"}}, Token: {Address: {is: "0x2157de505dfaa51676d6d22c0424551fbeaf4444"}}, Interval: {Time: {Duration: {eq: 60}}}}
+      limit: {count: 1}
+      orderBy: {descending: Block_Time}
+    ) {
+      Market {
+        Address
+        Network
+        Program
+        Protocol
+        ProtocolFamily
+      }
+      Price {
+        Average {
+          ExponentialMoving
+          Mean
+          SimpleMoving
+          WeightedSimpleMoving
+        }
+        Ohlc {
+          Close
+          High
+          Low
+          Open
+        }
+      }
+      Token {
+        Address
+        Name
+        Symbol
+      }
+      QuoteToken {
+        Address
+        Name
+        Symbol
+      }
+      Volume {
+        Base
+        Usd
+      }
+    }
+  }
+}
+
+
+Get ATH price of a Four Meme Token
+Fetches the All-Time High (ATH) price of a specific Four.Meme token on BSC, using the DEXTradeByTokens dataset to calculate the 98th percentile of trade prices (approximate ATH). Try the API here.
+
+Tune the parameters level: 0.98 and Date as necessary to filter outliers.
+
+Click to expand GraphQL query
+query tradingView(
+  $network: evm_network
+  $dataset: dataset_arg_enum
+  $token: String
+) {
+  EVM(network: $network, dataset: $dataset) {
+    DEXTradeByTokens(
+      limit: { count: 1 }
+      where: {
+        Block: { Date: { since: "2025-10-10" } }
+        TransactionStatus: { Success: true }
+        Trade: {
+          Side: { Currency: { SmartContract: { is: "0x" } } }
+          Currency: { SmartContract: { is: $token } }
+        }
+      }
+    ) {
+      max: quantile(of: Trade_PriceInUSD, level: 0.98)
+      Block {
+        Time
+      }
+    }
+  }
+}
+
+{
+  "network": "bsc",
+  "token": "0xe59ecb01d56a7f1e66276c1bc885d64c92614444",
+  "dataset": "combined",
+  "local": "EVM",
+  "interval": 60
+}
+
+Get Price Change Percentage for a Four Meme Token
+Use the below query to get the price change in percentage for various time fields including 24 hours, 1 hour and 5 minutes. Try it here.
+
+Click to expand GraphQL query
+Get OHLCV data of a Four Meme Token
+Use the below query to get four meme token OHLCV data. Test it here.
+
+Click to expand GraphQL query
+query tradingView($network: evm_network, $token: String) {
+  EVM(network: $network, dataset: combined) {
+    DEXTradeByTokens(
+      limit: { count: 10 }
+      orderBy: { descendingByField: "Block_Time" }
+      where: {
+        Trade: {
+          Currency: { SmartContract: { is: $token } }
+          PriceAsymmetry: { lt: 0.1 }
+          Dex: { ProtocolName: { is: "fourmeme_v1" } }
+        }
+      }
+    ) {
+      Block {
+        Time(interval: { count: 5, in: minutes })
+      }
+      Trade {
+        open: PriceInUSD(minimum: Block_Number)
+        close: PriceInUSD(maximum: Block_Number)
+        max: PriceInUSD(maximum: Trade_PriceInUSD)
+        min: PriceInUSD(minimum: Trade_PriceInUSD)
+      }
+      volumeUSD: sum(of: Trade_Side_AmountInUSD, selectWhere: { gt: "0" })
+    }
+  }
+}
+
+{
+  "network": "bsc",
+  "token": "0x9b48a54bcce09e59b0479060e9328ab7dbdb0d40"
+}
+
+Monitor trades of traders on Four meme
+You can use our streams to monitor real time trades of a trader on Four Meme, for example run this stream.
+
+Click to expand GraphQL query
+You can also get the trade activities of a user on Pancake Swap using our Pancake Swap APIs.
+
+Track Four Meme Tokens in 14k to 18k Marketcap
+Tracks live Four Meme tokens on BSC with a market cap between $14K–$18K, filtered by 14k to 18k Marketcap. Useful for spotting emerging small-cap meme tokens in real time. Try the query here.
+
+Click to expand GraphQL query
+Track Latest and Historical Trades of a Four Meme User
+You can use DEX Trades API with combined dataset to get latest and historic trades of a user. Run this query for example.
+
+Click to expand GraphQL query
+query MyQuery($address: String) {
+  EVM(dataset: combined, network: bsc) {
+    DEXTrades(
+      where: {
+        Trade: { Dex: { ProtocolName: { is: "fourmeme_v1" } } }
+        Transaction: { From: { is: $address } }
+      }
+      orderBy: { descending: Block_Time }
+    ) {
+      Block {
+        Time
+      }
+      Trade {
+        Buy {
+          Buyer
+          Currency {
+            Name
+            Symbol
+            SmartContract
+          }
+          Amount
+          Price
+          PriceInUSD
+        }
+        Sell {
+          Seller
+          Currency {
+            Name
+            Symbol
+            SmartContract
+          }
+          Amount
+        }
+      }
+      Transaction {
+        Hash
+      }
+    }
+  }
+}
+
+{
+  "address": "0x7db00d1f5b8855d40827f34bb17f95d31990306e"
+}
+
+Top Buyers for a Token on Four Meme
+This query returns top buyers of a particular token on Four Meme, with currency smart contract as 0x9b48a54bcce09e59b0479060e9328ab7dbdb0d40 for this example.
+
+Click to expand GraphQL query
+Get Trade Volume and Number of Trades for a Four Meme Token
+This query returns the traded volume and number of trades for a particular Four Meme token in different time frames, namely 24 hours, 1 hour and 5 minutes.
+
+Click to expand GraphQL query
+Get Realtime Market Cap and Price of a Four Meme Token
+To get the market cap of a token we need two things, the latest PriceInUSD and total supply of the token. Total Supply is 1,000,000,000 (1B) for four meme tokens so we just need to get price and multiply it with 1B. This query helps with getting the latest USD price of a token and hence its latest Marketcap.
+
+Market Cap = Total Supply * PriceInUSD
+
+Click to expand GraphQL query
+subscription {
+  Trading {
+    Pairs(
+      where: {
+        Interval: { Time: { Duration: { eq: 1 } } }
+        Price: { IsQuotedInUsd: true }
+        Market: {
+          Protocol: { is: "fourmeme_v1" }
+          Network: { is: "Binance Smart Chain" }
+        }
+        Volume: { Usd: { gt: 5 } }
+        Token: { Address: { is: "0xf5bc78c8c762e4003742dacc31f3ba7091be4444" } }
+      }
+    ) {
+      Token {
+        Name
+        Symbol
+        Address
+      }
+      Market {
+        Protocol
+        Program
+        Network
+        Name
+        Address
+      }
+      Block {
+        Date
+        Time
+        Timestamp
+      }
+      Interval {
+        Time {
+          Start
+          Duration
+          End
+        }
+      }
+      Volume {
+        Base
+        Quote
+        Usd
+      }
+      marketcap: calculate(expression: "Price_Average_Mean * 1000000000")
+      Price {
+        Average {
+          Mean
+        }
+        Ohlc {
+          Close
+          High
+          Low
+          Open
+        }
+      }
+    }
+  }
+}
+
+Top Tokens by marketcap
+Below API can be used to get top four meme tokens by marketcap. You can get all the data through us and create a min and max marketcap filter in your application. Try the API here.
+
+Market Cap = Total Supply * PriceInUSD
+
+Click to expand GraphQL query
+Top Tokens by launch marketcap
+Below API can be used to get top four meme tokens by launch marketcap (marketcap at the time of launching). You can get all the data through us and create a min and max marketcap filter in your application. Try the API here.
+
+Market Cap = Total Supply * PriceInUSD
+
+Click to expand GraphQL query
+Top Tokens by buys, sells, volume, price change, buyers, sellers
+Below API can be used to get top four meme tokens by buys, sells, volume, price change, buyers, sellers. You can get all the data through us and create a min and max marketcap filter in your application. Try the API here.
+
+Click to expand GraphQL query
+Top Tokens by buys, sells, volume, price change, buyers, sellers
+Below API can be used to get top four meme tokens by buys, sells, volume, price change, buyers, sellers. You can get all the data through us and create a min and max buys, sells, volume, price change filter in your application. Try the API here.
+
+Click to expand GraphQL query
+Top Tokens by liquidity
+Below API can be used to get top four meme tokens by liquidity between 800M and 900M token liquqidity. You can create a min and max liquidity filter in your application using this API. Try the API here.
+
+Click to expand GraphQL query
+Track Liquidity Add Events for All Tokens on Four Meme
+This query tracks all liquidity addition events on the Four Meme Exchange. It listens for LiquidityAdded events emitted from the four meme exchange's smart contract (0x5c952063c7fc8610ffdb798152d69f0b9550762b)
+
+You can run the query here
+
+Click to expand GraphQL query
+Track Liquidity Add Events for a Token on Four Meme
+This query tracks liquidity addition events for a specific token on the Four Meme Exchange. It listens for LiquidityAdded events emitted from the exchange's smart contract (0x5c952063c7fc8610ffdb798152d69f0b9550762b) BNB network
+
+In this example, the query monitors liquidity events for a specific token (0x5a49ce64a1e44f6fce07e9ff38f54dde8a8a0e94) by filtering the event arguments to only include actions related to this token.
+
+You can run the query here
+
+Click to expand GraphQL query
+Check if a Four.meme Token is Phishy
+This elaborative API approach uses two queries to detect if a Four Meme token is potentially phishy by analyzing the relationship between token transfers and trades. This approach helps identify tokens where recipients received tokens without purchasing them, which is a common pattern in phishing or airdrop scams.
+
+How It Works
+The detection method works by:
+
+First Query: Get the first transfers of a token to addresses - this provides the timestamp of when each address first received the token.
+
+Second Query: Check if those addresses ever bought the token and when - pass the address list from the first query as a variable to check their purchase history.
+
+Analysis: Compare transfer times and trade times in your code:
+
+If an address never bought the token, it's suspicious.
+
+If an address's first buy time is later than the first transfer time, it indicates the token was received before being purchased, which is a red flag for phishing behavior.
+
+Above analysis means someone else transferred the token to them which is phishy because devs often send token to famous KOLs or Influential People in crypto space to misguide traders.
+
+We are taking here example of 0x35a7bb282d8caafe71617c9d52ee30f1adfe4444 token, this may or may not be phishy as we are not running the further comparison between timestamps. Here we are just demonstrating that how you can get data from Bitquery and later run basic analysis on it.
+
+Query 1: Get First Transfers of a Token to Addresses
+This query retrieves the first transfer of a token to each address, providing the timestamp when each address first received the token.
+
+Run Query
+
+Click to expand GraphQL query
+Query 2: Get First Buys of an Address List for a Specific Token
+This query checks if the addresses from Query 1 ever bought the token and when. Pass the address array from Query 1 as a variable to this query.
+
+Run Query
+
+Click to expand GraphQL query
+Implementation Notes
+Extract the address list and first transfer timestamps from Query 1
+Pass the address array as a variable to Query 2
+Compare the timestamps for all addresses:
+If firstTransferTime < firstBuyTime or firstBuyTime is null → Phishy indicator
+If firstBuyTime <= firstTransferTime → Normal behavior
+You can implement this logic in your application code to automatically flag suspicious tokens
+Metadata for a Newly Created Token
+This query will fetch you trade metrics, such as marketcap, trade volume, token holders and creation time for a newly created Four Meme token on BSC network. You can test the query here.
+
+Click to expand GraphQL query
+Top Traders of a token
+This query will fetch you top traders of a Four Meme token for the BSC network. You can test the query here.
+
+Click to expand GraphQL query
+query topTraders($network: evm_network, $token: String) {
+  EVM(network: $network, dataset: combined) {
+    DEXTradeByTokens(
+      orderBy: {descendingByField: "volumeUsd"}
+      limit: {count: 100}
+      where: {Trade: {Currency: {SmartContract: {is: $token}}, Dex: {ProtocolName: {is: "fourmeme_v1"}}}}
+    ) {
+      Trade {
+        Buyer
+        Dex {
+          OwnerAddress
+          ProtocolFamily
+          ProtocolName
+        }
+      }
+      buyVolume: sum(of: Trade_Amount, if: {Trade: {Side: {Type: {is: buy}}}})
+      sellVolume: sum(of: Trade_Amount, if: {Trade: {Side: {Type: {is: sell}}}})
+      volume: sum(of: Trade_Amount)
+      volumeUsd: sum(of: Trade_Side_AmountInUSD)
+    }
+  }
+}
+{
+  "network": "bsc",
+  "token": "0x37e3a59843b056e063780402ef25e12dca394444"
+}
+
+Get liquidity of a Four Meme token
+Using below API you can get the liquidity of a four meme token. Subtract 200000000 from the Balance that this query returns because 200M tokens are reserved which gets transferred to pancakeswap when this fourmeme token graduates. Test the API here.
+
+Click to expand GraphQL query
+Video Tutorial | How

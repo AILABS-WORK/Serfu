@@ -9,7 +9,19 @@ import { UIHelper } from '../../../utils/ui';
 
 export const handleAnalyticsCommand = async (ctx: Context) => {
   try {
-    const title = UIHelper.header('Analytics Dashboard');
+    let title = UIHelper.header('Analytics Dashboard');
+    
+    // Add backfill status indicator if running
+    const { getBackfillProgress } = await import('../../../jobs/athBackfill');
+    const backfillProgress = getBackfillProgress();
+    
+    if (backfillProgress.status === 'running') {
+      const mintPct = backfillProgress.totalMints > 0 
+        ? Math.round((backfillProgress.processedMints / backfillProgress.totalMints) * 100) 
+        : 0;
+      title += `\n🔄 *Backfill in progress:* ${mintPct}%\n`;
+      title += `${UIHelper.progressBar(mintPct, 100, 10)}\n`;
+    }
 
     await ctx.reply(title, {
       parse_mode: 'Markdown',
@@ -32,11 +44,12 @@ export const handleAnalyticsCommand = async (ctx: Context) => {
             { text: '🔁 Cross-Group Confirms', callback_data: 'analytics_confirms' }
           ],
           [
-            { text: '🔄 Refresh Metrics', callback_data: 'analytics_refresh' }
+            { text: '🔄 Quick Refresh', callback_data: 'analytics_refresh' },
+            { text: '🔍 Validate Data', callback_data: 'analytics_validate' }
           ],
           [
-            { text: '🧠 Full Metrics Backfill', callback_data: 'analytics_backfill' },
-            { text: '📈 Backfill Progress', callback_data: 'analytics_backfill_status' }
+            { text: '🧠 Full ATH Backfill', callback_data: 'analytics_backfill' },
+            { text: '📈 Backfill Status', callback_data: 'analytics_backfill_status' }
           ]
         ]
       }

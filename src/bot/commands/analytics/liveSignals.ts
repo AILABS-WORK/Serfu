@@ -348,160 +348,216 @@ export const handleLiveSignals = async (ctx: BotContext, forceRefresh = false) =
     // Get top items
     const topItems = filtered.slice(0, displayLimit);
 
-    // Fetch full signal data for ATH calculation
-    const { enrichSignalMetrics } = await import('../../../analytics/metrics');
+    // ============================================================================
+    // ATH STRATEGY:
+    // 
+    // BEFORE BACKFILL COMPLETE: Must fetch OHLCV for signals without stored ATH
+    //   - Can't trust current price alone (might have peaked and dropped)
+    //   - Need historical candles to find true ATH
+    //
+    // AFTER BACKFILL COMPLETE: Use stored ATH only (instant load)
+    //   - All signals have historical ATH from backfill
+    //   - Jupiter refresh (every 10s) keeps ATH updated if price exceeds stored
+    // ============================================================================
+    
+    // Check if backfill has been completed
+    const { getBackfillProgress } = await import('../../../jobs/athBackfill');
+    const backfillProgress = getBackfillProgress();
+    const backfillComplete = backfillProgress.status === 'complete';
+    
+    logger.info(`[LiveSignals] Backfill status: ${backfillProgress.status} (complete=${backfillComplete})`);
+    
     const signalMap = new Map<number, any>();
     if (topItems.length > 0) {
+      const fetchStart = Date.now();
       const signals = await prisma.signal.findMany({
         where: { id: { in: topItems.map(i => i.signalId) } },
         include: { metrics: true, priceSamples: { orderBy: { sampledAt: 'asc' } }, group: true, user: true }
       });
       for (const s of signals) signalMap.set(s.id, s);
-    }
-
-    // Calculate ATH for top items only
-    logger.info(`[LiveSignals] Starting ATH calculation for ${topItems.length} top items using GeckoTerminal OHLCV`);
-    
-    // Update loading message to show progress
-    if (loadingMsg && topItems.length > 0) {
-      try {
-        await ctx.telegram.editMessageText(
-          loadingMsg.chat.id,
-          loadingMsg.message_id,
-          undefined,
-          `⏳ Calculating ATH for ${topItems.length} signals using GeckoTerminal...`,
-          { parse_mode: 'Markdown' }
-        );
-      } catch {}
+      logger.info(`[LiveSignals] Fetched ${signals.length} signals with metrics in ${Date.now() - fetchStart}ms`);
     }
     
-    const BATCH_SIZE = 3; // Process 3 tokens at a time
-    const DELAY_BETWEEN_BATCHES_MS = 3000; // 3 seconds between batches
-    const DELAY_BETWEEN_ITEMS_MS = 1000; // 1 second between items in same batch
-    
-    const failedTokens: Array<{ item: CachedSignal; sig: any }> = [];
-    let athCalculated = 0;
-    
-    // First pass: process in batches
-    for (let i = 0; i < topItems.length; i += BATCH_SIZE) {
-      const batch = topItems.slice(i, i + BATCH_SIZE);
-      const batchNum = Math.floor(i / BATCH_SIZE) + 1;
-      const totalBatches = Math.ceil(topItems.length / BATCH_SIZE);
-      logger.info(`[LiveSignals] Processing ATH batch ${batchNum}/${totalBatches} (${batch.length} tokens) using GeckoTerminal`);
-      
-      // Update loading message with progress
-      if (loadingMsg && batchNum % 2 === 0) { // Update every 2 batches to avoid spam
-        try {
-          await ctx.telegram.editMessageText(
-            loadingMsg.chat.id,
-            loadingMsg.message_id,
-            undefined,
-            `⏳ Calculating ATH: ${athCalculated}/${topItems.length} complete (batch ${batchNum}/${totalBatches})...`,
-            { parse_mode: 'Markdown' }
-          );
-        } catch {}
-      }
-      
-      for (const item of batch) {
+    // Separate signals with and without stored ATH
+    const signalsWithAth = topItems.filter(item => {
       const sig = signalMap.get(item.signalId);
-        if (sig && item.currentPrice > 0) {
-          // Ensure entry data is populated for enrichSignalMetrics
-        if (!sig.entryMarketCap && item.entryMc > 0) sig.entryMarketCap = item.entryMc;
-        if (!sig.entryPrice && item.entryPrice > 0) sig.entryPrice = item.entryPrice;
-        if (!sig.entrySupply && sig.entryMarketCap && sig.entryPrice) {
-          sig.entrySupply = sig.entryMarketCap / sig.entryPrice;
-        }
-          
-          logger.info(`[LiveSignals] Calculating ATH for ${item.mint.slice(0, 8)}... using GeckoTerminal OHLCV`);
-          try {
-            const beforeUpdatedAt = sig.metrics?.updatedAt?.getTime() ?? 0;
-            const beforeAth = sig.metrics?.athMultiple ?? null;
-            const beforeTimeToAth = sig.metrics?.timeToAth ?? null;
-            await Promise.race([
-              enrichSignalMetrics(sig, true, item.currentPrice),
-              new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 15000))
-            ]);
-            const afterUpdatedAt = sig.metrics?.updatedAt?.getTime() ?? 0;
-            const afterAth = sig.metrics?.athMultiple ?? null;
-            const afterTimeToAth = sig.metrics?.timeToAth ?? null;
-            const metricsUpdated = afterUpdatedAt > beforeUpdatedAt
-              || (afterAth !== null && afterAth !== beforeAth)
-              || (afterTimeToAth !== null && afterTimeToAth !== beforeTimeToAth);
-            if (metricsUpdated) {
-              athCalculated++;
-              logger.info(`[LiveSignals] ✅ ATH calculated for ${item.mint.slice(0, 8)}... (${athCalculated}/${topItems.length})`);
-            } else {
-              logger.warn(`[LiveSignals] ⚠️ ATH metrics unchanged for ${item.mint.slice(0, 8)}... (no candles or update)`);
-              failedTokens.push({ item, sig });
-            }
-            
-            // Delay between items in same batch
-            if (item !== batch[batch.length - 1]) {
-              await new Promise(resolve => setTimeout(resolve, DELAY_BETWEEN_ITEMS_MS));
-            }
-          } catch (err) {
-            logger.warn(`[LiveSignals] ❌ ATH calculation failed for ${item.mint.slice(0, 8)}...: ${err}`);
-            failedTokens.push({ item, sig });
-          }
-        } else {
-          logger.debug(`[LiveSignals] Skipping ATH for ${item.mint.slice(0, 8)}... (no signal or price: sig=${!!sig}, price=${item.currentPrice})`);
-        }
-      }
+      return sig?.metrics?.athPrice > 0 && sig?.metrics?.athMultiple > 0;
+    });
+    
+    const signalsWithoutAth = topItems.filter(item => {
+      const sig = signalMap.get(item.signalId);
+      return !sig?.metrics?.athPrice || sig?.metrics?.athPrice <= 0 || !sig?.metrics?.athMultiple || sig?.metrics?.athMultiple <= 0;
+    });
+    
+    logger.info(`[LiveSignals] ATH status: ${signalsWithAth.length} have stored ATH, ${signalsWithoutAth.length} need ATH`);
+    
+    // Count stats
+    let athFromDb = 0;
+    let athFromCurrentPrice = 0;
+    let athFromOhlcv = 0;
+    let athPending = 0;
+    
+    // Process signals WITH stored ATH (instant - just use DB value)
+    for (const item of signalsWithAth) {
+      const sig = signalMap.get(item.signalId);
+      const entryPrice = sig?.entryPrice || item.entryPrice || 0;
+      const storedAthPrice = sig?.metrics?.athPrice || 0;
+      const storedAthMultiple = sig?.metrics?.athMultiple || 0;
       
-      // Delay between batches (except after last batch)
-      if (i + BATCH_SIZE < topItems.length) {
-        await new Promise(resolve => setTimeout(resolve, DELAY_BETWEEN_BATCHES_MS));
+      if (item.currentPrice > storedAthPrice) {
+        // Current price is new ATH
+        item.athMult = entryPrice > 0 ? item.currentPrice / entryPrice : 1;
+        athFromCurrentPrice++;
+      } else {
+        // Use stored ATH
+        item.athMult = storedAthMultiple;
+        athFromDb++;
       }
+      item.maxDrawdown = sig?.metrics?.maxDrawdown || 0;
+      item.timeToAth = sig?.metrics?.timeToAth || null;
     }
     
-    logger.info(`[LiveSignals] ATH calculation complete: ${athCalculated} succeeded, ${failedTokens.length} failed`);
-    
-    // Retry failed tokens with longer delays
-    if (failedTokens.length > 0) {
-      logger.info(`[LiveSignals] Retrying ${failedTokens.length} failed ATH calculations with longer delays`);
-      const RETRY_DELAY_MS = 5000; // 5 seconds between retries
-      let retrySuccess = 0;
-      
-      for (let i = 0; i < failedTokens.length; i++) {
-        const { item, sig } = failedTokens[i];
-        logger.debug(`[LiveSignals] Retrying ATH for ${item.mint.slice(0, 8)}... (attempt ${i + 1}/${failedTokens.length})`);
-        try {
-          const beforeUpdatedAt = sig.metrics?.updatedAt?.getTime() ?? 0;
-          const beforeAth = sig.metrics?.athMultiple ?? null;
-          const beforeTimeToAth = sig.metrics?.timeToAth ?? null;
-          await Promise.race([
-            enrichSignalMetrics(sig, true, item.currentPrice),
-            new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 20000))
-          ]);
-          const afterUpdatedAt = sig.metrics?.updatedAt?.getTime() ?? 0;
-          const afterAth = sig.metrics?.athMultiple ?? null;
-          const afterTimeToAth = sig.metrics?.timeToAth ?? null;
-          const metricsUpdated = afterUpdatedAt > beforeUpdatedAt
-            || (afterAth !== null && afterAth !== beforeAth)
-            || (afterTimeToAth !== null && afterTimeToAth !== beforeTimeToAth);
-          if (metricsUpdated) {
-            retrySuccess++;
-            athCalculated++;
-            logger.debug(`[LiveSignals] ✅ Retry successful for ${item.mint.slice(0, 8)}...`);
+    // Process signals WITHOUT stored ATH
+    if (signalsWithoutAth.length > 0) {
+      if (backfillComplete) {
+        // BACKFILL COMPLETE: Just show pending/use current price
+        // (These are likely new signals that haven't been refreshed yet)
+        logger.info(`[LiveSignals] Backfill complete but ${signalsWithoutAth.length} signals still without ATH - using current price`);
+        for (const item of signalsWithoutAth) {
+          const sig = signalMap.get(item.signalId);
+          const entryPrice = sig?.entryPrice || item.entryPrice || 0;
+          if (entryPrice > 0 && item.currentPrice > 0) {
+            item.athMult = Math.max(1, item.currentPrice / entryPrice);
           } else {
-            logger.warn(`[LiveSignals] ⚠️ Retry metrics unchanged for ${item.mint.slice(0, 8)}...`);
-      }
-        } catch (err) {
-          logger.warn(`[LiveSignals] ❌ Retry failed for ${item.mint.slice(0, 8)}...: ${err}`);
+            item.athMult = null;
+          }
+          item.maxDrawdown = null;
+          item.timeToAth = null;
+          athPending++;
+        }
+      } else {
+        // BACKFILL NOT COMPLETE: Must fetch OHLCV to get true historical ATH
+        logger.info(`[LiveSignals] Backfill NOT complete - fetching OHLCV for ${signalsWithoutAth.length} signals`);
+        
+        // Update loading message
+        if (loadingMsg && signalsWithoutAth.length > 0) {
+          try {
+            await ctx.telegram.editMessageText(
+              loadingMsg.chat.id,
+              loadingMsg.message_id,
+              undefined,
+              `⏳ ${signalsWithAth.length} cached, calculating ATH for ${signalsWithoutAth.length} signals...`,
+              { parse_mode: 'Markdown' }
+            );
+          } catch {}
         }
         
-        // Delay between retries (except after last one)
-        if (i < failedTokens.length - 1) {
-          await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
+        const { enrichSignalMetrics } = await import('../../../analytics/metrics');
+        
+        // Process in small batches with delays
+        const BATCH_SIZE = 3;
+        const DELAY_BETWEEN_BATCHES_MS = 2000;
+        const DELAY_BETWEEN_ITEMS_MS = 500;
+        
+        const athCalcStart = Date.now();
+        
+        for (let i = 0; i < signalsWithoutAth.length; i += BATCH_SIZE) {
+          const batch = signalsWithoutAth.slice(i, i + BATCH_SIZE);
+          const batchNum = Math.floor(i / BATCH_SIZE) + 1;
+          const totalBatches = Math.ceil(signalsWithoutAth.length / BATCH_SIZE);
+          
+          logger.info(`[LiveSignals] ATH batch ${batchNum}/${totalBatches} (${batch.length} signals)`);
+          
+          // Update loading message
+          if (loadingMsg && batchNum % 2 === 0) {
+            try {
+              await ctx.telegram.editMessageText(
+                loadingMsg.chat.id,
+                loadingMsg.message_id,
+                undefined,
+                `⏳ ATH: ${athFromOhlcv}/${signalsWithoutAth.length} (${signalsWithAth.length} cached, batch ${batchNum}/${totalBatches})...`,
+                { parse_mode: 'Markdown' }
+              );
+            } catch {}
+          }
+          
+          for (const item of batch) {
+            const sig = signalMap.get(item.signalId);
+            if (!sig || item.currentPrice <= 0) continue;
+            
+            // Ensure entry data is populated
+            if (!sig.entryMarketCap && item.entryMc > 0) sig.entryMarketCap = item.entryMc;
+            if (!sig.entryPrice && item.entryPrice > 0) sig.entryPrice = item.entryPrice;
+            if (!sig.entrySupply && sig.entryMarketCap && sig.entryPrice) {
+              sig.entrySupply = sig.entryMarketCap / sig.entryPrice;
+            }
+            
+            const itemStart = Date.now();
+            try {
+              await Promise.race([
+                enrichSignalMetrics(sig, true, item.currentPrice),
+                new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 12000))
+              ]);
+              
+              const itemDuration = Date.now() - itemStart;
+              const afterAth = sig.metrics?.athMultiple ?? null;
+              
+              if (afterAth !== null && afterAth > 0) {
+                item.athMult = afterAth;
+                item.maxDrawdown = sig.metrics?.maxDrawdown || 0;
+                item.timeToAth = sig.metrics?.timeToAth || null;
+                athFromOhlcv++;
+                logger.debug(`[LiveSignals] ✅ ATH ${item.mint.slice(0, 8)}...: ${afterAth.toFixed(2)}x (${itemDuration}ms)`);
+              } else {
+                // Fallback to current price
+                const entryPrice = sig?.entryPrice || item.entryPrice || 0;
+                item.athMult = entryPrice > 0 ? Math.max(1, item.currentPrice / entryPrice) : null;
+                item.maxDrawdown = null;
+                item.timeToAth = null;
+                athPending++;
+                logger.warn(`[LiveSignals] ⚠️ No ATH for ${item.mint.slice(0, 8)}... (${itemDuration}ms)`);
+              }
+              
+              // Delay between items
+              if (item !== batch[batch.length - 1]) {
+                await new Promise(resolve => setTimeout(resolve, DELAY_BETWEEN_ITEMS_MS));
+              }
+            } catch (err) {
+              const itemDuration = Date.now() - itemStart;
+              logger.warn(`[LiveSignals] ❌ ATH failed ${item.mint.slice(0, 8)}...: ${err} (${itemDuration}ms)`);
+              // Fallback to current price
+              const entryPrice = sig?.entryPrice || item.entryPrice || 0;
+              item.athMult = entryPrice > 0 ? Math.max(1, item.currentPrice / entryPrice) : null;
+              item.maxDrawdown = null;
+              item.timeToAth = null;
+              athPending++;
+            }
+          }
+          
+          // Delay between batches
+          if (i + BATCH_SIZE < signalsWithoutAth.length) {
+            await new Promise(resolve => setTimeout(resolve, DELAY_BETWEEN_BATCHES_MS));
+          }
         }
+        
+        const totalDuration = Date.now() - athCalcStart;
+        logger.info(`[LiveSignals] OHLCV ATH calculation complete: ${athFromOhlcv}/${signalsWithoutAth.length} in ${totalDuration}ms`);
       }
-      logger.info(`[LiveSignals] Retry complete: ${retrySuccess}/${failedTokens.length} succeeded`);
     }
     
-    // CRITICAL: Re-fetch signals to get updated metrics from DB (including ATH market cap)
-    // This ensures we have the latest ATH data calculated by GeckoTerminal
+    // Summary logging
+    if (backfillComplete) {
+      logger.info(`[LiveSignals] ⚡ ATH loaded instantly: ${athFromDb} from DB, ${athFromCurrentPrice} new ATH, ${athPending} pending`);
+    } else {
+      logger.info(`[LiveSignals] ATH: ${athFromDb} from DB, ${athFromCurrentPrice} new ATH, ${athFromOhlcv} from OHLCV, ${athPending} pending`);
+    }
+    
+    // For compatibility with code below
+    const athCalculated = athFromDb + athFromCurrentPrice + athFromOhlcv;
+    const retrySuccess = 0;
+    
+    // Fetch full signal data with updated metrics
     if (topItems.length > 0) {
-      logger.info(`[LiveSignals] Re-fetching ${topItems.length} signals to get updated ATH metrics from DB`);
       const updatedSignals = await prisma.signal.findMany({
         where: { id: { in: topItems.map(i => i.signalId) } },
         include: { metrics: true, group: true, user: true }

@@ -1,0 +1,1266 @@
+Historical Solana Data
+Historical aggregate data for Solana is available via the v2 endpoint, providing data starting from May 2024 to now. However the options to use the historical data are quite limited and currently only works for the aggregate data on DEXTradeByTokens. In this section, we will see some working examples for the same.
+
+To get historical transfers data going back to genesis of the chain, use the V1 endpoint. Docs available here
+
+note
+Trade Side Account field will not be available for aggregate queries in Archive and Combined Datasets
+
+Historical OHLC on Solana
+This query returns the historical OHLC data for a given pair along with volume and number of trades in the given interval.
+
+For this example the pair between the tokens listed below is considered.
+
+6D7NaB2xsLd7cauWu1wKk6KBsJohJmP2qZH9GEfVi5Ui
+So11111111111111111111111111111111111111112
+{
+  Solana(dataset: archive) {
+    DEXTradeByTokens(
+      orderBy: { descendingByField: "Block_Timefield" }
+      where: {
+        Trade: {
+          Currency: { MintAddress: { is: "token mint address" } }
+          Side: {
+            Currency: {
+              MintAddress: { is: "So11111111111111111111111111111111111111112" }
+            }
+          }
+          PriceAsymmetry: { lt: 0.1 }
+        }
+      }
+      limit: { count: 10 }
+    ) {
+      Block {
+        Timefield: Time(interval: { in: days, count: 1 })
+      }
+      volume: sum(of: Trade_Amount)
+      Trade {
+        high: Price(maximum: Trade_Price)
+        low: Price(minimum: Trade_Price)
+        open: Price(minimum: Block_Slot)
+        close: Price(maximum: Block_Slot)
+      }
+      count
+    }
+  }
+}
+
+Important Considerations
+Each OHLC data point is calculated independently per time interval (e.g., daily). There’s no enforcement to make the Close of one candle match the Open of the next.
+
+Gaps are possible: Since the data is based on actual trades, if no trades occur exactly at the start or end of a day, the nearest trades before and after those timestamps will define the open and close. For instance:
+
+Last trade on April 14: 23:58:12
+First trade on April 15: 00:03:45
+These would represent the close of April 14 and open of April 15 respectively, leaving a gap in between.
+Derived from block time: All time-based grouping (daily, hourly, etc.) depends on block timestamps.
+
+Alternative approach: You can get all trades and calculate OHLC locally in your own system. Complete guide here
+
+First 24 Hours Trade Volume for a Solana Token
+This query returns the trade volume for a Solana Token in the first 24 hours of its launch. We are using 13WvP5LC5ETUpFipYM2f9AQzg6QA9S5opxGp2Scpump in this case.
+
+query MyQuery {
+  Solana(dataset: archive, aggregates: yes) {
+    DEXTradeByTokens(
+      orderBy: { ascendingByField: "Block_TimeFeild" }
+      limit: { count: 1 }
+      where: {
+        Trade: {
+          Currency: {
+            MintAddress: { is: "13WvP5LC5ETUpFipYM2f9AQzg6QA9S5opxGp2Scpump" }
+          }
+        }
+      }
+    ) {
+      Block {
+        TimeFeild: Time(interval: { count: 24, in: hours })
+      }
+      sum(of: Trade_Side_AmountInUSD)
+    }
+  }
+}
+
+Top 10 token traders
+This query returns the all time top 10 token traders for a particular token, which is 6D7NaB2xsLd7cauWu1wKk6KBsJohJmP2qZH9GEfVi5Ui in this case.
+
+query MyQuery {
+  Solana(dataset: combined) {
+    DEXTradeByTokens(
+      limit: { count: 10 }
+      orderBy: { descendingByField: "tokens" }
+      where: {
+        Trade: { Currency: { MintAddress: { is: "token mint address" } } }
+      }
+    ) {
+      Trade {
+        Account {
+          Owner
+        }
+      }
+      tokens: sum(of: Trade_Amount)
+      trades: count
+    }
+  }
+}
+
+Tokens Traded by an Account
+This query returns the list of tokens traded by the wallet address over a period of time. The list is sorted by the amount of tokens traded, and returns token info such as mint address, name and symbol along with the total amount of tokens traded and the number of trades involving that token.
+
+query MyQuery {
+  Solana(dataset: combined) {
+    DEXTradeByTokens(
+      orderBy: { descendingByField: "tokens" }
+      where: {
+        Trade: {
+          Account: {
+            Owner: { is: "3CgvbiM3op4vjrrjH2zcrQUwsqh5veNVRjFCB9N6sRoD" }
+          }
+        }
+      }
+    ) {
+      Trade {
+        Currency {
+          MintAddress
+          Name
+          Symbol
+        }
+      }
+      tokens: sum(of: Trade_Amount)
+      trades: count
+    }
+  }
+}
+
+Change in Liquidity Over a Month
+This query returns the change in liquidity for a particular token pair over the last month. For this example the parameters listed below are used.
+
+Primary Token - 6D7NaB2xsLd7cauWu1wKk6KBsJohJmP2qZH9GEfVi5Ui.
+Secondary Token - So11111111111111111111111111111111111111112,
+Pool Address - BSzedbEvWRqVksaF558epPWCM16avEpyhm2HgSq9WZyy
+query MyQuery {
+  Solana(dataset: combined) {
+    DEXTradeByTokens(
+      where: {
+        Trade: {
+          Currency: { MintAddress: { is: "token mint address" } }
+          Side: {
+            Currency: {
+              MintAddress: { is: "So11111111111111111111111111111111111111112" }
+            }
+          }
+          Market: {
+            MarketAddress: {
+              is: "BSzedbEvWRqVksaF558epPWCM16avEpyhm2HgSq9WZyy"
+            }
+          }
+        }
+      }
+      orderBy: { descendingByField: "Block_Timefield" }
+      limit: { count: 1 }
+    ) {
+      tokenLiquidity: sum(
+        of: Trade_Amount
+        if: { Trade: { Side: { Type: { is: buy } } } }
+      )
+      wsolLiquidity: sum(
+        of: Trade_Side_Amount
+        if: { Trade: { Side: { Type: { is: sell } } } }
+      )
+      Block {
+        Timefield: Time(interval: { in: months, count: 1 })
+      }
+      Trade {
+        Market {
+          MarketAddress
+        }
+      }
+    }
+  }
+}
+
+Get ATH (All-Time High) of a Token
+In this query we use the 95th percentile (level: 0.95) to find the highest price of a token. We also use PriceAsymmetry and AmountInUSD in combination to filter outliers as much as possible.
+
+Read more about quantiles here You can run the query here
+
+{
+  Solana(dataset: combined) {
+    DEXTradeByTokens(
+      where: {Trade: {Side: {Currency: {MintAddress: {in: ["11111111111111111111111111111111", "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB", "So11111111111111111111111111111111111111112"]}}, AmountInUSD: {gt: "10"}}, Currency: {MintAddress: {is: "2tnA2ZmwmgUZLyYLi97zbwsFBXAqpMEcHu9Cv9JW6m26"}}, PriceAsymmetry: {lt: 0.01}}}
+      limit: {count: 1}
+      orderBy: {descendingByField: "aATH"}
+    ) {
+      aATH: quantile(of: Trade_PriceInUSD, level: 0.95)
+    }
+  }
+}
+
+
+Get ATH Price, ATH Date, Price Change percentage in 24h, 7d, 30d
+Fetches a Solana token’s ATH price, ATH date, and price change percentages over the past 24h, 7d, and 30d using Bitquery Solana APIs. Try the query to get ATH price, ATH date, price change.
+
+query ($token: String) {
+  Solana(dataset: combined) {
+    DEXTradeByTokens(
+      where: {Trade: {Side: {Currency: {MintAddress: {in: ["11111111111111111111111111111111", "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB", "So11111111111111111111111111111111111111112"]}}, AmountInUSD: {gt: "10"}}, Currency: {MintAddress: {is: $token}}, PriceAsymmetry: {lt: 0.01}}, Transaction: {Result: {Success: true}}}
+      limit: {count: 1}
+    ) {
+      Trade {
+        Price_24h_ago: PriceInUSD(
+          minimum: Block_Slot
+          if: {Block: {Time: {since_relative: {hours_ago: 24}}}}
+        )
+        Price_7d_ago: PriceInUSD(
+          minimum: Block_Slot
+          if: {Block: {Time: {since_relative: {days_ago: 7}}}}
+        )
+        Price_30d_ago: PriceInUSD(
+          minimum: Block_Slot
+          if: {Block: {Time: {since_relative: {days_ago: 30}}}}
+        )
+        CurrentPrice: PriceInUSD(maximum: Block_Slot)
+      }
+      change24hr: calculate(
+        expression: "(($Trade_CurrentPrice - $Trade_Price_24h_ago) / $Trade_Price_24h_ago) * 100"
+      )
+      change7d: calculate(
+        expression: "(($Trade_CurrentPrice - $Trade_Price_7d_ago) / $Trade_Price_7d_ago) * 100"
+      )
+      change30d: calculate(
+        expression: "(($Trade_CurrentPrice - $Trade_Price_30d_ago) / $Trade_Price_30d_ago) * 100"
+      )
+      aATH: quantile(of: Trade_PriceInUSD, level: 0.95)
+      Block {
+        Time
+      }
+    }
+  }
+}
+{
+  "token": "2tnA2ZmwmgUZLyYLi97zbwsFBXAqpMEcHu9Cv9JW6m26"
+}
+
+
+Get First 100 buyers of a Token
+This API returns the first 100 buyers for a particular token.
+
+{
+  Solana(dataset: combined) {
+    DEXTradeByTokens(
+      orderBy: { ascending: Block_Time }
+      limit: { count: 100 }
+      limitBy: { count: 1, by: Trade_Account_Owner }
+      where: {
+        Block: { Date: { since: "2025-04-01" } }
+        Trade: {
+          Side: { Type: { is: sell } }
+          Currency: {
+            MintAddress: { is: "pumpeALaQHVP7mCdjmhFkAnesZj3vXMJhD4rFffYDfn" }
+          }
+        }
+      }
+    ) {
+      Trade {
+        Account {
+          Owner
+        }
+      }
+    }
+  }
+}
+
+Get ATH of Multiple Tokens
+You can run it here
+
+{
+  Solana(dataset: combined) {
+    DEXTradeByTokens(
+      where: {
+        Trade: {
+          Currency: {
+            MintAddress: {
+              in: ["token mint address-1", "token mint address-2"]
+            }
+          }
+          PriceAsymmetry: { lt: 0.01 }
+          AmountInUSD: { gt: "10" }
+        }
+      }
+      limit: { count: 2 }
+      orderBy: { descendingByField: "aATH" }
+      limitBy: { by: Trade_Currency_MintAddress, count: 1 }
+    ) {
+      Trade {
+        Currency {
+          Name
+        }
+      }
+      aATH: quantile(of: Trade_PriceInUSD, level: 0.99)
+    }
+  }
+}
+
+Get ATH Market Cap of Tokens
+This query returns the ATH (All-Time High) market cap, starting market cap, and related price metrics for multiple tokens. It calculates market cap using a 1 billion token supply and uses quantile to find the ATH price.
+
+You can run it here
+
+query GetAthMarketCap($tokens: [String!]!) {
+  Solana(dataset: combined) {
+    DEXTradeByTokens(
+      limitBy: { by: Trade_Side_Currency_MintAddress, count: 1 }
+      where: {
+        Trade: {
+          Currency: { MintAddress: { in: $tokens } }
+          Side: { AmountInUSD: { gt: "1" } }
+        }
+      }
+    ) {
+      Trade {
+        Currency {
+          MintAddress
+          Name
+          Symbol
+        }
+        PriceInUSD(maximum: Trade_PriceInUSD)
+        Starting_Price: PriceInUSD(minimum: Block_Slot)
+        Side {
+          Currency {
+            Name
+            Symbol
+            MintAddress
+          }
+        }
+      }
+      max: quantile(of: Trade_PriceInUSD, level: 0.98)
+      quantile_price_ATH_Marketcap: calculate(expression: "$max * 1000000000")
+      Real_maximum_price_ATH_Marketcap: calculate(
+        expression: "$Trade_PriceInUSD_maximum * 1000000000"
+      )
+      Starting_Marketcap: calculate(
+        expression: "$Trade_Starting_Price * 1000000000"
+      )
+    }
+  }
+}
+
+{
+  "tokens": ["8SAwv8EKMKaKnupTsYjoQdgBuWxJdo3ouA178UU7pump"]
+}
+
+
+Solana Trader API
+In this section we will see how to get Solana trader information using our API. More queries on DEX trades including latest trades, OHLC, and other data points can be found in the Solana DEX Trades API page.
+
+note
+Trade Side Account field will not be available for aggregate queries in Archive and Combined Datasets
+
+Top Traders of a token
+This query will give you top traders for this token 59VxMU35CaHHBTndQQWDkChprM5FMw7YQi5aPE5rfSHN on Solana's DEX platforms. You can find the query here
+
+query TopTraders($token: String, $base: String) {
+  Solana {
+    DEXTradeByTokens(
+      orderBy: {descendingByField: "volumeUsd"}
+      limit: {count: 100}
+      where: {Trade: {Currency: {MintAddress: {is: $token}}, Side: {Amount: {gt: "0"}, Currency: {MintAddress: {is: $base}}}}, Transaction: {Result: {Success: true}}}
+    ) {
+      Trade {
+        Account {
+          Owner
+        }
+        Dex {
+          ProgramAddress
+          ProtocolFamily
+          ProtocolName
+        }
+      }
+      bought: sum(of: Trade_Amount, if: {Trade: {Side: {Type: {is: buy}}}})
+      sold: sum(of: Trade_Amount, if: {Trade: {Side: {Type: {is: sell}}}})
+      volume: sum(of: Trade_Amount)
+      volumeUsd: sum(of: Trade_Side_AmountInUSD)
+    }
+  }
+}
+{
+  "token": "59VxMU35CaHHBTndQQWDkChprM5FMw7YQi5aPE5rfSHN",
+  "base": "So11111111111111111111111111111111111111112"
+}
+
+
+image
+
+Check data here on DEXrabbit.
+
+Trades of Wallets in Realtime
+Below query will give you the trades of the wallets present in addressList in realtime. Try the query here.
+
+subscription MyQuery($addressList: [String!]) {
+  Solana {
+    DEXTrades(
+      where: {Transaction: {Result: {Success: true}}, any: [{Trade: {Buy: {Account: {Address: {in: $addressList}}}}}, {Trade: {Buy: {Account: {Token: {Owner: {in: $addressList}}}}}}, {Trade: {Sell: {Account: {Address: {in: $addressList}}}}}, {Trade: {Sell: {Account: {Token: {Owner: {in: $addressList}}}}}}]}
+    ) {
+      Instruction {
+        Program {
+          Method
+        }
+      }
+      Block {
+        Time
+      }
+      Trade {
+        Buy {
+          Amount
+          Account {
+            Address
+          }
+          Currency {
+            Name
+            Symbol
+            MintAddress
+            Decimals
+          }
+          AmountInUSD
+        }
+        Sell {
+          Amount
+          Account {
+            Address
+          }
+          Currency {
+            Name
+            Symbol
+            MintAddress
+            Decimals
+          }
+          AmountInUSD
+        }
+      }
+      Transaction {
+        Signature
+        Signer
+      }
+    }
+  }
+}
+{
+  "addressList": ["7eWHXZefGY98o9grrrt1Z3j7DcPDEhA4UviQ1pVNhTXX", "6LNdbvyb11JH8qxAsJoPSfkwK4zJDQKQ6LNp4mxt8VpR"]
+}
+
+
+Trades of Wallets with PreBalance, PostBalance
+Below query will give you the trades of the wallets present in addressList along with the balance updates happened in those trades.. Try the query here.
+
+query MyQuery($addressList: [String!]) {
+  Solana {
+    DEXTrades(
+      limit: {count: 10}
+      orderBy: {descending: Block_Time}
+      where: {Transaction: {Result: {Success: true}}, any: [{Trade: {Buy: {Account: {Address: {in: $addressList}}}}}, {Trade: {Buy: {Account: {Token: {Owner: {in: $addressList}}}}}}, {Trade: {Sell: {Account: {Address: {in: $addressList}}}}}, {Trade: {Sell: {Account: {Token: {Owner: {in: $addressList}}}}}}]}
+    ) {
+      Instruction {
+        Program {
+          Method
+        }
+      }
+      Block {
+        Time
+      }
+      Trade {
+        Buy {
+          Amount
+          Account {
+            Address
+          }
+          Currency {
+            Name
+            Symbol
+            MintAddress
+            Decimals
+          }
+          AmountInUSD
+        }
+        Sell {
+          Amount
+          Account {
+            Address
+          }
+          Currency {
+            Name
+            Symbol
+            MintAddress
+            Decimals
+          }
+          AmountInUSD
+        }
+      }
+      Transaction {
+        Signature
+        Signer
+      }
+      joinBalanceUpdates(join: left, Transaction_Signature: Transaction_Signature) {
+        Block{
+          Time
+        }
+        BalanceUpdate {
+          PreBalance
+          PostBalance
+          Account {
+            Address
+            Token {
+              Owner
+            }
+          }
+        }
+      }
+    }
+  }
+}
+{
+  "addressList": ["HevtGooXxDjLfvLM1vUY2y7b9gyu59whR4ycnQj3UjUT"]
+}
+
+
+Get count of Buys and Sells of a Trader
+To get the count of Buys and Sells of a specific trader after a certain timestamp, use the following query. Find the query here
+
+query MyQuery($timestamp: DateTime, $trader: String) {
+  Solana(dataset: combined) {
+    DEXTradeByTokens(
+      where: {Block: {Time: {since: $timestamp}}, Trade: {Side: {Currency: {MintAddress: {in: ["So11111111111111111111111111111111111111112", "11111111111111111111111111111111"]}}}}, any: [{Trade: {Account: {Address: {is: $trader}}}}, {Trade: {Account: {Token: {Owner: {is: $trader}}}}}]}
+    ) {
+      buys: count(if: {Trade: {Side: {Type: {is: buy}}}})
+      sells: count(if: {Trade: {Side: {Type: {is: sell}}}})
+    }
+  }
+}
+{
+  "timestamp" : "2024-06-25T06:19:00Z",
+  "trader" : "FeWbDQ9SpgWS8grNrpFesVquJfxVkRu1WNZerKsrkcbY"
+}
+
+
+Total Bought, Total Sold, Avg Sell price, Last Active Trade of a specific token by an Address
+Get total bought, total sold, average sell price, and last active trade time for a specific token by a trader. Test the query here
+
+query MyQuery ($trader:String, $token:String){
+  Solana(dataset: realtime) {
+    DEXTradeByTokens(
+      where: { Trade: {Currency:{MintAddress:{is:$token}} Side: {Currency: {MintAddress: {in: ["So11111111111111111111111111111111111111112", "11111111111111111111111111111111"]}}}}, any: [{Trade: {Account: {Address: {is: $trader}}}}, {Trade: {Account: {Token: {Owner: {is: $trader}}}}}]}
+    ) {
+      Block{
+        last_active_time:Time(maximum:Block_Time)
+      }
+      total_buy: sum(of:Trade_Side_AmountInUSD if: {Trade: {Side: {Type: {is: buy}}}})
+      total_sell: sum(of:Trade_Side_AmountInUSD if: {Trade: {Side: {Type: {is: sell}}}})
+      avg_sell_price: average(of:Trade_PriceInUSD if: {Trade: {Side: {Type: {is: sell}}}})
+    }
+  }
+}
+
+
+{
+  "token":"FSJYiGZhJ1wDPNhHbSHm49yJkzbFp7FykNB2SZFipump",
+  "trader": "CECN4BW4DKnbyddkd9FhWVR5dotzKhQr5p7DUPhQ55Du"
+}
+
+Subscribe to a Trader in Real-time
+The below subscription query will fetch in real-time the trades done by a wallet. You can use websockets to build applications on this data. Read more here
+
+To filter trades by a wallet we will use the condition Account: {Address: {is}}. Run the subscription query here
+
+You can convert this subscription to a query to get past trades of the wallet.
+
+subscription {
+  Solana {
+    buy: DEXTrades(
+      where: {Trade: {Buy: {Account: {Address: {is: "CP1d7VVnCMy321G6Q1924Bibp528rqibTX8x9UL6wUCe"}}}}}
+    ) {
+      Trade {
+        Dex {
+          ProgramAddress
+          ProtocolFamily
+          ProtocolName
+        }
+        Buy {
+          Amount
+          Account {
+            Address
+          }
+          Currency {
+            MetadataAddress
+            Key
+            IsMutable
+            EditionNonce
+            Decimals
+            CollectionAddress
+            Fungible
+            Symbol
+            Native
+            Name
+          }
+          Order {
+            LimitPrice
+            LimitAmount
+            OrderId
+          }
+          Price
+        }
+        Market {
+          MarketAddress
+        }
+        Sell {
+          Account {
+            Address
+          }
+          Currency {
+            IsMutable
+            Decimals
+            CollectionAddress
+            Fungible
+            Symbol
+            Native
+            Name
+          }
+          Price
+        }
+      }
+    }
+    sell: DEXTrades(
+      where: {Trade: {Sell: {Account: {Address: {is: "CP1d7VVnCMy321G6Q1924Bibp528rqibTX8x9UL6wUCe"}}}}}
+    ) {
+      Trade {
+        Dex {
+          ProgramAddress
+          ProtocolFamily
+          ProtocolName
+        }
+        Buy {
+          Amount
+          Account {
+            Address
+          }
+          Currency {
+            MetadataAddress
+            Key
+            IsMutable
+            EditionNonce
+            Decimals
+            CollectionAddress
+            Fungible
+            Symbol
+            Native
+            Name
+          }
+          Order {
+            LimitPrice
+            LimitAmount
+            OrderId
+          }
+          Price
+        }
+        Market {
+          MarketAddress
+        }
+        Sell {
+          Account {
+            Address
+          }
+          Currency {
+            IsMutable
+            Decimals
+            CollectionAddress
+            Fungible
+            Symbol
+            Native
+            Name
+          }
+          Price
+        }
+      }
+    }
+  }
+}
+
+
+Get the First 100 buyers of a Token
+The below query retrieves the first 100 buyers of a specified token. You can run the query here
+
+query MyQuery {
+  Solana {
+    DEXTrades(
+      where: {
+        Trade: {
+          Buy: {
+            Currency: {
+              MintAddress: {
+                is: "2Z4FzKBcw48KBD2PaR4wtxo4sYGbS7QqTQCLoQnUpump"
+              }
+            }
+          }
+        }
+      }
+      limit: { count: 100 }
+      orderBy: { ascending: Block_Time }
+    ) {
+      Trade {
+        Buy {
+          Amount
+          Account {
+            Token {
+              Owner
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+Get all the Tokens owned by an address
+The below query retrieves the token addresses and their balances owned by a particular account address You can access the query here.
+
+For tracking the transfers that cause these balance changes, see our Solana Transfers API.
+
+query MyQuery {
+  Solana {
+    BalanceUpdates(
+      where: {BalanceUpdate: {Account: {Owner: {is: "AtTjQKXo1CYTa2MuxPARtr382ZyhPU5YX4wMMpvaa1oy"}}}}
+      orderBy: {descendingByField: "BalanceUpdate_Balance_maximum"}
+    ) {
+      BalanceUpdate {
+        Balance: PostBalance(maximum: Block_Slot)
+        Currency {
+          Name
+          Symbol
+        }
+      }
+    }
+  }
+}
+
+Solana Balance & Balance Updates API
+In this section we will see how to monitor real-time balance changes across the Solana blockchain using our BalanceUpdates API.
+
+Note - Our V1 APIs do support solana and you can get balances from there. However they do not have historical balance.
+
+🔗 Related Solana APIs
+Solana Transfers API - Track transfers that cause balance changes
+Solana Instructions API - Monitor instructions that affect balances
+Solana DEX Trades API - Track trading activities that impact balances
+Solana Fees API - Analyze fees that reduce balances
+Solana Token Supply API - Monitor supply changes affecting balances
+Get all the Tokens owned by an address
+The below query retrieves the token addresses and their balances owned by a particular account address You can access the query here.
+
+For tracking the transfers that cause these balance changes, see our Solana Transfers API.
+
+query MyQuery {
+  Solana {
+    BalanceUpdates(
+      where: {BalanceUpdate: {Account: {Owner: {is: "AtTjQKXo1CYTa2MuxPARtr382ZyhPU5YX4wMMpvaa1oy"}}}}
+      orderBy: {descendingByField: "BalanceUpdate_Balance_maximum"}
+    ) {
+      BalanceUpdate {
+        Balance: PostBalance(maximum: Block_Slot)
+        Currency {
+          Name
+          Symbol
+        }
+      }
+    }
+  }
+}
+
+Get Latest Balance Updates
+The query will subscribe you to real-time updates for balance changes on the Solana blockchain, providing a continuous stream of data as new transactions are processed and recorded. You can find the query here
+
+The balance update does not inherently include transaction fees. Therefore, to get the actual balance after all transactions and fees, you need to subtract the total transaction fees from the balance updates.
+
+subscription {
+  Solana(network: solana) {
+    BalanceUpdates(
+      where: {BalanceUpdate: {Account: {Address: {is: "DzYV9AFEbe9eGc8GRaNvsGjnt7coYiLDY7omCS1jykJU"}}}}
+    ) {
+      Transaction {
+        Signature
+      }
+      BalanceUpdate {
+        Amount
+        Currency {
+          Name
+          MintAddress
+        }
+        PostBalance
+        PostBalanceInUSD
+        Account {
+          Address
+        }
+        Type
+      }
+      Block {
+        Slot
+      }
+    }
+  }
+}
+
+
+
+Get Token Holdings and Holding time of an address
+Get the token holdings of an address and calculate the holding time using first_buy_time and latest_balance_update_time; test this query here.
+
+query MyQuery {
+  Solana {
+    BalanceUpdates(
+      where: {BalanceUpdate: {Currency:{MintAddress:{is:"FSJYiGZhJ1wDPNhHbSHm49yJkzbFp7FykNB2SZFipump"}} Account: {Owner: {is: "CECN4BW4DKnbyddkd9FhWVR5dotzKhQr5p7DUPhQ55Du"}}}}
+    ) {
+      Block{
+        first_buy_time:Time(minimum:Block_Slot)
+        latest_balance_update_time:Time(maximum: Block_Slot)
+      }
+      BalanceUpdate {
+        First_Buy: PostBalance(minimum:Block_Slot)
+        Balance: PostBalance(maximum: Block_Slot)
+        Currency {
+          Name
+          Symbol
+          MintAddress
+        }
+      }
+    }
+  }
+}
+
+
+
+Get All Token Holders of a Particular Token
+This query returns all token holders of a particular token after a given time.
+
+query MyQuery {
+  Solana {
+    BalanceUpdates(
+      orderBy: {descendingByField: "BalanceUpdate_Holding_maximum"}
+      where: {BalanceUpdate: {Currency: {MintAddress:
+        {is: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"}},
+        }, Transaction: {Result: {Success: true}}}
+    ) {
+      BalanceUpdate {
+        Currency {
+          Name
+          MintAddress
+          Symbol
+        }
+        Account {
+          Address
+        }
+        Holding: PostBalance(maximum: Block_Slot selectWhere:{gt:"0"})
+      }
+    }
+  }
+}
+
+Get Balance Updates of a Particular Wallet
+To focus on the balance changes of a particular Solana wallet, this query filters the data stream to include only those updates relevant to the specified address. This is especially useful for wallet owners or services tracking specific accounts.
+
+subscription{
+  Solana {
+    BalanceUpdates(
+      where: {BalanceUpdate: {Account: {Address: {is: "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8"}}}}
+    ) {
+      Transaction {
+        Index
+        FeePayer
+        Fee
+        Signature
+        Result {
+          Success
+          ErrorMessage
+        }
+      }
+      Block {
+        Time
+        Hash
+        Height
+      }
+      BalanceUpdate {
+        Account {
+          Address
+        }
+        Amount
+        Currency {
+          Decimals
+          CollectionAddress
+          Name
+          Key
+          IsMutable
+          Symbol
+        }
+      }
+    }
+  }
+}
+
+
+Track NFT Balance Updates in Real-Time
+For those interested in the NFT market, this query is tailored to track balance updates involving non-fungible tokens (NFTs) on the Solana blockchain.
+
+You can find the query here
+
+subscription {
+  Solana {
+    BalanceUpdates(
+      where: {BalanceUpdate: {Currency: {Fungible: false}}}
+    ) {
+      Transaction {
+        Index
+        FeePayer
+        Fee
+        Signature
+        Result {
+          Success
+          ErrorMessage
+        }
+      }
+      Block {
+        Time
+        Hash
+        Height
+      }
+      BalanceUpdate {
+        Account {
+          Address
+          Token {
+            Owner
+          }
+        }
+        Amount
+        Currency {
+          Decimals
+          CollectionAddress
+          Name
+          Key
+          IsMutable
+          Symbol
+        }
+      }
+    }
+  }
+}
+
+
+Latest Balance of an Address on Solana
+The query will subscribe you to real-time updates for balance changes on the Solana blockchain for the address 675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8, The PostBalance field will give you the native SOL balance in this case after the balance update. You can find the query here
+
+subscription {
+  Solana {
+    BalanceUpdates(
+      where: {BalanceUpdate: {Account: {Address: {is: "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8"}}}}
+    ) {
+      BalanceUpdate {
+        Account {
+          Address
+        }
+        Amount
+        Currency {
+          Decimals
+          CollectionAddress
+          Name
+          Key
+          IsMutable
+          Symbol
+        }
+        PreBalance
+        PostBalance
+      }
+    }
+  }
+}
+
+
+
+Using Pre-Made Aggregates in Solana Balance Updates
+When querying Solana balance updates, you can use pre-made aggregates to optimize performance. The aggregates flag provides three options to control the use of these aggregates:
+
+aggregates: only: This option uses only the pre-made aggregates, which can significantly increase the speed of the response.
+aggregates: yes: This option uses both pre-made aggregates and individual transaction data.
+aggregates: no: This option does not use any pre-made aggregates.
+When using the aggregates: only option, you need to include the Owner field in the response to ensure proper aggregation and filtering.
+
+{
+  Solana(aggregates: only) {
+    BalanceUpdates(
+      where: {BalanceUpdate: {Account: {Address: {is: "HEL1USMZKAL2odpNBj2oCjffnFGaYwmbGmyewGv1e2TU"}}}}
+    ) {
+      BalanceUpdate {
+        Account {
+          Owner
+        }
+        Currency {
+          Decimals
+          CollectionAddress
+          Name
+          Key
+          IsMutable
+          Symbol
+        }
+      }
+      sum(of: BalanceUpdate_AmountInUSD)
+    }
+  }
+}
+
+
+Monitoring Solana at Scale: Managing 100s of Addresses
+This guide demonstrates how to monitor real-time token transfers and DEX trades for hundreds of blockchain addresses efficiently using WebSockets and Streamlit. Learn to dynamically track and display key transfer and trade details in a real-time dashboard.
+
+Monitoring 100s of Addresses on Solana Transfers in Real-Time
+This section walks through how to track real-time Solana token transfers using a WebSocket connection and display sender, receiver, amount, and time in a dynamic Streamlit dashboard.
+
+1. Setting Up the Environment
+First, ensure that you have the necessary dependencies installed:
+
+pip install streamlit pandas gql
+
+Then, import the following libraries:
+
+import asyncio
+import pandas as pd
+import streamlit as st
+from gql import Client, gql
+from gql.transport.websockets import WebsocketsTransport
+
+Set your Bitquery API token:
+
+TOKEN = "your_bitquery_api_token"
+
+2. Preparing the List of Addresses
+Define the list of Solana addresses you want to monitor:
+
+addresses = [
+    "7Ppgch9d4XRAygVNJP4bDkc7V6htYXGfghX4zzG9r4cH",
+    "G6xptnrkj4bxg9H9ZyPzmAnNsGghSxZ7oBCL1KNKJUza",
+    # Add more addresses here...
+]
+
+3. Creating the Transfer Subscription Query
+The following function dynamically generates a GraphQL query to monitor token transfers for the specified addresses:
+
+def create_transfer_subscription_query():
+    address_list = ', '.join(f'"{addr}"' for addr in addresses)
+    return gql(f"""
+   subscription {{
+    Solana {{
+        Transfers(
+            where: {{
+                Transfer: {{ Sender: {{ Address: {{ in: [ {address_list} ] }} }} }}
+            }}
+        ) {{
+            Transfer {{
+                Amount
+                AmountInUSD
+                Receiver {{
+                    Address
+                }}
+                Sender {{
+                    Address
+                }}
+                Currency {{
+                    Symbol
+                }}
+            }}
+        }}
+    }}
+}}
+    """)
+
+4. Monitoring Real-Time Transfers
+The monitor_transfers function sets up a WebSocket connection and subscribes to real-time transfer data. The results are displayed in real-time using a Streamlit dashboard.
+
+async def monitor_transfers():
+    transport = WebsocketsTransport(
+        url=f"wss://streaming.bitquery.io/eap?token={TOKEN}",
+        headers={"Sec-WebSocket-Protocol": "graphql-transport-ws"}
+    )
+
+    await transport.connect()
+    print("Connected to WebSocket for transfer monitoring.")
+
+    transfers_df = pd.DataFrame()
+
+    # Set up Streamlit display for transfers
+    st.title("Solana Transfer Monitoring Dashboard")
+    table = st.empty()  # Initialize an empty Streamlit table
+
+    try:
+        query = create_transfer_subscription_query()
+        async for result in transport.subscribe(query):
+            if result.data:
+                print("Transfer Data:", result.data)
+                transfer_data = pd.json_normalize(result.data['Solana']['Transfers'])
+
+                # Select only the relevant fields
+                display_data = transfer_data[[
+                    'Transfer.Sender.Address',
+                    'Transfer.Receiver.Address',
+                    'Transfer.Amount',
+                    'Transfer.AmountInUSD',
+                    'Transfer.Currency.Symbol'
+                ]]
+
+                transfers_df = pd.concat([transfers_df, display_data], ignore_index=True)
+
+                # Update the Streamlit table with the new data
+                with st.spinner('Updating data...'):
+                    table.dataframe(transfers_df, use_container_width=True)
+
+    except Exception as e:
+        print("Error during transfer monitoring:", e)
+    finally:
+        await transport.close()
+
+5. Running the Transfer Monitoring Dashboard
+To run the real-time monitoring dashboard, use the following command:
+
+streamlit run your_script.py
+
+The dashboard will open in your browser, where you will see real-time updates of Solana transfers for the specified addresses.
+
+Output
+This is how it will look.
+
+
+
+Scaling the Monitoring
+Initial tests were conducted with 50 addresses, yielding fast response times.
+
+Increased the number of addresses to 150, and the response speed remained consistent without any noticeable delay.
+
+Further tested with over 500 addresses, and again, no visible latency was observed.
+
+The response time remained relatively quick even as the number of addresses increased, demonstrating the scalability and efficiency of the system.
+
+Monitoring Solana DEX Trades for 100s of Addresses
+This section explains how to monitor real-time DEXTrades on Solana, displaying buy/sell data, trade prices, and other relevant trade information for hundreds of addresses.
+
+1. Setting Up the Environment
+Ensure that you have the necessary libraries installed:
+
+pip install streamlit pandas gql
+
+Import the necessary libraries:
+
+import asyncio
+import pandas as pd
+import streamlit as st
+from gql import Client, gql
+from gql.transport.websockets import WebsocketsTransport
+
+Set your Bitquery API token:
+
+TOKEN = "your_bitquery_api_token"
+
+2. Preparing the List of Addresses
+Define the list of Solana addresses you want to monitor for DEX trades:
+
+addresses = [
+    "5qrvgpvr55Eo7c5bBcwopdiQ6TpvceiRm42yjHTbtDvc",
+    "FpCMFDFGYotvufJ7HrFHsWEiiQCGbkLCtwHiDnh7o28Q",
+    # Add more addresses here...
+]
+
+3. Creating the DEXTrades Subscription Query
+This function dynamically generates a GraphQL query to monitor DEX trades involving the specified addresses:
+
+def create_dex_trades_subscription_query():
+    address_list = ', '.join(f'"{addr}"' for addr in addresses)
+    return gql(f"""
+        subscription {{
+            Solana {{
+                DEXTrades(where: {{Trade: {{Buy: {{Account: {{Address: {{in: [{address_list}]}}}}}}}}}}) {{
+                    Trade {{
+                        Dex {{
+                            ProgramAddress
+                            ProtocolName
+                        }}
+                        Buy {{
+                            Amount
+                            Account {{
+                                Address
+                            }}
+                            Currency {{
+                                Symbol
+                                Name
+                            }}
+                            Price
+                        }}
+                        Sell {{
+                            Account {{
+                                Address
+                            }}
+                            Price
+                        }}
+                    }}
+                }}
+            }}
+        }}
+    """)
+
+4. Monitoring Real-Time DEXTrades
+The following function establishes a WebSocket connection and subscribes to real-time DEXTrades, displaying the results in a Streamlit dashboard:
+
+async def monitor_dex_trades():
+    transport = WebsocketsTransport(
+        url=f"wss://streaming.bitquery.io/eap?token={TOKEN}",
+        headers={"Sec-WebSocket-Protocol": "graphql-transport-ws"},
+    )
+
+    await transport.connect()
+    print("Connected to WebSocket for DEXTrades monitoring.")
+
+    dex_trades_df = pd.DataFrame()
+
+    # Set up Streamlit display for DEXTrades
+    st.title("Solana DEXTrades Monitoring Dashboard")
+    table = st.empty()  # Initialize an empty Streamlit table
+
+    try:
+        query = create_dex_trades_subscription_query()
+        async for result in transport.subscribe(query):
+            if result.data:
+                print("DEXTrade Data:", result.data)
+                dex_trade_data = pd.json_normalize(result.data["Solana"]["DEXTrades"])
+
+                # Select only the relevant fields
+                display_data = dex_trade_data[[
+                    'Trade.Buy.Currency.Name',
+                    'Trade.Buy.Currency.Symbol',
+                    'Trade.Buy.Account.Address',
+                    'Trade.Buy.Price',
+                    'Trade.Sell.Account.Address',
+                    'Trade.Sell.Price',
+                    'Trade.Dex.ProgramAddress',
+                    'Trade.Dex.ProtocolName'
+                ]]
+
+                dex_trades_df = pd.concat([dex_trades_df, display_data], ignore_index=True)
+
+                # Update the Streamlit table with the new data
+                with st.spinner("Updating data..."):
+                    table.dataframe(dex_trades_df, use_container_width=True)
+
+    except Exception as e:
+        print("Error during DEXTrades monitoring:", e)
+    finally:
+        await transport.close()
+
+5. Running the DEXTrades Monitoring Dashboard
+To run the real-time DEXTrades monitoring dashboard, use the following command:
+
+streamlit run your_script.py
+
+The dashboard will open in your browser, showing real-time updates for DEXTrades involving the specified addresses.
+
+Conclusion
+This guide demonstrates how to efficiently monitor 100s of Solana addresses in real time using WebSockets and Streamlit. You can extend this code to handle additional blockchain events or customize the displayed data based on your specific needs.
