@@ -766,27 +766,42 @@ export const formatValidationReport = (report: ValidationReport): string => {
   msg += `• Has Valid ATH: ${report.summary.hasValidAth}\n`;
   msg += `• Unfixable (no data): ${report.summary.unfixableCount}\n\n`;
   
+  // Count specific error types from issues
+  const missingEntryCount = report.issues.filter(i => i.type === 'MISSING_ENTRY').length;
+  const impossibleMultCount = report.issues.filter(i => i.type === 'IMPOSSIBLE_MULTIPLE').length;
+  const negativeTimeCount = report.issues.filter(i => i.type === 'NEGATIVE_TIME').length;
+  
   // Issue breakdown
   msg += `📋 *Issue Breakdown:*\n`;
-  msg += `• ❌ Errors: ${report.errorCount}`;
-  if (report.errorCount > 0) msg += ` ← need "Fix Timing"`;
-  msg += `\n`;
+  msg += `• ❌ Errors: ${report.errorCount}\n`;
   msg += `• ⚠️ Warnings: ${report.warningCount}\n`;
   msg += `• ℹ️ Info: ${report.infoCount}\n\n`;
   
   // Specific issues with actionable info
-  msg += `🔎 *Issue Types:*\n`;
-  if (report.summary.invalidTimeCount > 0) {
-    msg += `• 🎯 Invalid Time: ${report.summary.invalidTimeCount} ← Fix with minute candles\n`;
-  }
-  if (report.summary.missingAthCount > 0) {
-    msg += `• 📭 Missing ATH: ${report.summary.missingAthCount} ← No OHLCV data (dead tokens)\n`;
-  }
-  if (report.summary.athBelowEntryCount > 0) {
-    msg += `• ⬇️ ATH Below Entry: ${report.summary.athBelowEntryCount}\n`;
-  }
-  if (report.summary.staleMetricsCount > 0) {
-    msg += `• 📅 Stale Metrics: ${report.summary.staleMetricsCount} (>24h, will refresh)\n`;
+  const hasIssues = report.errorCount > 0 || report.warningCount > 0 || report.summary.missingAthCount > 0;
+  if (hasIssues) {
+    msg += `🔎 *Issue Types:*\n`;
+    if (missingEntryCount > 0) {
+      msg += `• 🚫 No Entry Price: ${missingEntryCount} (can't calc ATH)\n`;
+    }
+    if (impossibleMultCount > 0) {
+      msg += `• ❓ Invalid ATH: ${impossibleMultCount} (≤0 or >10000x)\n`;
+    }
+    if (negativeTimeCount > 0 || report.summary.invalidTimeCount > 0) {
+      const timeIssues = Math.max(negativeTimeCount, report.summary.invalidTimeCount);
+      msg += `• ⏱️ Time Issues: ${timeIssues} ← "Fix Timing"\n`;
+    }
+    if (report.summary.missingAthCount > 0) {
+      msg += `• 📭 No Metrics: ${report.summary.missingAthCount} ← "Fix Missing"\n`;
+    }
+    if (report.summary.athBelowEntryCount > 0) {
+      msg += `• ⬇️ ATH < Entry: ${report.summary.athBelowEntryCount}\n`;
+    }
+    if (report.summary.staleMetricsCount > 0) {
+      msg += `• 📅 Stale (>24h): ${report.summary.staleMetricsCount}\n`;
+    }
+  } else {
+    msg += `✅ *All signals have valid metrics!*\n`;
   }
   
   // Top errors (if any)
@@ -794,7 +809,8 @@ export const formatValidationReport = (report: ValidationReport): string => {
   if (topErrors.length > 0) {
     msg += `\n🔴 *Sample Errors:*\n`;
     for (const issue of topErrors) {
-      msg += `• \`${issue.mint.slice(0, 8)}...\`: ${issue.message}\n`;
+      const shortMsg = issue.message.length > 50 ? issue.message.slice(0, 47) + '...' : issue.message;
+      msg += `• \`${issue.mint.slice(0, 8)}...\`: ${shortMsg}\n`;
     }
   }
   
