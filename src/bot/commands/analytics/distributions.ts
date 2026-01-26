@@ -73,7 +73,8 @@ export const handleDistributions = async (ctx: Context, view: string = 'mcap') =
     if (view === 'mcap') {
       message = UIHelper.header(`DISTRIBUTIONS (${timeframe})`, '📈');
       message += `Target: *${targetLabel}*\n`;
-      message += `Based on *${stats.totalSignals}* calls\n`;
+      const coverage = stats.rawSignals > 0 ? `${stats.metricsSignals}/${stats.rawSignals}` : `${stats.metricsSignals}`;
+      message += `Based on *${stats.metricsSignals}* calls (coverage ${coverage})\n`;
       if (stats.totalSignals < 10) {
         message += `⚠️ *Low sample size — results may be noisy*\n`;
       }

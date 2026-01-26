@@ -54,14 +54,14 @@ export const getMultipleTokenPrices = async (mints: string[]): Promise<Record<st
           }
           const url = `${JUP_PRICE_URL}?ids=${ids}`;
           let attempt = 0;
-
+          
           while (attempt <= MAX_RETRIES) {
             const controller = new AbortController();
             const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
             try {
               const res = await fetch(url, { headers, signal: controller.signal });
               clearTimeout(timeoutId);
-
+              
               if (!res.ok) {
                 if (res.status === 429 && attempt < MAX_RETRIES) {
                   const retryAfter = res.headers.get('retry-after');

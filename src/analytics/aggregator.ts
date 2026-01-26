@@ -784,6 +784,8 @@ export interface DistributionStats {
   }>;
   currentStreak: { type: 'win' | 'loss'; count: number };
   totalSignals: number;
+  rawSignals: number;
+  metricsSignals: number;
 }
 
 export const getDistributionStats = async (
@@ -848,9 +850,14 @@ export const getDistributionStats = async (
 
   logger.info(`[DistributionStats] Processing ${signals.length} signals for distribution stats`);
   
-  const missingMetricsCount = signals.filter(s => !s.metrics).length;
+  const signalsWithMetrics = signals.filter(s =>
+    !!s.metrics &&
+    (s.metrics.athMultiple ?? 0) > 0 &&
+    (s.metrics.athPrice ?? 0) > 0
+  );
+  const missingMetricsCount = signals.length - signalsWithMetrics.length;
   if (missingMetricsCount > 0) {
-    logger.info(`[DistributionStats] ${missingMetricsCount}/${signals.length} signals missing metrics (background job will fill)`);
+    logger.info(`[DistributionStats] ${missingMetricsCount}/${signals.length} signals missing ATH metrics (skipping for distributions)`);
   }
 
   // 3. Process Distributions - Initialize all stats
@@ -933,7 +940,9 @@ export const getDistributionStats = async (
       { label: '5+ sources', min: 5, max: 1000, count: 0, wins: 0, avgMult: 0 }
     ],
     currentStreak: { type: 'loss', count: 0 },
-    totalSignals: signals.length
+    totalSignals: signalsWithMetrics.length,
+    rawSignals: signals.length,
+    metricsSignals: signalsWithMetrics.length
   };
 
   // Group tracking for win rates
@@ -950,7 +959,7 @@ export const getDistributionStats = async (
   }>();
   
   // Streak tracking
-  const sortedSignals = [...signals].sort((a, b) => {
+  const sortedSignals = [...signalsWithMetrics].sort((a, b) => {
     const aTime = getEntryTime(a)?.getTime() ?? a.detectedAt.getTime();
     const bTime = getEntryTime(b)?.getTime() ?? b.detectedAt.getTime();
     return aTime - bTime;
@@ -969,7 +978,7 @@ export const getDistributionStats = async (
 
   const confluenceMap = new Map<string, { groups: Set<number>; maxMult: number }>();
   for (const s of sortedSignals) {
-    const mult = s.metrics?.athMultiple || s.metrics?.currentMultiple || 0;
+    const mult = s.metrics?.athMultiple || 0;
     // Confluence: count distinct groups per mint and keep max multiple
     if (s.mint) {
       const entry = confluenceMap.get(s.mint) || { groups: new Set<number>(), maxMult: 0 };
@@ -978,7 +987,7 @@ export const getDistributionStats = async (
       if (mult > entry.maxMult) entry.maxMult = mult;
       confluenceMap.set(s.mint, entry);
     }
-    const entryMc = s.entryMarketCap || 0;
+    const entryMc = s.entryMarketCap || s.priceSamples?.[0]?.marketCap || 0;
     const maxDrawdown = s.metrics?.maxDrawdown || 0;
     const isWin = mult >= WIN_MULTIPLE;
     const isRug = mult < 0.5 || maxDrawdown <= -90;
