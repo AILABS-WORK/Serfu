@@ -178,16 +178,18 @@ const poolCache = new Map<string, string | null>();
 const fetchGeckoTerminalFast = async (mint: string, fromTime: number): Promise<DexScreenerCandle[]> => {
   try {
     // Check cache first
-    let poolAddress = poolCache.get(mint);
+    const cached = poolCache.get(mint);
+    let poolAddress: string | null = cached !== undefined ? cached : null;
     
-    if (poolAddress === undefined) {
+    if (cached === undefined) {
       // Fetch pool address
       try {
         const poolResponse = await axios.get(`https://api.geckoterminal.com/api/v2/networks/solana/tokens/${mint}/pools`, {
           params: { page: 1, limit: 1 },
           timeout: 5000
         });
-        poolAddress = poolResponse.data?.data?.[0]?.attributes?.address || null;
+        const addr = poolResponse.data?.data?.[0]?.attributes?.address;
+        poolAddress = addr ? String(addr) : null;
         poolCache.set(mint, poolAddress);
       } catch {
         poolCache.set(mint, null);
@@ -197,9 +199,18 @@ const fetchGeckoTerminalFast = async (mint: string, fromTime: number): Promise<D
     
     if (!poolAddress) return [];
     
-    // Fetch daily candles (covers most history in one call)
+    // Use HOURLY candles for better accuracy (daily might miss intraday peaks)
+    // Hourly gives us 1000 hours = ~41 days of history which is good for most tokens
+    const ageMs = Date.now() - fromTime;
+    const ageHours = ageMs / (1000 * 60 * 60);
+    
+    // Choose timeframe based on age
+    // - < 41 days: hourly (most accurate)
+    // - >= 41 days: daily (covers more history but less accurate)
+    const timeframe = ageHours <= 960 ? 'hour' : 'day'; // 960 hours = 40 days
+    
     const response = await axios.get(
-      `https://api.geckoterminal.com/api/v2/networks/solana/pools/${poolAddress}/ohlcv/day`,
+      `https://api.geckoterminal.com/api/v2/networks/solana/pools/${poolAddress}/ohlcv/${timeframe}`,
       {
         params: { limit: 1000 },
         timeout: 10000
