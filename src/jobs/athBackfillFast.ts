@@ -389,7 +389,7 @@ const processMint = async (data: MintData): Promise<{ updated: number; errors: n
   
   try {
     const candles = await fetchOHLCVFast(data.mint, data.earliestEntry);
-    const now = new Date();
+    const processTime = new Date();
     
     // If no candles found, still process signals with ATH = entry price
     // This is valid: if no price data exists, entry price IS the ATH (1x)
@@ -414,7 +414,7 @@ const processMint = async (data: MintData): Promise<{ updated: number; errors: n
               athAt: new Date(entryTime),
               timeToAth: 0,
               maxDrawdown: 0,
-              updatedAt: now
+              updatedAt: processTime
             },
             update: {
               // Only update if no ATH exists yet
@@ -423,7 +423,7 @@ const processMint = async (data: MintData): Promise<{ updated: number; errors: n
               athAt: new Date(entryTime),
               timeToAth: 0,
               maxDrawdown: 0,
-              updatedAt: now
+              updatedAt: processTime
             }
           });
           updated++;

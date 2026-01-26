@@ -465,7 +465,7 @@ export const handleLiveSignals = async (ctx: BotContext, forceRefresh = false) =
           logger.warn(`[LiveSignals] Signal ${s.id} (${s.mint.slice(0, 8)}...) has NO metrics after re-fetch!`);
         }
       }
-      logger.info(`[LiveSignals] Re-fetched ${updatedSignals.length} signals with updated metrics (ready to display)`);
+      logger.info(`[LiveSignals] Processed ${signalMap.size} signals with metrics (ready to display)`);
     }
 
     // CRITICAL: All ATH calculations are now complete - fetch metadata and build message
