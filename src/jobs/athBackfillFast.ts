@@ -175,7 +175,15 @@ const fetchBirdeyeOHLCV = async (mint: string, fromTime: number): Promise<DexScr
 
 const poolCache = new Map<string, string | null>();
 
-const fetchGeckoTerminalFast = async (mint: string, fromTime: number): Promise<DexScreenerCandle[]> => {
+/**
+ * Fetch OHLCV with smart tiered timeframes for accuracy:
+ * 1. MINUTE candles from entry until next hour boundary (captures partial hour)
+ * 2. HOUR candles from hour boundary until next day boundary
+ * 3. DAY candles for older history
+ * 
+ * This ensures we don't mistake pre-entry highs as ATH.
+ */
+const fetchGeckoTerminalTiered = async (mint: string, entryTime: number): Promise<DexScreenerCandle[]> => {
   try {
     // Check cache first
     const cached = poolCache.get(mint);
@@ -199,38 +207,137 @@ const fetchGeckoTerminalFast = async (mint: string, fromTime: number): Promise<D
     
     if (!poolAddress) return [];
     
-    // Use HOURLY candles for better accuracy (daily might miss intraday peaks)
-    // Hourly gives us 1000 hours = ~41 days of history which is good for most tokens
-    const ageMs = Date.now() - fromTime;
-    const ageHours = ageMs / (1000 * 60 * 60);
+    const now = Date.now();
+    const HOUR_MS = 60 * 60 * 1000;
+    const DAY_MS = 24 * HOUR_MS;
     
-    // Choose timeframe based on age
-    // - < 41 days: hourly (most accurate)
-    // - >= 41 days: daily (covers more history but less accurate)
-    const timeframe = ageHours <= 960 ? 'hour' : 'day'; // 960 hours = 40 days
+    // Calculate boundaries
+    const nextHourBoundary = Math.ceil(entryTime / HOUR_MS) * HOUR_MS;
+    const nextDayBoundary = Math.ceil(nextHourBoundary / DAY_MS) * DAY_MS;
+    
+    const allCandles: DexScreenerCandle[] = [];
+    
+    // PHASE 1: Minute candles from entry to next hour boundary
+    // This captures the partial first hour accurately
+    const minutesToNextHour = Math.ceil((nextHourBoundary - entryTime) / 60000);
+    if (minutesToNextHour > 0 && minutesToNextHour <= 60 && nextHourBoundary < now) {
+      try {
+        const response = await axios.get(
+          `https://api.geckoterminal.com/api/v2/networks/solana/pools/${poolAddress}/ohlcv/minute`,
+          { params: { limit: Math.min(100, minutesToNextHour + 5) }, timeout: 8000 }
+        );
+        const list = response.data?.data?.attributes?.ohlcv_list || [];
+        const candles = list.map((c: any[]) => ({
+          timestamp: c[0] * 1000,
+          open: c[1], high: c[2], low: c[3], close: c[4], volume: c[5]
+        })).reverse();
+        // Filter to only candles AFTER entry time
+        const filtered = candles.filter((c: DexScreenerCandle) => c.timestamp >= entryTime);
+        allCandles.push(...filtered);
+      } catch {
+        // Continue without minute candles
+      }
+    }
+    
+    // PHASE 2: Hour candles from hour boundary to day boundary (or now if < 1 day)
+    const hoursToNextDay = Math.ceil((nextDayBoundary - nextHourBoundary) / HOUR_MS);
+    if (hoursToNextDay > 0 && nextHourBoundary < now) {
+      try {
+        // Fetch enough hourly candles to cover from entry to now (or to where daily takes over)
+        const hoursNeeded = Math.min(1000, Math.ceil((now - nextHourBoundary) / HOUR_MS) + 5);
+        const response = await axios.get(
+          `https://api.geckoterminal.com/api/v2/networks/solana/pools/${poolAddress}/ohlcv/hour`,
+          { params: { limit: hoursNeeded }, timeout: 10000 }
+        );
+        const list = response.data?.data?.attributes?.ohlcv_list || [];
+        const candles = list.map((c: any[]) => ({
+          timestamp: c[0] * 1000,
+          open: c[1], high: c[2], low: c[3], close: c[4], volume: c[5]
+        })).reverse();
+        // Filter to only COMPLETE hour candles (start time >= next hour boundary)
+        const filtered = candles.filter((c: DexScreenerCandle) => c.timestamp >= nextHourBoundary);
+        allCandles.push(...filtered);
+      } catch {
+        // Continue without hourly candles
+      }
+    }
+    
+    // PHASE 3: Daily candles for older history (if signal is old enough)
+    const ageInDays = (now - entryTime) / DAY_MS;
+    if (ageInDays > 2) {
+      try {
+        const daysNeeded = Math.min(1000, Math.ceil(ageInDays) + 5);
+        const response = await axios.get(
+          `https://api.geckoterminal.com/api/v2/networks/solana/pools/${poolAddress}/ohlcv/day`,
+          { params: { limit: daysNeeded }, timeout: 10000 }
+        );
+        const list = response.data?.data?.attributes?.ohlcv_list || [];
+        const candles = list.map((c: any[]) => ({
+          timestamp: c[0] * 1000,
+          open: c[1], high: c[2], low: c[3], close: c[4], volume: c[5]
+        })).reverse();
+        // Filter to only COMPLETE day candles (start time >= next day boundary)
+        const filtered = candles.filter((c: DexScreenerCandle) => c.timestamp >= nextDayBoundary);
+        allCandles.push(...filtered);
+      } catch {
+        // Continue without daily candles
+      }
+    }
+    
+    // Deduplicate by timestamp (in case of overlaps)
+    const uniqueMap = new Map<number, DexScreenerCandle>();
+    for (const c of allCandles) {
+      const key = Math.round(c.timestamp / 60000) * 60000; // Round to minute
+      if (!uniqueMap.has(key) || c.timestamp > uniqueMap.get(key)!.timestamp) {
+        uniqueMap.set(key, c);
+      }
+    }
+    
+    return Array.from(uniqueMap.values()).sort((a, b) => a.timestamp - b.timestamp);
+    
+  } catch (err: any) {
+    if (err.response?.status !== 429) {
+      logger.debug(`[FastBackfill] GeckoTerminal tiered fetch failed for ${mint.slice(0, 8)}...: ${err.message}`);
+    }
+    return [];
+  }
+};
+
+// Simple fast fetch for fallback (less accurate but faster)
+const fetchGeckoTerminalFast = async (mint: string, fromTime: number): Promise<DexScreenerCandle[]> => {
+  try {
+    const cached = poolCache.get(mint);
+    let poolAddress: string | null = cached !== undefined ? cached : null;
+    
+    if (cached === undefined) {
+      try {
+        const poolResponse = await axios.get(`https://api.geckoterminal.com/api/v2/networks/solana/tokens/${mint}/pools`, {
+          params: { page: 1, limit: 1 },
+          timeout: 5000
+        });
+        const addr = poolResponse.data?.data?.[0]?.attributes?.address;
+        poolAddress = addr ? String(addr) : null;
+        poolCache.set(mint, poolAddress);
+      } catch {
+        poolCache.set(mint, null);
+        return [];
+      }
+    }
+    
+    if (!poolAddress) return [];
     
     const response = await axios.get(
-      `https://api.geckoterminal.com/api/v2/networks/solana/pools/${poolAddress}/ohlcv/${timeframe}`,
-      {
-        params: { limit: 1000 },
-        timeout: 10000
-      }
+      `https://api.geckoterminal.com/api/v2/networks/solana/pools/${poolAddress}/ohlcv/hour`,
+      { params: { limit: 1000 }, timeout: 10000 }
     );
     
     const list = response.data?.data?.attributes?.ohlcv_list || [];
     return list.map((c: any[]) => ({
       timestamp: c[0] * 1000,
-      open: c[1],
-      high: c[2],
-      low: c[3],
-      close: c[4],
-      volume: c[5]
+      open: c[1], high: c[2], low: c[3], close: c[4], volume: c[5]
     })).reverse();
     
   } catch (err: any) {
-    if (err.response?.status !== 429) {
-      logger.debug(`[FastBackfill] GeckoTerminal failed for ${mint.slice(0, 8)}...: ${err.message}`);
-    }
     return [];
   }
 };
@@ -239,18 +346,23 @@ const fetchGeckoTerminalFast = async (mint: string, fromTime: number): Promise<D
 // Combined fetcher with fallbacks
 // ============================================================================
 
-const fetchOHLCVFast = async (mint: string, fromTime: number): Promise<DexScreenerCandle[]> => {
+const fetchOHLCVFast = async (mint: string, entryTime: number): Promise<DexScreenerCandle[]> => {
   // Try Birdeye first (best data if we have API key)
   if (BIRDEYE_API_KEY) {
-    const birdeye = await fetchBirdeyeOHLCV(mint, fromTime);
+    const birdeye = await fetchBirdeyeOHLCV(mint, entryTime);
     if (birdeye.length > 0) return birdeye;
   }
   
-  // Try GeckoTerminal (good data, slower)
-  const gecko = await fetchGeckoTerminalFast(mint, fromTime);
+  // Try GeckoTerminal with TIERED approach (most accurate)
+  // Uses minute → hour → day candles based on entry time boundaries
+  const tiered = await fetchGeckoTerminalTiered(mint, entryTime);
+  if (tiered.length > 0) return tiered;
+  
+  // Fallback to simple hourly fetch (less accurate but better than nothing)
+  const gecko = await fetchGeckoTerminalFast(mint, entryTime);
   if (gecko.length > 0) return gecko;
   
-  // Fallback to DexScreener (limited but fast)
+  // Last resort: DexScreener (very limited but fast)
   return fetchDexScreenerOHLCV(mint);
 };
 
