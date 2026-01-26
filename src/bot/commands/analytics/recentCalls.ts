@@ -111,16 +111,33 @@ export const handleRecentCalls = async (ctx: Context, window: string = '7D') => 
     }
 
     const signals = uniqueSignals;
-    const { enrichSignalsBatch, enrichSignalsWithCurrentPrice } = await import('../../../analytics/metrics');
-    await enrichSignalsBatch(signals as any);
-    await enrichSignalsWithCurrentPrice(signals as any);
-    updateHistoricalMetrics(uniqueSignals.map((s: any) => s.id)).catch((err: any) => {
-      logger.debug('Background metric update failed:', err);
-    });
+    
+    // Use stored metrics from backfill - no need for live enrichment
+    // Background job will keep metrics updated
+    // Only trigger background update if metrics are stale (>2 hours old)
+    const staleSignalIds = signals
+      .filter((s: any) => {
+        if (!s.metrics?.ohlcvLastAt) return true;
+        const ageMs = Date.now() - new Date(s.metrics.ohlcvLastAt).getTime();
+        return ageMs > 2 * 60 * 60 * 1000; // 2 hours
+      })
+      .map((s: any) => s.id);
+    
+    if (staleSignalIds.length > 0) {
+      logger.info(`[RecentCalls] ${staleSignalIds.length}/${signals.length} signals have stale metrics, triggering background refresh`);
+      updateHistoricalMetrics(staleSignalIds).catch((err: any) => {
+        logger.debug('Background metric update failed:', err);
+      });
+    }
 
     const windowLabel = ['1D','3D','7D','30D','ALL'].includes(String(effectiveWindow)) ? String(effectiveWindow) : `Custom ${effectiveWindow}`;
     let message = UIHelper.header(`RECENT ACTIVITY LOG (${windowLabel})`, '📜');
 
+    // Fetch current prices using Jupiter (fast batch API)
+    const { getMultipleTokenPrices } = await import('../../../providers/jupiter');
+    const uniqueMints = [...new Set(signals.map((s: any) => s.mint))];
+    const priceMap = await getMultipleTokenPrices(uniqueMints);
+    
     const metaMap = new Map<string, any>();
     await Promise.all(signals.map(async (s: any) => {
       try {
@@ -130,15 +147,38 @@ export const handleRecentCalls = async (ctx: Context, window: string = '7D') => 
     }));
 
     for (const sig of signals) {
-      const currentPrice = sig.metrics?.currentPrice || 0;
+      // Use fresh Jupiter price for current data
+      const jupiterPrice = priceMap[sig.mint] ?? null;
       const entryMc = sig.entryMarketCap || sig.priceSamples?.[0]?.marketCap || 0;
+      const entryPrice = sig.entryPrice || 0;
       const meta = metaMap.get(sig.mint);
-      const currentMc = sig.metrics?.currentMarketCap || (meta?.marketCap || 0);
+      
+      // Calculate current market cap from Jupiter price + entry supply
+      let currentMc = 0;
+      let currentPrice = jupiterPrice ?? sig.metrics?.currentPrice ?? 0;
+      if (jupiterPrice && jupiterPrice > 0) {
+        const supply = sig.entrySupply || (entryMc && entryPrice ? entryMc / entryPrice : 0);
+        if (supply > 0) {
+          currentMc = jupiterPrice * supply;
+        }
+      }
+      // Fallback to stored or meta
+      if (currentMc <= 0) {
+        currentMc = sig.metrics?.currentMarketCap || (meta?.marketCap || 0);
+      }
 
       const entryStr = entryMc ? UIHelper.formatMarketCap(entryMc) : 'N/A';
       const currStr = currentMc ? UIHelper.formatMarketCap(currentMc) : 'N/A';
 
-      const pnl = sig.metrics?.currentMultiple ? (sig.metrics.currentMultiple - 1) * 100 : 0;
+      // Calculate PnL from fresh price data
+      let pnl = 0;
+      if (currentPrice > 0 && entryPrice > 0) {
+        pnl = ((currentPrice - entryPrice) / entryPrice) * 100;
+      } else if (currentMc > 0 && entryMc > 0) {
+        pnl = ((currentMc - entryMc) / entryMc) * 100;
+      } else if (sig.metrics?.currentMultiple) {
+        pnl = (sig.metrics.currentMultiple - 1) * 100;
+      }
       const pnlStr = UIHelper.formatPercent(pnl);
       const icon = UIHelper.getStatusIcon(pnl);
 

@@ -168,7 +168,10 @@ Aggregation Job:
 ### Phase 3 — Background Metrics
 - [x] Incremental OHLCV cursor used for ATH/drawdown updates.
 - [x] Update historical sweep to use entry time and cursors.
-- [x] Add “needs ATH refresh” selector (current price > ATH threshold).
+- [x] Add "needs ATH refresh" selector (current price > ATH threshold).
+- [x] Full ATH backfill system with tiered OHLCV (minute/hour/day).
+- [x] Fast parallel backfill (10 workers, ~130ms per mint).
+- [x] Live Jupiter ATH refresh (every 10s after backfill complete).
 
 ### Phase 4 — Backtesting
 - [x] Implement backtest engine (price_samples + OHLCV).
@@ -179,6 +182,10 @@ Aggregation Job:
 - [x] Live Signals uses stored ATH/Times with correct entry basis.
 - [x] Recent Calls/Leaderboards show matching metric definitions.
 - [x] Distributions add confluence + time‑of‑day insights.
+- [x] Backfill progress and status UI integrated.
+- [x] Data quality validation with auto-fix for timing issues.
+- [x] All analytics views properly route through stored metrics.
+- [x] Recent Calls optimized (removed redundant OHLCV enrichment).
 
 ---
 
