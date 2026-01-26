@@ -403,14 +403,18 @@ const processMint = async (data: MintData): Promise<{ updated: number; errors: n
         const entryPrice = sig.entryPrice;
         const entryTime = sig.entryTime;
         
-        // Find ATH from candles after entry
-        const validCandles = candles.filter(c => c.timestamp >= entryTime - 300000);
+        // IMPORTANT: Only use candles AFTER entry time (no buffer before!)
+        // This prevents false ATH from pre-entry price spikes
+        const validCandles = candles.filter(c => c.timestamp >= entryTime);
         
         if (validCandles.length === 0) {
+          // No candles after entry - use entry price as ATH
+          // This can happen for very new signals
           skipped++;
           continue;
         }
         
+        // Start with entry price as baseline ATH (at entry time)
         let athPrice = entryPrice;
         let athAt = entryTime;
         let minLow = entryPrice;
@@ -421,29 +425,44 @@ const processMint = async (data: MintData): Promise<{ updated: number; errors: n
         let timeTo10x: number | null = null;
         
         for (const c of validCandles) {
+          // Only update ATH if we find a HIGHER price AFTER entry
           if (c.high > athPrice) {
             athPrice = c.high;
-            athAt = c.timestamp;
+            // Ensure athAt is never before entryTime
+            athAt = Math.max(c.timestamp, entryTime);
           }
-          if (c.low < minLow) {
+          // Track min low (for drawdown calculation)
+          if (c.low > 0 && c.low < minLow) {
             minLow = c.low;
-            minLowAt = c.timestamp;
+            minLowAt = Math.max(c.timestamp, entryTime);
           }
-          if (!timeTo2x && c.high >= entryPrice * 2) timeTo2x = c.timestamp - entryTime;
-          if (!timeTo3x && c.high >= entryPrice * 3) timeTo3x = c.timestamp - entryTime;
-          if (!timeTo5x && c.high >= entryPrice * 5) timeTo5x = c.timestamp - entryTime;
-          if (!timeTo10x && c.high >= entryPrice * 10) timeTo10x = c.timestamp - entryTime;
+          // Time-to-Nx milestones (only for candles after entry)
+          const candleTimeFromEntry = c.timestamp - entryTime;
+          if (candleTimeFromEntry >= 0) {
+            if (!timeTo2x && c.high >= entryPrice * 2) timeTo2x = candleTimeFromEntry;
+            if (!timeTo3x && c.high >= entryPrice * 3) timeTo3x = candleTimeFromEntry;
+            if (!timeTo5x && c.high >= entryPrice * 5) timeTo5x = candleTimeFromEntry;
+            if (!timeTo10x && c.high >= entryPrice * 10) timeTo10x = candleTimeFromEntry;
+          }
         }
         
-        // Ensure ATH >= entry
+        // Final sanity checks
+        // 1. ATH price must be >= entry price
         if (athPrice < entryPrice) {
           athPrice = entryPrice;
           athAt = entryTime;
         }
         
+        // 2. Ensure athAt >= entryTime (defensive)
+        if (athAt < entryTime) {
+          athAt = entryTime;
+        }
+        
         const athMultiple = athPrice / entryPrice;
         const maxDrawdown = minLow < entryPrice ? ((minLow - entryPrice) / entryPrice) * 100 : 0;
-        const timeToAth = athAt - entryTime;
+        
+        // timeToAth can NEVER be negative (athAt >= entryTime is guaranteed)
+        const timeToAth = Math.max(0, athAt - entryTime);
         
         const entrySupply = sig.entrySupply || (sig.entryMarketCap && entryPrice > 0 ? sig.entryMarketCap / entryPrice : null);
         const athMarketCap = entrySupply ? athPrice * entrySupply : null;

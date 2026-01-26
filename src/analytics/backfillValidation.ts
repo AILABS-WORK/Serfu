@@ -288,7 +288,10 @@ export const runValidationCheck = async (options?: {
 
 /**
  * Auto-fix common issues found during validation.
- * Only fixes safe issues like ATH below entry.
+ * Fixes:
+ * - ATH_BELOW_ENTRY: Set ATH to entry price
+ * - NEGATIVE_TIME: Fix timeToAth to 0 and athAt to entryTime
+ * - INVALID_TIME: Fix athAt to be at/after entryTime
  */
 export const autoFixIssues = async (report: ValidationReport): Promise<{
   fixedCount: number;
@@ -299,16 +302,23 @@ export const autoFixIssues = async (report: ValidationReport): Promise<{
   let fixedCount = 0;
   let failedCount = 0;
   
-  // Only auto-fix ATH_BELOW_ENTRY issues
-  const fixableIssues = report.issues.filter(i => i.type === 'ATH_BELOW_ENTRY');
+  // Fix ATH_BELOW_ENTRY, NEGATIVE_TIME, and INVALID_TIME issues
+  const fixableIssues = report.issues.filter(i => 
+    i.type === 'ATH_BELOW_ENTRY' || 
+    i.type === 'NEGATIVE_TIME' || 
+    i.type === 'INVALID_TIME'
+  );
   
-  logger.info(`[Validation] Auto-fixing ${fixableIssues.length} ATH_BELOW_ENTRY issues...`);
+  logger.info(`[Validation] Auto-fixing ${fixableIssues.length} issues (ATH_BELOW_ENTRY, NEGATIVE_TIME, INVALID_TIME)...`);
   
-  for (const issue of fixableIssues) {
+  // Group by signalId to avoid duplicate fixes
+  const signalIds = [...new Set(fixableIssues.map(i => i.signalId))];
+  
+  for (const signalId of signalIds) {
     try {
       // Get the signal with fresh data
       const signal = await prisma.signal.findUnique({
-        where: { id: issue.signalId },
+        where: { id: signalId },
         include: { metrics: true }
       });
       
@@ -317,27 +327,60 @@ export const autoFixIssues = async (report: ValidationReport): Promise<{
         continue;
       }
       
-      // If ATH is below entry, set ATH to entry price
-      if (signal.metrics.athPrice < signal.entryPrice) {
-        const entryTime = getEntryTime(signal);
-        
+      const entryTime = getEntryTime(signal) || signal.detectedAt;
+      const entryTimeMs = entryTime.getTime();
+      const metrics = signal.metrics;
+      
+      const updates: any = { updatedAt: new Date() };
+      let needsUpdate = false;
+      
+      // Fix 1: ATH price below entry → set ATH to entry
+      if (metrics.athPrice < signal.entryPrice * 0.95) {
+        updates.athPrice = signal.entryPrice;
+        updates.athMultiple = 1.0;
+        updates.athAt = entryTime;
+        updates.timeToAth = 0;
+        needsUpdate = true;
+        details.push(`Signal ${signalId}: ATH set to entry price`);
+      }
+      
+      // Fix 2: Negative timeToAth → set to 0
+      if (metrics.timeToAth !== null && metrics.timeToAth < 0) {
+        updates.timeToAth = 0;
+        // Also fix athAt if it's before entry
+        if (metrics.athAt && metrics.athAt.getTime() < entryTimeMs) {
+          updates.athAt = entryTime;
+        }
+        needsUpdate = true;
+        details.push(`Signal ${signalId}: Fixed negative timeToAth`);
+      }
+      
+      // Fix 3: ATH timestamp before entry → set to entry time
+      if (metrics.athAt && metrics.athAt.getTime() < entryTimeMs - 60000) {
+        updates.athAt = entryTime;
+        updates.timeToAth = 0;
+        needsUpdate = true;
+        details.push(`Signal ${signalId}: Fixed athAt to entry time`);
+      }
+      
+      // Fix 4: minLowAt before entry → set to entry time
+      if (metrics.minLowAt && metrics.minLowAt.getTime() < entryTimeMs - 60000) {
+        updates.minLowAt = entryTime;
+        needsUpdate = true;
+        details.push(`Signal ${signalId}: Fixed minLowAt to entry time`);
+      }
+      
+      if (needsUpdate) {
         await prisma.signalMetric.update({
           where: { signalId: signal.id },
-          data: {
-            athPrice: signal.entryPrice,
-            athMultiple: 1.0,
-            athAt: entryTime || signal.detectedAt,
-            timeToAth: 0,
-            updatedAt: new Date()
-          }
+          data: updates
         });
-        
         fixedCount++;
-        details.push(`Fixed signal ${signal.id}: ATH set to entry price`);
       }
+      
     } catch (err: any) {
       failedCount++;
-      details.push(`Failed to fix signal ${issue.signalId}: ${err.message}`);
+      details.push(`Failed to fix signal ${signalId}: ${err.message}`);
     }
   }
   
