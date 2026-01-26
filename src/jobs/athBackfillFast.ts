@@ -389,9 +389,48 @@ const processMint = async (data: MintData): Promise<{ updated: number; errors: n
   
   try {
     const candles = await fetchOHLCVFast(data.mint, data.earliestEntry);
+    const now = new Date();
     
+    // If no candles found, still process signals with ATH = entry price
+    // This is valid: if no price data exists, entry price IS the ATH (1x)
     if (candles.length === 0) {
-      skipped = data.signals.length;
+      for (const sig of data.signals) {
+        try {
+          const entryPrice = sig.entryPrice;
+          const entryTime = sig.entryTime;
+          const entrySupply = sig.entrySupply || (sig.entryMarketCap && entryPrice > 0 ? sig.entryMarketCap / entryPrice : null);
+          const entryMarketCap = sig.entryMarketCap || (entrySupply ? entryPrice * entrySupply : null);
+          
+          await prisma.signalMetric.upsert({
+            where: { signalId: sig.id },
+            create: {
+              signalId: sig.id,
+              currentPrice: entryPrice,
+              currentMultiple: 1.0,
+              currentMarketCap: entryMarketCap,
+              athPrice: entryPrice,
+              athMultiple: 1.0,
+              athMarketCap: entryMarketCap,
+              athAt: new Date(entryTime),
+              timeToAth: 0,
+              maxDrawdown: 0,
+              updatedAt: now
+            },
+            update: {
+              // Only update if no ATH exists yet
+              athPrice: entryPrice,
+              athMultiple: 1.0,
+              athAt: new Date(entryTime),
+              timeToAth: 0,
+              maxDrawdown: 0,
+              updatedAt: now
+            }
+          });
+          updated++;
+        } catch {
+          errors++;
+        }
+      }
       return { updated, errors, skipped };
     }
     

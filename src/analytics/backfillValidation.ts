@@ -169,18 +169,24 @@ export const validateSignalMetrics = (signal: {
     }
   }
   
-  // Check for stale metrics (> 24 hours old for active signals)
+  // Check for stale metrics
+  // - Info: > 1 hour old (just informational)
+  // - Warning: > 24 hours old (may need refresh)
   const metricsAge = Date.now() - metrics.updatedAt.getTime();
-  const isStale = metricsAge > 24 * 60 * 60 * 1000;
-  if (isStale) {
+  const ONE_HOUR = 60 * 60 * 1000;
+  const ONE_DAY = 24 * ONE_HOUR;
+  
+  if (metricsAge > ONE_DAY) {
     issues.push({
       signalId: signal.id,
       mint: signal.mint,
       type: 'STALE_METRICS',
-      severity: 'info',
-      message: `Metrics are ${Math.round(metricsAge / (1000 * 60 * 60))} hours old`,
+      severity: 'warning',
+      message: `Metrics are ${Math.round(metricsAge / ONE_HOUR)} hours old - needs refresh`,
       currentValue: metricsAge
     });
+  } else if (metricsAge > ONE_HOUR) {
+    // Don't report as issue - just informational, background jobs will refresh
   }
   
   return issues;
@@ -766,7 +772,7 @@ export const formatValidationReport = (report: ValidationReport): string => {
   if (report.errorCount > 0) msg += ` ← need "Fix Timing"`;
   msg += `\n`;
   msg += `• ⚠️ Warnings: ${report.warningCount}\n`;
-  msg += `• ℹ️ Info: ${report.infoCount} (stale metrics - OK)\n\n`;
+  msg += `• ℹ️ Info: ${report.infoCount}\n\n`;
   
   // Specific issues with actionable info
   msg += `🔎 *Issue Types:*\n`;
@@ -780,7 +786,7 @@ export const formatValidationReport = (report: ValidationReport): string => {
     msg += `• ⬇️ ATH Below Entry: ${report.summary.athBelowEntryCount}\n`;
   }
   if (report.summary.staleMetricsCount > 0) {
-    msg += `• 📅 Stale Metrics: ${report.summary.staleMetricsCount} (>24h old, OK)\n`;
+    msg += `• 📅 Stale Metrics: ${report.summary.staleMetricsCount} (>24h, will refresh)\n`;
   }
   
   // Top errors (if any)
