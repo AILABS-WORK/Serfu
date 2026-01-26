@@ -13,6 +13,10 @@ export interface CachedSignal {
   userId: number | null;
   userName: string;
   signalId: number;
+  // ATH metrics (populated during live signals view)
+  athMult?: number | null;
+  maxDrawdown?: number | null;
+  timeToAth?: number | null;
 }
 
 export interface LiveSignalsCache {
