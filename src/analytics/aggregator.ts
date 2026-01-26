@@ -653,15 +653,34 @@ export const getSignalLeaderboard = async (
   }
   const signalsWithMetrics = signals.filter(s => !!s.metrics);
   
-  // Re-sort by ATH after enrichment across the full timeframe
-  signalsWithMetrics.sort((a, b) => {
+  // DEDUPLICATE BY MINT: Keep only the EARLIEST call for each token
+  // This ensures each token appears only once (first caller wins)
+  const mintMap = new Map<string, typeof signalsWithMetrics[0]>();
+  for (const s of signalsWithMetrics) {
+    const entryTime = getEntryTime(s);
+    const existing = mintMap.get(s.mint);
+    if (!existing) {
+      mintMap.set(s.mint, s);
+    } else {
+      // Keep the earliest signal (first caller)
+      const existingEntryTime = getEntryTime(existing);
+      if (entryTime && existingEntryTime && entryTime.getTime() < existingEntryTime.getTime()) {
+        mintMap.set(s.mint, s);
+      }
+    }
+  }
+  const uniqueSignals = Array.from(mintMap.values());
+  logger.info(`[SignalLeaderboard] Deduplicated ${signalsWithMetrics.length} signals to ${uniqueSignals.length} unique mints`);
+  
+  // Sort by ATH (highest first)
+  uniqueSignals.sort((a, b) => {
     const aAth = a.metrics?.athMultiple || 0;
     const bAth = b.metrics?.athMultiple || 0;
     return bAth - aAth;
   });
   
   // Take top limit after sorting
-  const topSignals = signalsWithMetrics.slice(0, limit);
+  const topSignals = uniqueSignals.slice(0, limit);
   const topMints = [...new Set(topSignals.map(s => s.mint))];
   const currentPriceMap = await getMultipleTokenPrices(topMints);
 
