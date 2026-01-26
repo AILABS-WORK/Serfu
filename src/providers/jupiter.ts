@@ -20,9 +20,12 @@ export const getMultipleTokenPrices = async (mints: string[]): Promise<Record<st
     // Jupiter price/v3 supports batch requests with comma-separated IDs
     // Based on API docs, test with reasonable chunk sizes
     // Start conservative, can increase if no rate limits
-    const CHUNK_SIZE = 50; // Start with 50 tokens per request (can test higher)
+    const CHUNK_SIZE = Number(process.env.JUP_PRICE_CHUNK ?? 40); // Lower default to reduce rate limits
     const REQUEST_TIMEOUT_MS = 20000; // 20 seconds per request
-    const MAX_PARALLEL_CHUNKS = 5; // Process up to 5 chunks in parallel (start conservative)
+    const MAX_PARALLEL_CHUNKS = Number(process.env.JUP_PRICE_PARALLEL ?? 2); // Lower default concurrency
+    const DELAY_BETWEEN_BATCHES_MS = Number(process.env.JUP_PRICE_BATCH_DELAY_MS ?? 200);
+    const MAX_RETRIES = Number(process.env.JUP_PRICE_MAX_RETRIES ?? 2);
+    const RATE_LIMIT_WAIT_MS = Number(process.env.JUP_PRICE_RATE_LIMIT_WAIT_MS ?? 1000);
     
     const chunks = [];
     for (let i = 0; i < mints.length; i += CHUNK_SIZE) {
@@ -33,9 +36,12 @@ export const getMultipleTokenPrices = async (mints: string[]): Promise<Record<st
 
     logger.info(`[Jupiter] Fetching prices for ${mints.length} tokens in ${chunks.length} chunks (${CHUNK_SIZE} per chunk, ${MAX_PARALLEL_CHUNKS} parallel)`);
 
-    // Process chunks in parallel batches for maximum speed
+    // Process chunks in parallel batches with rate-limit backoff
     for (let i = 0; i < chunks.length; i += MAX_PARALLEL_CHUNKS) {
       const parallelBatch = chunks.slice(i, i + MAX_PARALLEL_CHUNKS);
+      if (i > 0 && DELAY_BETWEEN_BATCHES_MS > 0) {
+        await new Promise(resolve => setTimeout(resolve, DELAY_BETWEEN_BATCHES_MS));
+      }
       
       await Promise.allSettled(parallelBatch.map(async (chunk, batchIndex) => {
         const chunkIndex = i + batchIndex;
@@ -46,57 +52,67 @@ export const getMultipleTokenPrices = async (mints: string[]): Promise<Record<st
             headers['x-api-key'] = JUP_API_KEY;
           }
           const url = `${JUP_PRICE_URL}?ids=${ids}`;
-          
-          const controller = new AbortController();
-          const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-          
-          try {
-            const res = await fetch(url, { headers, signal: controller.signal });
-            clearTimeout(timeoutId);
-            
-            if (!res.ok) {
-              if (res.status === 429) {
-                logger.warn(`[Jupiter] Rate limited for chunk ${chunkIndex + 1}/${chunks.length}`);
-                // On rate limit, mark as null but continue
+          let attempt = 0;
+
+          while (attempt <= MAX_RETRIES) {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+            try {
+              const res = await fetch(url, { headers, signal: controller.signal });
+              clearTimeout(timeoutId);
+
+              if (!res.ok) {
+                if (res.status === 429 && attempt < MAX_RETRIES) {
+                  const retryAfter = res.headers.get('retry-after');
+                  const waitMs = retryAfter ? parseInt(retryAfter, 10) * 1000 : RATE_LIMIT_WAIT_MS;
+                  const backoffMs = waitMs + attempt * 500;
+                  logger.warn(`[Jupiter] Rate limited for chunk ${chunkIndex + 1}/${chunks.length}, waiting ${backoffMs}ms (attempt ${attempt + 1}/${MAX_RETRIES + 1})`);
+                  await new Promise(resolve => setTimeout(resolve, backoffMs));
+                  attempt++;
+                  continue;
+                }
+                chunk.forEach(mint => {
+                  if (!(mint in results)) results[mint] = null;
+                });
+                return;
+              }
+
+              const data: any = await res.json();
+              let pricesFound = 0;
+              chunk.forEach(mint => {
+                  const tokenData = data?.[mint];
+                  const price = tokenData?.usdPrice;
+                  if (price !== undefined && price !== null && !isNaN(Number(price))) {
+                    results[mint] = Number(price);
+                    pricesFound++;
+                  } else {
+                    results[mint] = null;
+                  }
+              });
+
+              logger.debug(`[Jupiter] Chunk ${chunkIndex + 1}/${chunks.length}: ${pricesFound}/${chunk.length} prices found`);
+
+              if (chunkIndex === 0 && Object.keys(data || {}).length > 0) {
+                const sampleMint = Object.keys(data)[0];
+                logger.debug(`[Jupiter] Sample response structure for ${sampleMint.slice(0, 8)}...:`, JSON.stringify(data[sampleMint]).slice(0, 200));
+              }
+              return;
+            } catch (fetchErr: any) {
+              clearTimeout(timeoutId);
+              if (fetchErr.name !== 'AbortError' && attempt < MAX_RETRIES) {
+                const backoffMs = (attempt + 1) * 500;
+                await new Promise(resolve => setTimeout(resolve, backoffMs));
+                attempt++;
+                continue;
+              }
+              if (fetchErr.name !== 'AbortError') {
+                logger.debug(`[Jupiter] Chunk ${chunkIndex + 1} error:`, fetchErr.message || fetchErr);
               }
               chunk.forEach(mint => {
                 if (!(mint in results)) results[mint] = null;
               });
               return;
             }
-            
-            const data: any = await res.json();
-            
-            // Jupiter price/v3 response structure: { "mint1": { usdPrice: ... }, "mint2": { usdPrice: ... } }
-            // No nested "data" object - tokens are direct keys in the response
-            let pricesFound = 0;
-            chunk.forEach(mint => {
-                const tokenData = data?.[mint];
-                const price = tokenData?.usdPrice; // Field is "usdPrice", not "price"
-                if (price !== undefined && price !== null && !isNaN(Number(price))) {
-                  results[mint] = Number(price);
-                  pricesFound++;
-                } else {
-                  results[mint] = null;
-                }
-            });
-            
-            logger.debug(`[Jupiter] Chunk ${chunkIndex + 1}/${chunks.length}: ${pricesFound}/${chunk.length} prices found`);
-            
-            // Log sample response structure for debugging
-            if (chunkIndex === 0 && Object.keys(data || {}).length > 0) {
-              const sampleMint = Object.keys(data)[0];
-              logger.debug(`[Jupiter] Sample response structure for ${sampleMint.slice(0, 8)}...:`, JSON.stringify(data[sampleMint]).slice(0, 200));
-            }
-            
-          } catch (fetchErr: any) {
-            clearTimeout(timeoutId);
-            if (fetchErr.name !== 'AbortError') {
-              logger.debug(`[Jupiter] Chunk ${chunkIndex + 1} error:`, fetchErr.message || fetchErr);
-            }
-            chunk.forEach(mint => {
-              if (!(mint in results)) results[mint] = null;
-            });
           }
         } catch (err: any) {
           logger.debug(`[Jupiter] Error processing chunk ${chunkIndex + 1}:`, err.message || err);

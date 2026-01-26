@@ -95,7 +95,7 @@ export const updateHistoricalMetrics = async (targetSignalIds?: number[]) => {
     }
 
     const uniqueMints = Array.from(signalsByMint.keys());
-    const MINT_BATCH_SIZE = 5;
+    const MINT_BATCH_SIZE = Number(process.env.GECKO_OHLCV_PARALLEL ?? 3);
     for (let i = 0; i < uniqueMints.length; i += MINT_BATCH_SIZE) {
         const mintBatch = uniqueMints.slice(i, i + MINT_BATCH_SIZE);
         await Promise.all(mintBatch.map(async (mint) => {
