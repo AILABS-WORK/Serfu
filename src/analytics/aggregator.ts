@@ -961,9 +961,6 @@ export const getDistributionStats = async (
   
   logger.info(`[DistributionStats] Processing ${validSignals.length} valid unique signals for distributions`);
   
-  // Update totalUniqueMints with the filtered count
-  stats.totalUniqueMints = validSignals.length;
-  
   const signalsWithMetrics = validSignals.filter(s =>
     !!s.metrics &&
     (s.metrics.athMultiple ?? 0) > 0 &&
@@ -973,11 +970,6 @@ export const getDistributionStats = async (
   if (missingMetricsCount > 0) {
     logger.info(`[DistributionStats] ${missingMetricsCount}/${validSignals.length} unique mints missing ATH metrics (skipping for distributions)`);
   }
-  
-  // Update stats counts with filtered values
-  stats.totalSignals = signalsWithMetrics.length;
-  stats.rawSignals = validSignals.length; // Unique mints within timeframe
-  stats.metricsSignals = signalsWithMetrics.length;
 
   // 3. Process Distributions - Initialize all stats
   const stats: DistributionStats = {
@@ -1081,6 +1073,12 @@ export const getDistributionStats = async (
     stdDevReturn: 0,
     totalUniqueMints: 0 // Will be set after filtering
   };
+
+  // Update stats counts with filtered values (after stats object is created)
+  stats.totalUniqueMints = validSignals.length;
+  stats.totalSignals = signalsWithMetrics.length;
+  stats.rawSignals = validSignals.length; // Unique mints within timeframe
+  stats.metricsSignals = signalsWithMetrics.length;
 
   // Group tracking for win rates
   const groupStats = new Map<string, { 
