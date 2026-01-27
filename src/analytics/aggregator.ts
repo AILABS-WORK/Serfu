@@ -904,6 +904,9 @@ export const getDistributionStats = async (
     scopeFilter = { userId: target.id };
   }
 
+  // Log the timeframe filter for debugging
+  logger.info(`[DistributionStats] Timeframe: ${timeframe}, Cutoff: ${since.toISOString()}`);
+  
   // Cache-only: include signals, but skip those missing metrics during computation
   const signals = await prisma.signal.findMany({
     where: {
@@ -920,7 +923,7 @@ export const getDistributionStats = async (
     }
   });
 
-  logger.info(`[DistributionStats] Processing ${signals.length} total signals`);
+  logger.info(`[DistributionStats] Found ${signals.length} signals in timeframe ${timeframe}`);
   
   // CRITICAL: Deduplicate by mint - only keep FIRST detection per token
   // This ensures distributions reflect unique token performance, not duplicate mentions
@@ -941,15 +944,40 @@ export const getDistributionStats = async (
   const uniqueSignals = Array.from(mintMap.values());
   logger.info(`[DistributionStats] Deduplicated ${signals.length} signals to ${uniqueSignals.length} unique mints`);
   
-  const signalsWithMetrics = uniqueSignals.filter(s =>
+  // CRITICAL: Verify all signals are within timeframe (double-check after deduplication)
+  // This ensures 1D only shows signals from last 24 hours, 7D from last 7 days, etc.
+  const validSignals = uniqueSignals.filter(s => {
+    const entryTime = getEntryTime(s) ?? s.detectedAt;
+    const isValid = entryTime.getTime() >= since.getTime();
+    if (!isValid) {
+      logger.warn(`[DistributionStats] Signal ${s.id} (${s.mint.slice(0,8)}) has entry time ${entryTime.toISOString()} which is BEFORE cutoff ${since.toISOString()}`);
+    }
+    return isValid;
+  });
+  
+  if (validSignals.length !== uniqueSignals.length) {
+    logger.warn(`[DistributionStats] Filtered out ${uniqueSignals.length - validSignals.length} signals that were outside timeframe ${timeframe}`);
+  }
+  
+  logger.info(`[DistributionStats] Processing ${validSignals.length} valid unique signals for distributions`);
+  
+  // Update totalUniqueMints with the filtered count
+  stats.totalUniqueMints = validSignals.length;
+  
+  const signalsWithMetrics = validSignals.filter(s =>
     !!s.metrics &&
     (s.metrics.athMultiple ?? 0) > 0 &&
     (s.metrics.athPrice ?? 0) > 0
   );
-  const missingMetricsCount = uniqueSignals.length - signalsWithMetrics.length;
+  const missingMetricsCount = validSignals.length - signalsWithMetrics.length;
   if (missingMetricsCount > 0) {
-    logger.info(`[DistributionStats] ${missingMetricsCount}/${uniqueSignals.length} unique mints missing ATH metrics (skipping for distributions)`);
+    logger.info(`[DistributionStats] ${missingMetricsCount}/${validSignals.length} unique mints missing ATH metrics (skipping for distributions)`);
   }
+  
+  // Update stats counts with filtered values
+  stats.totalSignals = signalsWithMetrics.length;
+  stats.rawSignals = validSignals.length; // Unique mints within timeframe
+  stats.metricsSignals = signalsWithMetrics.length;
 
   // 3. Process Distributions - Initialize all stats
   const stats: DistributionStats = {
@@ -1031,9 +1059,9 @@ export const getDistributionStats = async (
       { label: '5+ sources', min: 5, max: 1000, count: 0, wins: 0, avgMult: 0 }
     ],
     currentStreak: { type: 'loss', count: 0 },
-    totalSignals: signalsWithMetrics.length,
-    rawSignals: uniqueSignals.length, // Unique mints only
-    metricsSignals: signalsWithMetrics.length,
+    totalSignals: 0, // Will be set after filtering
+    rawSignals: 0, // Will be set after filtering
+    metricsSignals: 0, // Will be set after filtering
     // NEW: ATH Return Distribution buckets
     returnBuckets: [
       { label: '<0.5x', min: 0, max: 0.5, count: 0, avgEntryMc: 0 },
@@ -1051,7 +1079,7 @@ export const getDistributionStats = async (
     avgReturn: 0,
     medianReturn: 0,
     stdDevReturn: 0,
-    totalUniqueMints: uniqueSignals.length
+    totalUniqueMints: 0 // Will be set after filtering
   };
 
   // Group tracking for win rates
